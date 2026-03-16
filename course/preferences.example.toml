@@ -1,0 +1,15 @@
+[background]
+level = "intermediate"  # beginner | intermediate | advanced
+
+[provider]
+default = "mistral"    # mistral | groq | anthropic | openai | ollama
+mistral_model = "mistral-small-latest"  # mistral-small-latest | mistral-medium-latest | mistral-large-latest
+
+[provider.groq]
+model = "openai/gpt-oss-20b"  # openai/gpt-oss-20b | openai/gpt-oss-120b | llama-3.3-70b-versatile
+
+[provider.ollama]
+model = "qwen3.5"  # qwen3.5 | llama3.1
+
+[data]
+vector_store = "chroma"  # chroma | qdrant

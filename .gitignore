@@ -1,0 +1,8 @@
+node_modules/
+dist/
+progress.json
+course/preferences.toml
+.env
+*.log
+.claude/settings.local.json
+
