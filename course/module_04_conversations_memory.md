@@ -1462,86 +1462,81 @@ The fact sheet stores critical persistent information (like the user's name, pro
 
 ### Exercise 1: Configurable Memory Strategy Chatbot
 
-Build a command-line chatbot that supports all three memory strategies (sliding window, summarization, hybrid) and can switch between them during a conversation.
+Build a command-line chatbot that supports all three memory strategies. You will build this incrementally across four stages, each adding one layer of functionality. Get each stage working before moving to the next.
 
-**Requirements:**
+**File:** `src/exercises/ex14-chatbot.ts`
 
-1. Accept a `--strategy` flag: `window`, `summary`, or `hybrid`
-2. Support a `--window-size` flag (default: 20)
-3. Support a `--summarize-threshold` flag (default: 30)
-4. Display token usage after each exchange
-5. Support a `/stats` command that shows current memory state
-6. Support a `/strategy <name>` command to switch strategies mid-conversation
-7. Support a `/history` command that shows the raw message array
-8. Persist the conversation to a JSON file, with auto-save after each turn
+**Run with:** `bun run src/exercises/ex14-chatbot.ts --strategy window`
 
-**Example usage:**
+---
 
-```bash
-bun run chatbot.ts --strategy hybrid --window-size 10
-```
+#### Stage 1: Core REPL Loop
 
-**Starter code:**
+Get a basic chatbot working with one strategy at a time.
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { parseArgs } from 'node:util'
+**What to build:**
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
+1. Use `parseArgs` from `node:util` to accept a `--strategy` flag (`window`, `summary`, or `hybrid`) and a `--window-size` flag (default: 20)
+2. Based on the flag, create the matching manager (`SlidingWindowManager`, `SummarizingManager`, or `HybridManager`) from the classes you built in the teaching sections
+3. Set up a read loop (Bun treats `console` as an async iterable — `for await (const line of console)`)
+4. Each turn: add the user message to the manager → call `buildContext()` → pass the result to `generateText` → print the response → add the assistant message to the manager
+5. Support `/quit` to exit
 
-type StrategyName = 'window' | 'summary' | 'hybrid'
+**Try it:** Run with `--strategy window`, have a 3-turn conversation. Verify the model remembers what you said in turn 1.
 
-interface MemoryStrategy {
-  name: StrategyName
-  buildContext(systemPrompt: string, allMessages: Message[], options: StrategyOptions): Promise<Message[]>
-}
+---
 
-interface StrategyOptions {
-  windowSize: number
-  summarizeThreshold: number
-  currentSummary: string | null
-  model: string
-}
+#### Stage 2: Slash Commands & Token Display
 
-// Implement the three strategies
-const windowStrategy: MemoryStrategy = {
-  name: 'window',
-  async buildContext(systemPrompt, allMessages, options) {
-    // TODO: Implement sliding window
-    throw new Error('Not implemented')
-  },
-}
+Add observability so you can see what the memory strategy is actually doing.
 
-const summaryStrategy: MemoryStrategy = {
-  name: 'summary',
-  async buildContext(systemPrompt, allMessages, options) {
-    // TODO: Implement summarization
-    throw new Error('Not implemented')
-  },
-}
+**What to add:**
 
-const hybridStrategy: MemoryStrategy = {
-  name: 'hybrid',
-  async buildContext(systemPrompt, allMessages, options) {
-    // TODO: Implement hybrid approach
-    throw new Error('Not implemented')
-  },
-}
+1. Intercept lines starting with `/` before they reach the LLM
+2. `/history` — print the raw message array from `manager.getHistory()`
+3. `/stats` — print the current memory state: strategy name, message count, and (for summarizing/hybrid) whether a summary exists
+4. After each LLM response, display the token count of the context you sent — use `countMessageTokens` from `src/memory/tokens.ts`
 
-// Parse CLI arguments and start the chatbot
-// TODO: Implement the main loop
-```
+**Try it:** Chat for 5+ turns, then run `/stats` and `/history`. Check that the token count grows with each turn.
 
-**Evaluation criteria:**
+---
+
+#### Stage 3: Auto-Summarization
+
+Make the summarizing and hybrid strategies actually summarize when the conversation grows long.
+
+**What to add:**
+
+1. Accept a `--summarize-threshold` flag (default: 30)
+2. After adding the user message each turn, check if the manager has a `needsSummarization()` method and whether it returns `true`
+3. If summarization is needed: call `getSummarizationText()` on the manager, send it to the LLM with a system prompt like `"Summarize this conversation concisely"`, then call `setSummary()` with the result
+4. This should happen transparently — the user just sees a normal response, but `/stats` will now show a summary exists
+
+**Try it:** Set `--summarize-threshold 6` and `--strategy summary`. Chat for 8+ turns. Run `/stats` to confirm summarization triggered. Check that the model still knows things from early in the conversation.
+
+---
+
+#### Stage 4: Persistence & Strategy Switching
+
+Make conversations survive restarts and let users switch strategies mid-conversation.
+
+**What to add:**
+
+1. After each turn (user message + assistant response), auto-save the conversation to a JSON file — you can use `ConversationStore` from `src/memory/persistence.ts` or write your own serialization
+2. On startup, check if a save file exists and load it to resume the conversation
+3. `/strategy <name>` — switch to a different strategy mid-conversation. The key design decision: how do you transfer the existing history to the new manager? Think about whether you create a fresh manager and replay the history, or share a reference to the same history array.
+
+**Try it:** Start with `--strategy window`, chat for a few turns, `/quit`, restart — verify the conversation continues. Then try `/strategy hybrid` mid-conversation and confirm the history carries over.
+
+---
+
+**Evaluation criteria (all stages combined):**
 
 - All three strategies produce different context arrays for the same conversation
 - `/stats` accurately reports memory state for each strategy
+- Token count is displayed after each exchange
 - Conversation persists across restarts
-- Token counting is within 20% of actual API-reported usage
+- `/strategy` switching preserves conversation history
 
 ### Exercise 2: Memory Strategy Comparison
 
