@@ -94,7 +94,7 @@ To check progress: `bun run progress`
 
 - TypeScript (comfortable with types, generics, async/await)
 - Terminal comfort (running commands, environment variables)
-- API key for at least one provider (Anthropic, OpenAI) OR Ollama installed locally
+- API key for at least one provider (Anthropic, OpenAI, Mistral, Groq) OR Ollama installed locally
 - No AI/ML background required — we start from first principles
 
 ## Module Dependencies
