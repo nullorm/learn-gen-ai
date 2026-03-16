@@ -18,7 +18,6 @@ const BADGE_DISPLAY: Record<string, string> = {
   type_safe: 'Type Safe',
   vector_space: 'Vector Space',
   perfect_score: 'Perfect Score',
-  ship_it: 'Ship It',
   full_stack_llm: 'Full Stack LLM',
   streak_7: '7-Day Streak',
   streak_30: '30-Day Streak',
