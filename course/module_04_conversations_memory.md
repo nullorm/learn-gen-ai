@@ -254,7 +254,7 @@ console.log(`Estimated max turns for Claude Sonnet 4: ${claude35Sonnet}`)
 
 ---
 
-## Section 3: Message History Management
+## Section 3: Conversation State & Strategy Pattern
 
 ### The Naive Approach and Its Problems
 
@@ -285,70 +285,88 @@ Memory management is about answering one question: **which messages should the m
 - A coding assistant needs the current file context but not the debugging session from an hour ago
 - A tutoring system needs to track what concepts the student has mastered across sessions
 
-### Building a Message Manager
+Different use cases need different strategies. And you might want to switch strategies at runtime — start with a simple window, upgrade to hybrid when the conversation gets complex. This means the strategy should be swappable without losing the conversation.
 
-Let us create a base class for message management:
+### Separating State from Strategy
+
+The key design insight: **conversation state and memory strategy are separate concerns.** The state holds all the data (history, summaries, facts). The strategy decides which parts of that data the model should see.
 
 ```typescript
-import { generateText, type LanguageModel } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+import type { ModelMessage } from 'ai'
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+interface ConversationState {
+  history: ModelMessage[]
+  summarization?: {
+    summary: string
+    until: number
+  }
+  facts?: {
+    entries: Record<string, string>
+    extractedUntil: number
+  }
 }
 
-interface ConversationConfig {
-  systemPrompt: string
-  model?: LanguageModel
-  maxContextTokens?: number
+interface MemoryStrategy {
+  buildContext(systemPrompt: string, state: ConversationState): ModelMessage[]
 }
+```
+
+`ConversationState` is a plain data object. The `history` array holds every message ever sent. The optional `summarization` and `facts` fields are populated only when a strategy that uses them is active. The `until` / `extractedUntil` fields track how far processing has gone, so strategies know which messages still need summarizing or fact extraction.
+
+`MemoryStrategy` is a single function: given the system prompt and the full state, return the message array to send to the model.
+
+### The Conversation Manager
+
+The manager composes state and strategy. It owns the state, delegates context building to the strategy, and allows hot-swapping strategies without losing any data:
+
+```typescript
+import type { ModelMessage } from 'ai'
 
 class ConversationManager {
-  protected messages: Message[] = []
-  protected systemPrompt: string
-  protected model: LanguageModel
-  protected maxContextTokens: number
+  private state: ConversationState = { history: [] }
+  private strategy: MemoryStrategy
+  private systemPrompt: string
 
-  constructor(config: ConversationConfig) {
+  constructor(config: { systemPrompt: string; strategy: MemoryStrategy }) {
     this.systemPrompt = config.systemPrompt
-    this.model = config.model ?? mistral('mistral-small-latest')
-    this.maxContextTokens = config.maxContextTokens ?? 180_000
+    this.strategy = config.strategy
   }
 
-  /** Add a user message and get the assistant's response */
-  async send(userMessage: string): Promise<string> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    const contextMessages = this.buildContext()
-
-    const { text } = await generateText({
-      model: this.model,
-      messages: contextMessages,
-    })
-
-    this.messages.push({ role: 'assistant', content: text })
-    return text
+  addUserMessage(content: string): void {
+    this.state.history.push({ role: 'user', content })
   }
 
-  /** Override this in subclasses to implement different memory strategies */
-  protected buildContext(): Message[] {
-    return [{ role: 'system', content: this.systemPrompt }, ...this.messages]
+  addAssistantMessage(content: string): void {
+    this.state.history.push({ role: 'assistant', content })
   }
 
-  /** Get full message history */
-  getHistory(): Message[] {
-    return [...this.messages]
+  buildContext(): ModelMessage[] {
+    return this.strategy.buildContext(this.systemPrompt, this.state)
   }
 
-  /** Get message count (excluding system prompt) */
+  setStrategy(strategy: MemoryStrategy): void {
+    this.strategy = strategy
+  }
+
+  getState(): ConversationState {
+    return this.state
+  }
+
+  setState(state: ConversationState): void {
+    this.state = state
+  }
+
+  getHistory(): ModelMessage[] {
+    return [...this.state.history]
+  }
+
   getMessageCount(): number {
-    return this.messages.length
+    return this.state.history.length
   }
 }
 ```
 
-This base class stores all messages and passes them all to the model. The subclasses we build in the following sections will override `buildContext()` to implement smarter strategies.
+Notice what `setStrategy` does — it swaps the strategy function. The state is untouched. History, summaries, facts — all preserved. This is the composition advantage over inheritance: no state transfer, no reconstruction, no bugs.
 
 ---
 
@@ -356,7 +374,7 @@ This base class stores all messages and passes them all to the model. The subcla
 
 ### The Idea
 
-Keep only the most recent N messages. Older messages are simply dropped. This is the simplest strategy that actually works in production.
+Keep only the most recent N messages. Older messages are simply dropped from context (but stay in state). This is the simplest strategy that actually works in production.
 
 ```
 Full history:   [S] [U1] [A1] [U2] [A2] [U3] [A3] [U4] [A4] [U5] [A5]
@@ -367,87 +385,35 @@ The system prompt (S) is always included. The window slides forward as new messa
 
 ### Implementation
 
-```typescript
-import { generateText, type LanguageModel } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+The windowing logic — take the last N messages, ensure we start on a user message — is a reusable building block. Extract it as a helper, then wrap it in a strategy:
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+```typescript
+import type { ModelMessage } from 'ai'
+
+function getWindowedMessages(history: ModelMessage[], windowSize: number): ModelMessage[] {
+  const recentMessages = history.slice(-windowSize)
+  const startIndex = recentMessages.findIndex((m) => m.role === 'user')
+  return startIndex > 0 ? recentMessages.slice(startIndex) : recentMessages
 }
 
-class SlidingWindowConversation {
-  private messages: Message[] = []
-  private systemPrompt: string
-  private windowSize: number
-  private model: LanguageModel
-
-  constructor(config: {
-    systemPrompt: string
-    windowSize?: number // Number of recent messages to keep
-    model?: LanguageModel
-  }) {
-    this.systemPrompt = config.systemPrompt
-    this.windowSize = config.windowSize ?? 20
-    this.model = config.model ?? mistral('mistral-small-latest')
-  }
-
-  async send(userMessage: string): Promise<string> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    const contextMessages = this.buildContext()
-
-    const { text } = await generateText({
-      model: this.model,
-      messages: contextMessages,
-    })
-
-    this.messages.push({ role: 'assistant', content: text })
-    return text
-  }
-
-  private buildContext(): Message[] {
-    // Always include the system prompt
-    const systemMsg: Message = { role: 'system', content: this.systemPrompt }
-
-    // Take only the last N messages
-    const recentMessages = this.messages.slice(-this.windowSize)
-
-    // Ensure we start with a user message (not an orphaned assistant message)
-    const startIndex = recentMessages.findIndex(m => m.role === 'user')
-    const trimmed = startIndex > 0 ? recentMessages.slice(startIndex) : recentMessages
-
-    return [systemMsg, ...trimmed]
-  }
-
-  /** Get stats about the current window */
-  getStats(): { totalMessages: number; windowedMessages: number } {
-    const windowed = Math.min(this.messages.length, this.windowSize)
-    return {
-      totalMessages: this.messages.length,
-      windowedMessages: windowed,
-    }
+function createSlidingWindowStrategy(windowSize: number = 20): MemoryStrategy {
+  return {
+    buildContext(systemPrompt: string, state: ConversationState): ModelMessage[] {
+      return [{ role: 'system', content: systemPrompt }, ...getWindowedMessages(state.history, windowSize)]
+    },
   }
 }
 
 // Usage
-const chat = new SlidingWindowConversation({
+const manager = new ConversationManager({
   systemPrompt: 'You are a helpful assistant. Be concise.',
-  windowSize: 10, // Keep last 10 messages (5 exchanges)
+  strategy: createSlidingWindowStrategy(10), // Keep last 10 messages (5 exchanges)
 })
-
-const response1 = await chat.send('My name is Alice.')
-console.log('Response 1:', response1)
-
-const response2 = await chat.send('What is 2 + 2?')
-console.log('Response 2:', response2)
-
-const response3 = await chat.send('What is my name?')
-console.log('Response 3:', response3)
-// With a large enough window, it remembers "Alice"
-
-console.log('Stats:', chat.getStats())
 ```
+
+`getWindowedMessages` is a pure function — it takes history and a window size, returns trimmed messages. The strategy factory wraps it with the system prompt. Later, the hybrid strategy will reuse this same helper.
+
+The strategy only reads `state.history` — it ignores `summarization` and `facts` entirely. Those fields remain untouched in the state, available if you later switch to a strategy that uses them.
 
 ### Choosing the Window Size
 
@@ -489,153 +455,87 @@ Full history:   [S] [U1] [A1] [U2] [A2] [U3] [A3] [U4] [A4]
 After summary:  [S] [Summary of U1-A2] [U3] [A3] [U4] [A4]
 ```
 
+Unlike the sliding window, the full history stays in `state.history` — the summary is stored alongside it in `state.summarization`. The strategy uses the summary + recent messages to build context.
+
 ### Implementation
 
+Like the windowing logic, the summarization checks are reusable helpers. Extract them as pure functions that operate on `ConversationState`:
+
 ```typescript
-import { generateText, type LanguageModel } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+import type { ModelMessage } from 'ai'
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+function needsSummarization(state: ConversationState, threshold: number): boolean {
+  const unsummarized = state.history.length - (state.summarization?.until ?? 0)
+  return unsummarized > threshold
 }
 
-class SummarizingConversation {
-  private messages: Message[] = []
-  private summary: string | null = null
-  private systemPrompt: string
-  private model: LanguageModel
-  private summarizeThreshold: number // Summarize when messages exceed this count
-  private keepRecent: number // Number of recent messages to keep unsummarized
+function getSummarizationText(state: ConversationState, keepRecent: number): string {
+  const startFrom = state.summarization?.until ?? 0
+  const toSummarize = state.history.slice(startFrom, -keepRecent)
 
-  constructor(config: {
-    systemPrompt: string
-    model?: LanguageModel
-    summarizeThreshold?: number
-    keepRecent?: number
-  }) {
-    this.systemPrompt = config.systemPrompt
-    this.model = config.model ?? mistral('mistral-small-latest')
-    this.summarizeThreshold = config.summarizeThreshold ?? 20
-    this.keepRecent = config.keepRecent ?? 6
-  }
-
-  async send(userMessage: string): Promise<string> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    // Check if we need to summarize
-    if (this.messages.length > this.summarizeThreshold) {
-      await this.summarizeOlderMessages()
-    }
-
-    const contextMessages = this.buildContext()
-
-    const { text } = await generateText({
-      model: this.model,
-      messages: contextMessages,
-    })
-
-    this.messages.push({ role: 'assistant', content: text })
-    return text
-  }
-
-  private async summarizeOlderMessages(): Promise<void> {
-    // Messages to summarize: everything except the most recent ones
-    const toSummarize = this.messages.slice(0, -this.keepRecent)
-
-    if (toSummarize.length === 0) return
-
-    // Build the text to summarize
-    const conversationText = toSummarize.map(m => `${m.role}: ${m.content}`).join('\n')
-
-    const existingSummaryContext = this.summary ? `Previous summary: ${this.summary}\n\n` : ''
-
-    const { text: newSummary } = await generateText({
-      model: this.model,
-      messages: [
-        {
-          role: 'system',
-          content: `You are a conversation summarizer. Create a concise summary that preserves:
-- Key facts mentioned (names, numbers, preferences)
-- Decisions made
-- Current topic and context
-- Any unresolved questions
-
-Be concise but complete. This summary will be used as context for continuing the conversation.`,
-        },
-        {
-          role: 'user',
-          content: `${existingSummaryContext}Summarize this conversation:\n\n${conversationText}`,
-        },
-      ],
-    })
-
-    this.summary = newSummary
-
-    // Keep only the recent messages
-    this.messages = this.messages.slice(-this.keepRecent)
-
-    console.log(`[Memory] Summarized ${toSummarize.length} messages`)
-    console.log(`[Memory] Summary: ${this.summary.slice(0, 100)}...`)
-  }
-
-  private buildContext(): Message[] {
-    const contextMessages: Message[] = [{ role: 'system', content: this.systemPrompt }]
-
-    // Include summary as a system message if it exists
-    if (this.summary) {
-      contextMessages.push({
-        role: 'system',
-        content: `Previous conversation summary: ${this.summary}`,
-      })
-    }
-
-    // Include recent messages
-    contextMessages.push(...this.messages)
-
-    return contextMessages
-  }
-
-  /** Get current memory state */
-  getMemoryState(): {
-    hasSummary: boolean
-    summaryLength: number
-    recentMessageCount: number
-  } {
-    return {
-      hasSummary: this.summary !== null,
-      summaryLength: this.summary?.length ?? 0,
-      recentMessageCount: this.messages.length,
-    }
-  }
+  let text = state.summarization ? `Previous summary: ${state.summarization.summary}\n\n` : ''
+  text += toSummarize.map((m) => `${m.role}: ${m.content}`).join('\n')
+  return text
 }
-
-// Usage
-const chat = new SummarizingConversation({
-  systemPrompt: 'You are a project planning assistant.',
-  summarizeThreshold: 10, // Summarize after 10 messages
-  keepRecent: 4, // Keep last 4 messages unsummarized
-})
-
-// Simulate a long conversation
-const exchanges = [
-  'My name is Bob and I am planning a web application.',
-  'It should be an e-commerce store for handmade crafts.',
-  'The tech stack will be Next.js with PostgreSQL.',
-  'We need user authentication and a shopping cart.',
-  'The budget is $50,000 and the timeline is 3 months.',
-  'Let us start by defining the database schema.',
-  'What tables do we need for the product catalog?',
-]
-
-for (const msg of exchanges) {
-  console.log(`\nUser: ${msg}`)
-  const response = await chat.send(msg)
-  console.log(`Assistant: ${response.slice(0, 150)}...`)
-}
-
-console.log('\nMemory state:', chat.getMemoryState())
 ```
+
+The strategy factory wraps these helpers and adds `buildContext`:
+
+```typescript
+function createSummarizingStrategy(config: {
+  summarizeThreshold?: number
+  keepRecent?: number
+}): MemoryStrategy & {
+  needsSummarization(state: ConversationState): boolean
+  getSummarizationText(state: ConversationState): string
+} {
+  const threshold = config.summarizeThreshold ?? 20
+  const keepRecent = config.keepRecent ?? 6
+
+  return {
+    buildContext(systemPrompt: string, state: ConversationState): ModelMessage[] {
+      const messages: ModelMessage[] = [{ role: 'system', content: systemPrompt }]
+
+      if (state.summarization) {
+        messages.push({
+          role: 'system',
+          content: `Previous conversation summary: ${state.summarization.summary}`,
+        })
+      }
+
+      const startFrom = state.summarization?.until ?? 0
+      messages.push(...state.history.slice(startFrom))
+
+      return messages
+    },
+
+    needsSummarization(state: ConversationState): boolean {
+      return needsSummarization(state, threshold)
+    },
+
+    getSummarizationText(state: ConversationState): string {
+      return getSummarizationText(state, keepRecent)
+    },
+  }
+}
+```
+
+The chatbot loop calls `needsSummarization()` each turn, and when it returns true, sends `getSummarizationText()` to the LLM and stores the result:
+
+```typescript
+// In the chatbot loop:
+if (strategy.needsSummarization(state)) {
+  const text = strategy.getSummarizationText(state)
+  const { text: summary } = await generateText({
+    model,
+    system: 'Summarize this conversation. Preserve key facts, decisions, and context.',
+    prompt: text,
+  })
+  state.summarization = { summary, until: state.history.length - keepRecent }
+}
+```
+
+Notice: the full history is never truncated. `state.history` always has every message. `summarization.until` tells the strategy where the summary covers up to, so `buildContext` only includes messages *after* that point.
 
 ### The Summarization Prompt Matters
 
@@ -670,7 +570,9 @@ const badSummaryPrompt = `Summarize this conversation briefly.`
 - Some detail is inevitably lost in compression
 - Potential for "summary drift" where errors compound over multiple summarizations
 
-> **Advanced Note:** Summary drift is a real problem in long conversations. Each summarization round can subtly distort facts. Consider periodically including a "fact sheet" of immutable facts (user name, project name, key decisions) that persists independently of the rolling summary.
+> **Advanced Note:** Summary drift is a real problem in long conversations. Each summarization round can subtly distort facts. Consider periodically including a "fact sheet" of immutable facts (user name, project name, key decisions) that persists independently of the rolling summary. The hybrid strategy in the next section addresses this.
+
+> **Advanced Note:** In this module, summarization is triggered by the chatbot loop — the caller checks `needsSummarization()` and makes the LLM call. A cleaner production pattern is to give strategies a `maintain(state, model)` method that handles their own state upkeep (summarization, fact extraction, etc.) internally. The caller just calls `strategy.maintain()` before `buildContext()` without knowing the details. We keep it explicit here so you can see exactly what happens, but consider the `maintain` pattern when building real applications.
 
 ---
 
@@ -685,191 +587,97 @@ The most robust production systems combine multiple strategies. A common pattern
 3. **Rolling summary** of older conversation (updated periodically)
 4. **Sliding window** of recent messages (last N turns)
 
+The fact sheet is the key addition. Facts are key-value pairs (like `name: Jordan`, `company: DataFlow`) that are always injected into context. Unlike summaries, facts don't get compressed or distorted — they survive indefinitely.
+
+### Implementation
+
+The hybrid strategy composes the helpers from Sections 4 and 5. No duplicated logic — `getWindowedMessages` handles the window, `needsSummarization` and `getSummarizationText` handle the summary checks. The only new code is the fact sheet injection:
+
 ```typescript
-import { generateText, type LanguageModel } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+import type { ModelMessage } from 'ai'
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
+function createHybridStrategy(config: {
+  windowSize?: number
+  summarizeThreshold?: number
+}): MemoryStrategy & {
+  needsSummarization(state: ConversationState): boolean
+  getSummarizationText(state: ConversationState): string
+} {
+  const windowSize = config.windowSize ?? 10
+  const threshold = config.summarizeThreshold ?? 20
 
-interface Fact {
-  key: string
-  value: string
-  timestamp: number
-}
+  return {
+    buildContext(systemPrompt: string, state: ConversationState): ModelMessage[] {
+      const parts: ModelMessage[] = []
 
-class HybridConversation {
-  private messages: Message[] = []
-  private summary: string | null = null
-  private facts: Map<string, Fact> = new Map()
-  private systemPrompt: string
-  private model: LanguageModel
-  private windowSize: number
-  private summarizeThreshold: number
+      // 1. System prompt (always first)
+      parts.push({ role: 'system', content: systemPrompt })
 
-  constructor(config: {
-    systemPrompt: string
-    model?: LanguageModel
-    windowSize?: number
-    summarizeThreshold?: number
-  }) {
-    this.systemPrompt = config.systemPrompt
-    this.model = config.model ?? mistral('mistral-small-latest')
-    this.windowSize = config.windowSize ?? 10
-    this.summarizeThreshold = config.summarizeThreshold ?? 20
-  }
-
-  /** Store a persistent fact that survives summarization */
-  setFact(key: string, value: string): void {
-    this.facts.set(key, { key, value, timestamp: Date.now() })
-  }
-
-  /** Remove a persistent fact */
-  removeFact(key: string): void {
-    this.facts.delete(key)
-  }
-
-  async send(userMessage: string): Promise<string> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    // Summarize if history is getting long
-    if (this.messages.length > this.summarizeThreshold) {
-      await this.summarizeOlderMessages()
-    }
-
-    // Extract facts from the conversation (simplified — could use LLM for this)
-    this.extractFacts(userMessage)
-
-    const contextMessages = this.buildContext()
-
-    const { text } = await generateText({
-      model: this.model,
-      messages: contextMessages,
-    })
-
-    this.messages.push({ role: 'assistant', content: text })
-    return text
-  }
-
-  private extractFacts(message: string): void {
-    // Simple pattern-based extraction (in production, use LLM for this)
-    const nameMatch = message.match(/my name is (\w+)/i)
-    if (nameMatch) {
-      this.setFact('user_name', nameMatch[1])
-    }
-
-    const emailMatch = message.match(/my email is ([\w@.]+)/i)
-    if (emailMatch) {
-      this.setFact('user_email', emailMatch[1])
-    }
-  }
-
-  private buildContext(): Message[] {
-    const parts: Message[] = []
-
-    // 1. System prompt (always first)
-    parts.push({ role: 'system', content: this.systemPrompt })
-
-    // 2. Fact sheet (if facts exist)
-    if (this.facts.size > 0) {
-      const factSheet = Array.from(this.facts.values())
-        .map(f => `- ${f.key}: ${f.value}`)
-        .join('\n')
-      parts.push({
-        role: 'system',
-        content: `Known facts about the user:\n${factSheet}`,
-      })
-    }
-
-    // 3. Rolling summary (if exists)
-    if (this.summary) {
-      parts.push({
-        role: 'system',
-        content: `Summary of earlier conversation:\n${this.summary}`,
-      })
-    }
-
-    // 4. Recent messages (sliding window)
-    const recentMessages = this.messages.slice(-this.windowSize)
-    const startIndex = recentMessages.findIndex(m => m.role === 'user')
-    const trimmed = startIndex > 0 ? recentMessages.slice(startIndex) : recentMessages
-    parts.push(...trimmed)
-
-    return parts
-  }
-
-  private async summarizeOlderMessages(): Promise<void> {
-    const toSummarize = this.messages.slice(0, -this.windowSize)
-    if (toSummarize.length === 0) return
-
-    const conversationText = toSummarize.map(m => `${m.role}: ${m.content}`).join('\n')
-
-    const existingSummary = this.summary ? `Previous summary:\n${this.summary}\n\n` : ''
-
-    const { text: newSummary } = await generateText({
-      model: this.model,
-      messages: [
-        {
+      // 2. Fact sheet (if facts exist)
+      const facts = state.facts?.entries
+      if (facts && Object.keys(facts).length > 0) {
+        const factSheet = Object.entries(facts)
+          .map(([k, v]) => `- ${k}: ${v}`)
+          .join('\n')
+        parts.push({
           role: 'system',
-          content: `Summarize this conversation. Preserve key facts, decisions, and context. Be concise.`,
-        },
-        {
-          role: 'user',
-          content: `${existingSummary}New messages to incorporate:\n\n${conversationText}`,
-        },
-      ],
-    })
+          content: `Known facts about the user:\n${factSheet}`,
+        })
+      }
 
-    this.summary = newSummary
-    this.messages = this.messages.slice(-this.windowSize)
-  }
+      // 3. Rolling summary (if exists) — same pattern as summarizing strategy
+      if (state.summarization) {
+        parts.push({
+          role: 'system',
+          content: `Summary of earlier conversation:\n${state.summarization.summary}`,
+        })
+      }
 
-  /** Get a full diagnostic of the memory state */
-  diagnose(): {
-    factCount: number
-    facts: Record<string, string>
-    hasSummary: boolean
-    summaryPreview: string
-    totalMessages: number
-    windowedMessages: number
-  } {
-    const factObj: Record<string, string> = {}
-    for (const [key, fact] of this.facts) {
-      factObj[key] = fact.value
-    }
+      // 4. Recent messages — reuses getWindowedMessages from Section 4
+      parts.push(...getWindowedMessages(state.history, windowSize))
 
-    return {
-      factCount: this.facts.size,
-      facts: factObj,
-      hasSummary: this.summary !== null,
-      summaryPreview: this.summary?.slice(0, 100) ?? '',
-      totalMessages: this.messages.length,
-      windowedMessages: Math.min(this.messages.length, this.windowSize),
-    }
+      return parts
+    },
+
+    // Reuses helpers from Section 5
+    needsSummarization(state: ConversationState): boolean {
+      return needsSummarization(state, threshold)
+    },
+
+    getSummarizationText(state: ConversationState): string {
+      return getSummarizationText(state, windowSize)
+    },
   }
 }
 
 // Usage
-const chat = new HybridConversation({
-  systemPrompt: 'You are a personal assistant. Remember facts about the user and reference them naturally.',
-  windowSize: 8,
-  summarizeThreshold: 16,
+const manager = new ConversationManager({
+  systemPrompt: 'You are a personal assistant.',
+  strategy: createHybridStrategy({ windowSize: 8, summarizeThreshold: 16 }),
 })
 
 // Pre-load some facts
-chat.setFact('timezone', 'PST')
-chat.setFact('preferred_language', 'TypeScript')
-
-const r1 = await chat.send('My name is Sarah. I am working on a React project.')
-console.log('Response:', r1)
-
-const r2 = await chat.send('Can you help me with state management?')
-console.log('Response:', r2)
-
-console.log('\nDiagnosis:', chat.diagnose())
+const state = manager.getState()
+state.facts = { entries: { timezone: 'PST', preferred_language: 'TypeScript' }, extractedUntil: 0 }
 ```
+
+### Strategy Switching in Action
+
+Because state is separate from strategy, switching is trivial:
+
+```typescript
+// Start with a simple window
+const manager = new ConversationManager({
+  systemPrompt: 'You are a helpful assistant.',
+  strategy: createSlidingWindowStrategy(10),
+})
+
+// ... 50 turns later, upgrade to hybrid
+manager.setStrategy(createHybridStrategy({ windowSize: 10, summarizeThreshold: 20 }))
+// All 50 messages are still in state.history — hybrid can summarize them
+```
+
+No history copying, no state reconstruction, no data loss. The new strategy just reads the existing state differently.
 
 ### When to Use Each Strategy
 
@@ -894,130 +702,64 @@ In-memory conversations are lost when the process restarts. For production appli
 - Access conversation history across devices
 - Resume sessions after server restarts
 
-### Saving and Loading from Disk
+### Saving and Loading ConversationState
+
+Because `ConversationState` is a plain data object, persistence is straightforward — serialize it to JSON:
 
 ```typescript
-import { generateText, type LanguageModel } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
-
-interface ConversationData {
+interface SavedConversation {
   id: string
   systemPrompt: string
-  messages: Message[]
-  summary: string | null
-  facts: Record<string, string>
+  state: ConversationState
   createdAt: string
   updatedAt: string
 }
 
-class PersistentConversation {
-  private data: ConversationData
-  private savePath: string
-  private model: LanguageModel
-
-  constructor(config: { id?: string; systemPrompt: string; saveDirectory?: string; model?: LanguageModel }) {
-    const id = config.id ?? crypto.randomUUID()
-    const saveDir = config.saveDirectory ?? './data/conversations'
-
-    this.savePath = `${saveDir}/${id}.json`
-    this.model = config.model ?? mistral('mistral-small-latest')
-
-    this.data = {
-      id,
-      systemPrompt: config.systemPrompt,
-      messages: [],
-      summary: null,
-      facts: {},
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }
+async function saveConversation(
+  filePath: string,
+  id: string,
+  systemPrompt: string,
+  state: ConversationState,
+  createdAt?: string
+): Promise<void> {
+  const data: SavedConversation = {
+    id,
+    systemPrompt,
+    state,
+    createdAt: createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   }
-
-  /** Load a conversation from disk */
-  static async load(filePath: string): Promise<PersistentConversation> {
-    const file = Bun.file(filePath)
-    const exists = await file.exists()
-
-    if (!exists) {
-      throw new Error(`Conversation file not found: ${filePath}`)
-    }
-
-    const data: ConversationData = await file.json()
-
-    const conversation = new PersistentConversation({
-      id: data.id,
-      systemPrompt: data.systemPrompt,
-    })
-    conversation.data = data
-    conversation.savePath = filePath
-
-    return conversation
-  }
-
-  /** Save the conversation to disk */
-  async save(): Promise<void> {
-    this.data.updatedAt = new Date().toISOString()
-
-    // Ensure directory exists
-    const dir = this.savePath.substring(0, this.savePath.lastIndexOf('/'))
-    await Bun.write(this.savePath, JSON.stringify(this.data, null, 2))
-
-    console.log(`[Persistence] Saved to ${this.savePath}`)
-  }
-
-  /** Send a message and auto-save */
-  async send(userMessage: string): Promise<string> {
-    this.data.messages.push({ role: 'user', content: userMessage })
-
-    const { text } = await generateText({
-      model: this.model,
-      messages: [{ role: 'system', content: this.data.systemPrompt }, ...this.data.messages],
-    })
-
-    this.data.messages.push({ role: 'assistant', content: text })
-
-    // Auto-save after each exchange
-    await this.save()
-
-    return text
-  }
-
-  /** Get conversation metadata */
-  getMetadata(): {
-    id: string
-    messageCount: number
-    createdAt: string
-    updatedAt: string
-  } {
-    return {
-      id: this.data.id,
-      messageCount: this.data.messages.length,
-      createdAt: this.data.createdAt,
-      updatedAt: this.data.updatedAt,
-    }
-  }
+  await Bun.write(filePath, JSON.stringify(data, null, 2))
 }
 
-// Usage: Create a new conversation
-const chat = new PersistentConversation({
-  systemPrompt: 'You are a helpful assistant.',
-  saveDirectory: './data/conversations',
-})
-
-await chat.send('Hello! My name is Alex.')
-await chat.send('What is the capital of France?')
-
-console.log('Metadata:', chat.getMetadata())
-
-// Later: Load the conversation back
-// const loaded = await PersistentConversation.load('./data/conversations/<id>.json');
-// const response = await loaded.send('Do you remember my name?');
+async function loadConversation(filePath: string): Promise<SavedConversation> {
+  const file = Bun.file(filePath)
+  if (!(await file.exists())) {
+    throw new Error(`Conversation file not found: ${filePath}`)
+  }
+  return file.json() as Promise<SavedConversation>
+}
 ```
+
+To resume a conversation, load the state and pass it to a new manager:
+
+```typescript
+// Save after each turn
+const id = crypto.randomUUID()
+const savePath = `./data/conversations/${id}.json`
+
+await saveConversation(savePath, id, systemPrompt, manager.getState())
+
+// Later: resume
+const saved = await loadConversation(savePath)
+const manager = new ConversationManager({
+  systemPrompt: saved.systemPrompt,
+  strategy: createSlidingWindowStrategy(10),
+})
+manager.setState(saved.state)
+```
+
+Because the state includes everything — history, summaries, facts — the restored conversation has full fidelity regardless of which strategy you use when resuming. You can even resume with a *different* strategy than the one used when saving.
 
 ### Listing and Managing Conversations
 
@@ -1034,38 +776,29 @@ interface ConversationSummary {
 
 async function listConversations(directory: string): Promise<ConversationSummary[]> {
   const files = await readdir(directory)
-  const jsonFiles = files.filter(f => f.endsWith('.json'))
+  const jsonFiles = files.filter((f) => f.endsWith('.json'))
 
   const summaries: ConversationSummary[] = []
 
   for (const file of jsonFiles) {
     const filePath = `${directory}/${file}`
-    const data = await Bun.file(filePath).json()
+    const data: SavedConversation = await Bun.file(filePath).json()
 
     summaries.push({
       id: data.id,
       filePath,
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
-      messageCount: data.messages.length,
+      messageCount: data.state.history.length,
     })
   }
 
-  // Sort by most recently updated
   summaries.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-
   return summaries
 }
 
 async function deleteConversation(filePath: string): Promise<void> {
   await unlink(filePath)
-  console.log(`Deleted conversation: ${filePath}`)
-}
-
-// Usage
-const conversations = await listConversations('./conversations')
-for (const conv of conversations) {
-  console.log(`${conv.id} - ${conv.messageCount} messages - Updated: ${conv.updatedAt}`)
 }
 ```
 
@@ -1370,11 +1103,11 @@ In this module, you learned:
 
 1. **Multi-turn conversations:** LLMs are stateless — your application must manage the message array and send the full conversation history with every request.
 2. **Context windows:** Each model has a finite token limit, and every message you send consumes tokens, creating a hard ceiling on conversation length.
-3. **Message history management:** Naive approaches of sending all messages work for short conversations but break down as conversations grow in length and cost.
+3. **State and strategy separation:** Keeping conversation state (history, summaries, facts) separate from the memory strategy (how to build context) enables clean strategy switching without data loss.
 4. **Sliding window strategy:** Keeping only the most recent N messages is simple and predictable but loses early context that may be important.
 5. **Summarization strategy:** Using the LLM to compress older messages into a running summary preserves key context while staying within token limits.
-6. **Hybrid approaches:** Combining a summary of old messages with a sliding window of recent messages gives you the best balance of context retention and cost control.
-7. **Conversation persistence:** Saving conversation history to disk enables long-running sessions that survive restarts and can be resumed later.
+6. **Hybrid approaches:** Combining a fact sheet, rolling summary, and sliding window gives the best balance of context retention and cost control. Facts survive summarization without distortion.
+7. **Conversation persistence:** Because `ConversationState` is a plain data object, serializing it to JSON gives full-fidelity save/restore that works with any strategy.
 8. **Token estimation:** Character-based estimation (length/4) provides a practical way to manage token budgets without external libraries.
 
 In Module 5, you will explore what happens when context windows are very large and how prompt caching can dramatically reduce costs for repeated context.
@@ -1477,7 +1210,7 @@ Get a basic chatbot working with one strategy at a time.
 **What to build:**
 
 1. Use `parseArgs` from `node:util` to accept a `--strategy` flag (`window`, `summary`, or `hybrid`) and a `--window-size` flag (default: 20)
-2. Based on the flag, create the matching manager (`SlidingWindowManager`, `SummarizingManager`, or `HybridManager`) from the classes you built in the teaching sections
+2. Based on the flag, create a `ConversationManager` with the matching strategy factory (`createSlidingWindowStrategy()`, `createSummarizingStrategy()`, or `createHybridStrategy()`) from the teaching sections
 3. Set up a read loop (Bun treats `console` as an async iterable — `for await (const line of console)`)
 4. Each turn: add the user message to the manager → call `buildContext()` → pass the result to `generateText` → print the response → add the assistant message to the manager
 5. Support `/quit` to exit
@@ -1508,8 +1241,8 @@ Make the summarizing and hybrid strategies actually summarize when the conversat
 **What to add:**
 
 1. Accept a `--summarize-threshold` flag (default: 30)
-2. After adding the user message each turn, check if the manager has a `needsSummarization()` method and whether it returns `true`
-3. If summarization is needed: call `getSummarizationText()` on the manager, send it to the LLM with a system prompt like `"Summarize this conversation concisely"`, then call `setSummary()` with the result
+2. After adding the user message each turn, check if the strategy has a `needsSummarization()` method and whether it returns `true` for the current state
+3. If summarization is needed: call `strategy.getSummarizationText(state)`, send it to the LLM with a system prompt like `"Summarize this conversation concisely"`, then update `state.summarization = { summary, until: state.history.length - keepRecent }`
 4. This should happen transparently — the user just sees a normal response, but `/stats` will now show a summary exists
 
 **Try it:** Set `--summarize-threshold 6` and `--strategy summary`. Chat for 8+ turns. Run `/stats` to confirm summarization triggered. Check that the model still knows things from early in the conversation.
@@ -1524,7 +1257,7 @@ Give the hybrid strategy its distinguishing feature — a persistent fact sheet 
 
 1. When the hybrid strategy triggers summarization (from Stage 3), make an additional LLM call using structured output (`Output.object()` with a Zod schema) to extract key facts from the messages being summarized
 2. Define a schema for extracted facts — e.g., an array of `{ key: string, value: string }` pairs like `{ key: "name", value: "Jordan" }` or `{ key: "company", value: "DataFlow" }`
-3. Store each extracted fact via `manager.setFact(key, value)` — these persist in the context even after the original messages are summarized away
+3. Store each extracted fact in `state.facts.entries` via `manager.getState()` — e.g., `state.facts.entries[key] = value`. These persist in the context even after the original messages are summarized away
 4. Update `/stats` to show the current fact sheet when using hybrid
 
 This is where Module 3 (structured output) connects back — you are using Zod schemas and `Output.object()` to extract structured data from unstructured conversation. By extracting facts at summarization time rather than every turn, you avoid unnecessary LLM calls and focus on capturing exactly the information that would otherwise be lost.
@@ -1539,9 +1272,9 @@ Make conversations survive restarts and let users switch strategies mid-conversa
 
 **What to add:**
 
-1. After each turn (user message + assistant response), auto-save the conversation to a JSON file — you can use `ConversationStore` from `src/memory/persistence.ts` or write your own serialization
-2. On startup, check if a save file exists and load it to resume the conversation
-3. `/strategy <name>` — switch to a different strategy mid-conversation. The key design decision: how do you transfer the existing history to the new manager? Think about whether you create a fresh manager and replay the history, or share a reference to the same history array.
+1. After each turn (user message + assistant response), auto-save the conversation to a JSON file using `saveConversation()` from the teaching sections, or write your own serialization
+2. On startup, check if a save file exists and load it with `loadConversation()`, then restore via `manager.setState(saved.state)`
+3. `/strategy <name>` — switch to a different strategy mid-conversation using `manager.setStrategy()`. Because state is separate from strategy, this is trivial — the history, summaries, and facts are all preserved automatically.
 
 **Try it:** Start with `--strategy window`, chat for a few turns, `/quit`, restart — verify the conversation continues. Then try `/strategy hybrid` mid-conversation and confirm the history carries over.
 
