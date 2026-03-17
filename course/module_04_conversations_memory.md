@@ -1516,7 +1516,24 @@ Make the summarizing and hybrid strategies actually summarize when the conversat
 
 ---
 
-#### Stage 4: Persistence & Strategy Switching
+#### Stage 4: Fact Extraction (Hybrid Strategy)
+
+Give the hybrid strategy its distinguishing feature — a persistent fact sheet that survives summarization.
+
+**What to add:**
+
+1. When the hybrid strategy triggers summarization (from Stage 3), make an additional LLM call using structured output (`Output.object()` with a Zod schema) to extract key facts from the messages being summarized
+2. Define a schema for extracted facts — e.g., an array of `{ key: string, value: string }` pairs like `{ key: "name", value: "Jordan" }` or `{ key: "company", value: "DataFlow" }`
+3. Store each extracted fact via `manager.setFact(key, value)` — these persist in the context even after the original messages are summarized away
+4. Update `/stats` to show the current fact sheet when using hybrid
+
+This is where Module 3 (structured output) connects back — you are using Zod schemas and `Output.object()` to extract structured data from unstructured conversation. By extracting facts at summarization time rather than every turn, you avoid unnecessary LLM calls and focus on capturing exactly the information that would otherwise be lost.
+
+**Try it:** Run with `--strategy hybrid --summarize-threshold 6`. Tell the bot your name, your job, and your favourite programming language. Chat until summarization triggers. Run `/stats` — the facts should be preserved in the fact sheet even though the original messages were summarized.
+
+---
+
+#### Stage 5: Persistence & Strategy Switching
 
 Make conversations survive restarts and let users switch strategies mid-conversation.
 
@@ -1535,6 +1552,7 @@ Make conversations survive restarts and let users switch strategies mid-conversa
 - All three strategies produce different context arrays for the same conversation
 - `/stats` accurately reports memory state for each strategy
 - Token count is displayed after each exchange
+- Hybrid strategy extracts and maintains a persistent fact sheet
 - Conversation persists across restarts
 - `/strategy` switching preserves conversation history
 
