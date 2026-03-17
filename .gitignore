@@ -4,5 +4,6 @@ progress.json
 course/preferences.toml
 .env
 *.log
+data/
 .claude/settings.local.json
 

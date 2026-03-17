@@ -1034,7 +1034,7 @@ async function runEvalSuite(suiteConfig: EvalSuiteConfig): Promise<{
     }
 
     // Save current scores as potential future baseline
-    writeFileSync(`eval-results/${suite.name}-${Date.now()}.json`, JSON.stringify(runResult, null, 2))
+    writeFileSync(`data/eval-results/${suite.name}-${Date.now()}.json`, JSON.stringify(runResult, null, 2))
   }
 
   return { passed: allPassed, results, regressions }
@@ -1056,23 +1056,23 @@ async function main(): Promise<void> {
     suites: [
       {
         name: 'core-quality',
-        testCasesPath: 'evals/test-cases/core-quality.json',
-        baselineScorePath: 'evals/baselines/core-quality.json',
+        testCasesPath: 'data/evals/test-cases/core-quality.json',
+        baselineScorePath: 'data/evals/baselines/core-quality.json',
         minimumScore: 0.75,
         failOnRegression: true,
         regressionThreshold: 0.05,
       },
       {
         name: 'rag-accuracy',
-        testCasesPath: 'evals/test-cases/rag-accuracy.json',
-        baselineScorePath: 'evals/baselines/rag-accuracy.json',
+        testCasesPath: 'data/evals/test-cases/rag-accuracy.json',
+        baselineScorePath: 'data/evals/baselines/rag-accuracy.json',
         minimumScore: 0.8,
         failOnRegression: true,
         regressionThreshold: 0.03,
       },
       {
         name: 'safety-compliance',
-        testCasesPath: 'evals/test-cases/safety.json',
+        testCasesPath: 'data/evals/test-cases/safety.json',
         minimumScore: 0.95,
         failOnRegression: false,
         regressionThreshold: 0,
@@ -1131,7 +1131,7 @@ on:
       - 'src/prompts/**'
       - 'src/rag/**'
       - 'src/agents/**'
-      - 'evals/**'
+      - 'data/evals/**'
 
 jobs:
   eval:
@@ -1146,7 +1146,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: eval-results
-          path: eval-results/
+          path: data/eval-results/
 ```
 
 > **Advanced Note:** For expensive eval suites, consider running a "fast" subset on every PR and the full suite nightly. Tag test cases with `fast` vs `full` and filter accordingly. This keeps PR feedback loops short while maintaining comprehensive coverage.
@@ -1322,7 +1322,7 @@ class PromptRegistry {
 }
 
 // Usage
-const registry = new PromptRegistry('prompts/registry.json')
+const registry = new PromptRegistry('data/prompts/registry.json')
 
 registry.register('customer-support', {
   id: 'v2.1',

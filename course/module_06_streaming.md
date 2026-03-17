@@ -709,7 +709,7 @@ async function streamToFile(prompt: string, outputPath: string): Promise<void> {
   console.log(`Wrote ${tokenCount} chunks to ${outputPath}`)
 }
 
-await streamToFile('Write a detailed guide to TypeScript generics.', './output/generics-guide.txt')
+await streamToFile('Write a detailed guide to TypeScript generics.', './data/output/generics-guide.txt')
 ```
 
 ### Rate-Limited Streaming

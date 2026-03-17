@@ -922,7 +922,7 @@ class PersistentConversation {
 
   constructor(config: { id?: string; systemPrompt: string; saveDirectory?: string; model?: LanguageModel }) {
     const id = config.id ?? crypto.randomUUID()
-    const saveDir = config.saveDirectory ?? './conversations'
+    const saveDir = config.saveDirectory ?? './data/conversations'
 
     this.savePath = `${saveDir}/${id}.json`
     this.model = config.model ?? mistral('mistral-small-latest')
@@ -1006,7 +1006,7 @@ class PersistentConversation {
 // Usage: Create a new conversation
 const chat = new PersistentConversation({
   systemPrompt: 'You are a helpful assistant.',
-  saveDirectory: './conversations',
+  saveDirectory: './data/conversations',
 })
 
 await chat.send('Hello! My name is Alex.')
@@ -1015,7 +1015,7 @@ await chat.send('What is the capital of France?')
 console.log('Metadata:', chat.getMetadata())
 
 // Later: Load the conversation back
-// const loaded = await PersistentConversation.load('./conversations/<id>.json');
+// const loaded = await PersistentConversation.load('./data/conversations/<id>.json');
 // const response = await loaded.send('Do you remember my name?');
 ```
 

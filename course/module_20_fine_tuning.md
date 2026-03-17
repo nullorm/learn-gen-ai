@@ -305,7 +305,7 @@ function writeTrainingData(examples: FineTuningExample[], outputPath: string): v
   console.log(`Wrote ${examples.length} examples to ${outputPath}`)
 }
 
-writeTrainingData(trainingExamples, 'training-data/support-v1.jsonl')
+writeTrainingData(trainingExamples, 'data/training-data/support-v1.jsonl')
 ```
 
 ### Multi-Turn Conversation Data

@@ -1316,7 +1316,7 @@ console.log(`Rejected: ${summary.rejected}`)
 console.log(`Approval rate: ${(summary.approvalRate * 100).toFixed(0)}%`)
 
 // Export for compliance
-// await Bun.write("audit-log.json", audit.exportJSON());
+// await Bun.write("data/audit-log.json", audit.exportJSON());
 ```
 
 > **Advanced Note:** For regulatory compliance (GDPR, HIPAA, SOX), audit logs typically need to be immutable (append-only), timestamped with a trusted clock, and stored in a tamper-evident manner. Consider using a dedicated audit logging service or write-once storage in production.
