@@ -1321,6 +1321,8 @@ export function benchmarkStrategy(
 ): Promise<BenchmarkResult>
 ```
 
-The test will handle conversation generation, recall checking, and printing the comparison table. Your job is just the benchmark loop.
+The test provides 24 hardcoded user messages with facts planted in the first 3 messages (name, location, company, language). It also runs recall questions after each benchmark to measure how well each strategy preserves early context. Your job is just the benchmark loop.
+
+> **Note for Claude Code:** When writing the test file for this exercise, generate a realistic 20-30 message conversation yourself and hardcode it. Plant the `TestFacts` values (name, location, company, language) in the first 3 messages. Do not call the LLM to generate test messages at test time — that adds latency and nondeterminism.
 
 **Try it:** Run `bun test tests/memory/benchmark.test.ts` to validate your implementation.
