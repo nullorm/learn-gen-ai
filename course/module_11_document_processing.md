@@ -1805,7 +1805,7 @@ You are processing a 500-page technical manual for a RAG system. The manual has 
 
 **Specification:**
 
-1. Create `src/exercises/ex11-document-pipeline.ts`
+1. Create `src/exercises/m11/ex01-document-pipeline.ts`
 2. Implement a `processDocument` function that:
    - Accepts a file path (PDF or markdown)
    - Detects the file type from the extension
@@ -1843,7 +1843,7 @@ Chunk hierarchy:
 **Test specification:**
 
 ```typescript
-// tests/ex11.test.ts
+// tests/exercises/m11/ex01-document-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 11: Document Processing Pipeline', () => {
@@ -1885,7 +1885,7 @@ describe('Exercise 11: Document Processing Pipeline', () => {
 
 **Specification:**
 
-1. Create `src/exercises/ex11-incremental.ts`
+1. Create `src/exercises/m11/ex02-incremental.ts`
 2. Implement a `DocumentTracker` class that:
    - Maintains a record of all processed documents (path, hash, chunk IDs)
    - Detects added, modified, and deleted documents
@@ -1902,7 +1902,7 @@ describe('Exercise 11: Document Processing Pipeline', () => {
 **Test specification:**
 
 ```typescript
-// tests/ex11-incremental.test.ts
+// tests/exercises/m11/ex02-incremental.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 11: Incremental Updates', () => {

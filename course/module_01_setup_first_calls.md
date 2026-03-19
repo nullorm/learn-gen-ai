@@ -1768,7 +1768,7 @@ You have a production application that makes 100 LLM calls per minute. Occasiona
 
 **Specification:**
 
-1. Create a file `src/exercises/ex01-first-call.ts`
+1. Create a file `src/exercises/m01/ex01-first-call.ts`
 2. Export an async function `firstCall(): Promise<{ text: string; tokens: number; finishReason: string }>`
 3. Use `generateText` with the Mistral provider to ask `"What is TypeScript? Answer in one sentence."`
 4. Return an object with the `text`, `totalTokens` from usage, and `finishReason`
@@ -1777,7 +1777,7 @@ You have a production application that makes 100 LLM calls per minute. Occasiona
 **Test specification:**
 
 ```typescript
-// tests/ex01.test.ts
+// tests/exercises/m01/ex01-first-call.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 1: First Call', () => {
@@ -1798,7 +1798,7 @@ describe('Exercise 1: First Call', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex02-provider-factory.ts`
+1. Create a file `src/exercises/m01/ex02-provider-factory.ts`
 2. Define a type `ProviderName = 'anthropic' | 'openai'`
 3. Export a function `createModel(provider: ProviderName, modelId?: string): LanguageModel`
 4. If no `modelId` is provided, use sensible defaults:
@@ -1810,7 +1810,7 @@ describe('Exercise 1: First Call', () => {
 **Test specification:**
 
 ```typescript
-// tests/ex02.test.ts
+// tests/exercises/m01/ex02-provider-factory.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 2: Provider Factory', () => {
@@ -1843,7 +1843,7 @@ describe('Exercise 2: Provider Factory', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex03-temperature-comparison.ts`
+1. Create a file `src/exercises/m01/ex03-temperature-comparison.ts`
 2. Export an async function `compareTemperatures(prompt: string, temperatures: number[], runs: number): Promise<TemperatureResult[]>`
 3. Define the `TemperatureResult` type:
    ```typescript
@@ -1890,7 +1890,7 @@ Temperature 1.0:
 **Test specification:**
 
 ```typescript
-// tests/ex03.test.ts
+// tests/exercises/m01/ex03-temperature-comparison.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 3: Temperature Comparison', () => {
@@ -1916,7 +1916,7 @@ describe('Exercise 3: Temperature Comparison', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex04-streaming-timing.ts`
+1. Create a file `src/exercises/m01/ex04-streaming-timing.ts`
 2. Export an async function `streamWithTiming(prompt: string): Promise<StreamingMetrics>`
 3. Define the `StreamingMetrics` type:
    ```typescript
@@ -1952,7 +1952,7 @@ Speed: 168.9 chars/sec
 **Test specification:**
 
 ```typescript
-// tests/ex04.test.ts
+// tests/exercises/m01/ex04-streaming-timing.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 4: Streaming with Timing', () => {

@@ -1193,13 +1193,31 @@ The fact sheet stores critical persistent information (like the user's name, pro
 
 ## Exercises
 
+### Exercise Prep: Shared Conversation Runner
+
+Before the exercises, build a reusable conversation runner that both exercises will import. This avoids duplicating the summarization and fact extraction logic.
+
+**File:** `src/memory/runner.ts`
+
+**What to build:**
+
+1. A `createStrategy(name, config)` factory function that returns the right strategy given a name (`'window'`, `'summary'`, or `'hybrid'`) and config (`windowSize`, `summarizeThreshold`)
+2. A `runMaintenance(state, strategy, model)` function that checks if the strategy needs summarization, runs the LLM summarization call if so, and (for hybrid) extracts facts using structured output. This is the "check → summarize → extract" loop that both the chatbot and benchmark need.
+3. A Zod schema for fact extraction — e.g., `z.object({ facts: z.record(z.string(), z.string()) })`
+
+The key insight: `runMaintenance` encapsulates the side-effectful part (LLM calls for summarization and fact extraction) so that strategies stay pure. Both exercises call `runMaintenance(state, strategy, model)` each turn and don't need to know the details.
+
+**Try it:** Import and use `createStrategy` and `runMaintenance` from a test script. Create a manager, add a few messages, call `runMaintenance` — verify it summarizes when the threshold is hit.
+
+---
+
 ### Exercise 1: Configurable Memory Strategy Chatbot
 
 Build a command-line chatbot that supports all three memory strategies. You will build this incrementally across four stages, each adding one layer of functionality. Get each stage working before moving to the next.
 
-**File:** `src/exercises/ex14-chatbot.ts`
+**File:** `src/exercises/m04/ex01-chatbot.ts`
 
-**Run with:** `bun run src/exercises/ex14-chatbot.ts --strategy window`
+**Run with:** `bun run src/exercises/m04/ex01-chatbot.ts --strategy window`
 
 ---
 
@@ -1210,7 +1228,7 @@ Get a basic chatbot working with one strategy at a time.
 **What to build:**
 
 1. Use `parseArgs` from `node:util` to accept a `--strategy` flag (`window`, `summary`, or `hybrid`) and a `--window-size` flag (default: 20)
-2. Based on the flag, create a `ConversationManager` with the matching strategy factory (`createSlidingWindowStrategy()`, `createSummarizingStrategy()`, or `createHybridStrategy()`) from the teaching sections
+2. Use `createStrategy()` from the exercise prep to create a `ConversationManager` with the matching strategy
 3. Set up a read loop (Bun treats `console` as an async iterable — `for await (const line of console)`)
 4. Each turn: add the user message to the manager → call `buildContext()` → pass the result to `generateText` → print the response → add the assistant message to the manager
 5. Support `/quit` to exit
@@ -1234,39 +1252,21 @@ Add observability so you can see what the memory strategy is actually doing.
 
 ---
 
-#### Stage 3: Auto-Summarization
+#### Stage 3: Auto-Summarization & Fact Extraction
 
-Make the summarizing and hybrid strategies actually summarize when the conversation grows long.
+Make the summarizing and hybrid strategies actually summarize when the conversation grows long, and extract facts for hybrid.
 
 **What to add:**
 
 1. Accept a `--summarize-threshold` flag (default: 30)
-2. After adding the user message each turn, check if the strategy has a `needsSummarization()` method and whether it returns `true` for the current state
-3. If summarization is needed: call `strategy.getSummarizationText(state)`, send it to the LLM with a system prompt like `"Summarize this conversation concisely"`, then update `state.summarization = { summary, until: state.history.length - keepRecent }`
-4. This should happen transparently — the user just sees a normal response, but `/stats` will now show a summary exists
+2. Each turn, call `runMaintenance(state, strategy, model)` from the exercise prep before building context. This handles summarization and fact extraction transparently.
+3. Update `/stats` to show summary info and (for hybrid) the fact sheet
 
-**Try it:** Set `--summarize-threshold 6` and `--strategy summary`. Chat for 8+ turns. Run `/stats` to confirm summarization triggered. Check that the model still knows things from early in the conversation.
-
----
-
-#### Stage 4: Fact Extraction (Hybrid Strategy)
-
-Give the hybrid strategy its distinguishing feature — a persistent fact sheet that survives summarization.
-
-**What to add:**
-
-1. When the hybrid strategy triggers summarization (from Stage 3), make an additional LLM call using structured output (`Output.object()` with a Zod schema) to extract key facts from the messages being summarized
-2. Define a schema for extracted facts — e.g., an array of `{ key: string, value: string }` pairs like `{ key: "name", value: "Jordan" }` or `{ key: "company", value: "DataFlow" }`
-3. Store each extracted fact in `state.facts.entries` via `manager.getState()` — e.g., `state.facts.entries[key] = value`. These persist in the context even after the original messages are summarized away
-4. Update `/stats` to show the current fact sheet when using hybrid
-
-This is where Module 3 (structured output) connects back — you are using Zod schemas and `Output.object()` to extract structured data from unstructured conversation. By extracting facts at summarization time rather than every turn, you avoid unnecessary LLM calls and focus on capturing exactly the information that would otherwise be lost.
-
-**Try it:** Run with `--strategy hybrid --summarize-threshold 6`. Tell the bot your name, your job, and your favourite programming language. Chat until summarization triggers. Run `/stats` — the facts should be preserved in the fact sheet even though the original messages were summarized.
+**Try it:** Set `--summarize-threshold 6` and `--strategy hybrid`. Tell the bot your name, your job, and your favourite programming language. Chat until summarization triggers. Run `/stats` — the facts should be preserved even though the original messages were summarized.
 
 ---
 
-#### Stage 5: Persistence & Strategy Switching
+#### Stage 4: Persistence & Strategy Switching
 
 Make conversations survive restarts and let users switch strategies mid-conversation.
 
@@ -1274,7 +1274,7 @@ Make conversations survive restarts and let users switch strategies mid-conversa
 
 1. After each turn (user message + assistant response), auto-save the conversation to a JSON file using `saveConversation()` from the teaching sections, or write your own serialization
 2. On startup, check if a save file exists and load it with `loadConversation()`, then restore via `manager.setState(saved.state)`
-3. `/strategy <name>` — switch to a different strategy mid-conversation using `manager.setStrategy()`. Because state is separate from strategy, this is trivial — the history, summaries, and facts are all preserved automatically.
+3. `/strategy <name>` — switch to a different strategy mid-conversation using `manager.setStrategy()` and `createStrategy()`. Because state is separate from strategy, this is trivial — the history, summaries, and facts are all preserved automatically.
 
 **Try it:** Start with `--strategy window`, chat for a few turns, `/quit`, restart — verify the conversation continues. Then try `/strategy hybrid` mid-conversation and confirm the history carries over.
 
@@ -1291,55 +1291,36 @@ Make conversations survive restarts and let users switch strategies mid-conversa
 
 ### Exercise 2: Memory Strategy Comparison
 
-Write a script that runs the same 20-turn conversation through all three memory strategies and compares:
+Write a benchmark function that runs a conversation through a memory strategy and tracks token usage.
 
-1. Total tokens sent across all turns
-2. Total estimated cost
-3. Whether the model can recall information from turn 1 at turn 20
-4. Response quality (manual evaluation)
+**File:** `src/exercises/m04/ex02-benchmark.ts`
 
-**Requirements:**
+**What to build:**
+
+Export a `benchmarkStrategy(name, messages, config?)` function that:
+
+1. Creates a `ConversationManager` with `createStrategy(name, config)` from the exercise prep
+2. Runs each message through the manager, calling `runMaintenance()` and `generateText` each turn
+3. Tracks input/output tokens from `resp.usage` per turn (include maintenance tokens too)
+4. Returns an object with `totalInputTokens`, `totalOutputTokens`, and the `manager` (so the test can run recall questions on the same conversation state afterward)
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+import type { ConversationManager } from '../../memory/manager.js'
+import type { StrategyName, StrategyConfig } from '../../memory/runner.js'
 
 interface BenchmarkResult {
-  strategy: string
   totalInputTokens: number
   totalOutputTokens: number
-  estimatedCost: number
-  recallAccuracy: number // 0-1: can the model recall facts from early turns?
-  turns: number
+  manager: ConversationManager
 }
 
-async function benchmarkStrategy(strategyName: string, messages: string[]): Promise<BenchmarkResult> {
-  // TODO: Run the conversation through the specified strategy
-  // TODO: After all turns, ask recall questions about early facts
-  // TODO: Calculate total tokens and cost
-  throw new Error('Not implemented')
-}
-
-// The test conversation
-const testMessages = [
-  'My name is Jordan and I live in Portland.',
-  'I work as a data engineer at a startup called DataFlow.',
-  'We use Python and Apache Spark for our data pipelines.',
-  'Our biggest challenge is handling 10TB of daily event data.',
-  'Can you suggest an architecture for real-time processing?',
-  // ... 15 more messages about the project
-  // Final: 'What was my name and what company do I work for?'
-]
-
-// TODO: Run benchmarks and print comparison table
+export function benchmarkStrategy(
+  name: StrategyName,
+  messages: string[],
+  config?: StrategyConfig
+): Promise<BenchmarkResult>
 ```
 
-**Output should look like:**
+The test will handle conversation generation, recall checking, and printing the comparison table. Your job is just the benchmark loop.
 
-```
-Strategy    | Input Tokens | Output Tokens | Cost    | Recall
-------------|-------------|---------------|---------|-------
-window      | 12,450      | 8,200         | $0.045  | 0.4
-summary     | 15,800      | 9,100         | $0.062  | 0.9
-hybrid      | 14,200      | 8,800         | $0.055  | 0.95
-```
+**Try it:** Run `bun test tests/memory/benchmark.test.ts` to validate your implementation.

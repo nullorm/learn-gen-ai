@@ -1508,7 +1508,7 @@ Your RAG system processes a mix of 1000 text documents and 200 architecture diag
 
 **Specification:**
 
-1. Create `src/exercises/ex13-multimodal-qa.ts`
+1. Create `src/exercises/m13/ex01-multimodal-qa.ts`
 2. Implement a `multiModalQA` function that:
    - Accepts a question (string) and an optional image path
    - If an image is provided, includes it in the context
@@ -1549,7 +1549,7 @@ Source: combined
 **Test specification:**
 
 ```typescript
-// tests/ex13.test.ts
+// tests/exercises/m13/ex01-multimodal-qa.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 13: Multi-modal Q&A', () => {
@@ -1580,7 +1580,7 @@ describe('Exercise 13: Multi-modal Q&A', () => {
 
 **Specification:**
 
-1. Create `src/exercises/ex13-image-extraction.ts`
+1. Create `src/exercises/m13/ex02-image-extraction.ts`
 2. Implement extractors for three image types:
    - **Table extractor:** Extracts headers and rows, outputs as JSON and CSV
    - **Form extractor:** Extracts field labels and values, outputs as key-value pairs
@@ -1596,7 +1596,7 @@ describe('Exercise 13: Multi-modal Q&A', () => {
 **Test specification:**
 
 ```typescript
-// tests/ex13-extraction.test.ts
+// tests/exercises/m13/ex02-image-extraction.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 13: Image Data Extraction', () => {

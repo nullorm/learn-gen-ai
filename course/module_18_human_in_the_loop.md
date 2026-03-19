@@ -1644,7 +1644,7 @@ In a graceful degradation system with `auto_approve_low_risk` fallback, a "criti
 
 **Specification:**
 
-1. Create a file `src/exercises/ex18-approval-agent.ts`
+1. Create a file `src/exercises/m18/ex01-approval-agent.ts`
 2. Export an async function `approvalAgent(task: string, options?: ApprovalAgentOptions): Promise<ApprovalAgentResult>`
 3. Define the types:
 
@@ -1722,7 +1722,7 @@ console.log(`Human-rejected: ${result.humanRejected}`)
 **Test specification:**
 
 ```typescript
-// tests/ex18.test.ts
+// tests/exercises/m18/ex01-approval-agent.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 18: Approval Agent', () => {
@@ -1779,7 +1779,7 @@ describe('Exercise 18: Approval Agent', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex18-audit-trail.ts`
+1. Create a file `src/exercises/m18/ex02-audit-trail.ts`
 2. Export the `AuditTrail` class and `auditedPipeline` function
 3. Define the types:
 
@@ -1827,7 +1827,7 @@ async function auditedPipeline(
 **Test specification:**
 
 ```typescript
-// tests/ex18-audit.test.ts
+// tests/exercises/m18/ex02-audit-trail.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 18: Audit Trail', () => {

@@ -1540,7 +1540,7 @@ What is the primary risk of using conversation history as the agent's only form 
 
 **Specification:**
 
-1. Create a file `src/exercises/ex14-react-research-agent.ts`
+1. Create a file `src/exercises/m14/ex01-react-research-agent.ts`
 2. Export an async function `researchAgent(question: string, options?: AgentOptions): Promise<ResearchResult>`
 3. Define the types:
 
@@ -1622,7 +1622,7 @@ Steps: 5, Tool calls: 4, Duration: 5,892ms
 **Test specification:**
 
 ```typescript
-// tests/ex14.test.ts
+// tests/exercises/m14/ex01-react-research-agent.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 14: ReAct Research Agent', () => {
@@ -1669,7 +1669,7 @@ describe('Exercise 14: ReAct Research Agent', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex14-memory-agent.ts`
+1. Create a file `src/exercises/m14/ex02-memory-agent.ts`
 2. Export an async function `memoryAgent(task: string, options?: MemoryAgentOptions): Promise<MemoryAgentResult>`
 3. Define the types:
 
@@ -1707,7 +1707,7 @@ interface MemoryAgentResult {
 **Test specification:**
 
 ```typescript
-// tests/ex14-memory.test.ts
+// tests/exercises/m14/ex02-memory-agent.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 14: Memory Agent', () => {

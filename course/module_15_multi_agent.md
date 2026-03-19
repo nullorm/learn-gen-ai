@@ -1573,7 +1573,7 @@ In a multi-agent system, why is a circuit breaker pattern useful?
 
 **Specification:**
 
-1. Create a file `src/exercises/ex15-multi-agent-pipeline.ts`
+1. Create a file `src/exercises/m15/ex01-multi-agent-pipeline.ts`
 2. Export an async function `multiAgentArticle(topic: string, options?: PipelineOptions): Promise<PipelineResult>`
 3. Define the types:
 
@@ -1631,7 +1631,7 @@ console.log(`Review feedback: ${result.reviewFeedback.join('; ')}`)
 **Test specification:**
 
 ```typescript
-// tests/ex15.test.ts
+// tests/exercises/m15/ex01-multi-agent-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 15: Multi-Agent Article Pipeline', () => {
@@ -1679,7 +1679,7 @@ describe('Exercise 15: Multi-Agent Article Pipeline', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex15-support-router.ts`
+1. Create a file `src/exercises/m15/ex02-support-router.ts`
 2. Export an async function `handleSupportRequest(message: string): Promise<SupportResult>`
 3. Define the types:
 
@@ -1705,7 +1705,7 @@ interface SupportResult {
 **Test specification:**
 
 ```typescript
-// tests/ex15-support.test.ts
+// tests/exercises/m15/ex02-support-router.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 15: Support Router', () => {

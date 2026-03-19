@@ -1361,7 +1361,7 @@ A code generation system passes static analysis and runs in a sandbox, but the g
 
 **Specification:**
 
-1. Create a file `src/exercises/ex17-tdd-codegen.ts`
+1. Create a file `src/exercises/m17/ex01-tdd-codegen.ts`
 2. Export an async function `generateToPassTests(spec: FunctionSpec): Promise<CodeGenResult>`
 3. Define the types:
 
@@ -1424,7 +1424,7 @@ console.log(`Passed: ${result.testsPass}, Attempts: ${result.attempts}`)
 **Test specification:**
 
 ```typescript
-// tests/ex17.test.ts
+// tests/exercises/m17/ex01-tdd-codegen.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 17: TDD Code Generation', () => {
@@ -1483,7 +1483,7 @@ describe("impossible", () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex17-review-pipeline.ts`
+1. Create a file `src/exercises/m17/ex02-review-pipeline.ts`
 2. Export an async function `reviewAndImprove(code: string, options?: ReviewOptions): Promise<ReviewResult>`
 3. Define the types:
 
@@ -1526,7 +1526,7 @@ interface ReviewResult {
 **Test specification:**
 
 ```typescript
-// tests/ex17-review.test.ts
+// tests/exercises/m17/ex02-review-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 17: Code Review Pipeline', () => {

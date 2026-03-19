@@ -1435,7 +1435,7 @@ What is the main advantage of composable chain functions over monolithic pipelin
 
 **Specification:**
 
-1. Create a file `src/exercises/ex16-content-pipeline.ts`
+1. Create a file `src/exercises/m16/ex01-content-pipeline.ts`
 2. Export an async function `contentPipeline(topic: string, options?: PipelineOptions): Promise<PipelineResult>`
 3. Define the types:
 
@@ -1491,7 +1491,7 @@ console.log(`Review score: ${result.reviewScore}/10`)
 **Test specification:**
 
 ```typescript
-// tests/ex16.test.ts
+// tests/exercises/m16/ex01-content-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 16: Content Pipeline', () => {
@@ -1539,7 +1539,7 @@ describe('Exercise 16: Content Pipeline', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/ex16-composable-chains.ts`
+1. Create a file `src/exercises/m16/ex02-composable-chains.ts`
 2. Export these composable step functions:
 
 ```typescript
@@ -1563,7 +1563,7 @@ export function pipeline<T>(...steps: Array<(input: any) => Promise<any>>): (inp
 **Test specification:**
 
 ```typescript
-// tests/ex16-composable.test.ts
+// tests/exercises/m16/ex02-composable-chains.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 16: Composable Chains', () => {

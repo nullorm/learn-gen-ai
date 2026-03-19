@@ -1963,7 +1963,7 @@ You run an assessment suite and find: context relevance = 0.9, faithfulness = 0.
 
 **Specification:**
 
-1. Create `src/exercises/ex10-advanced-rag.ts`
+1. Create `src/exercises/m10/ex01-advanced-rag.ts`
 2. Implement three pipeline variants:
    - **Naive:** Direct query embedding + top-5 retrieval (from Module 9)
    - **HyDE:** Generate hypothetical document, embed it, top-10 retrieval
@@ -1993,7 +1993,7 @@ Improvement (Naive -> HyDE+Rerank):
 **Test specification:**
 
 ```typescript
-// tests/ex10.test.ts
+// tests/exercises/m10/ex01-advanced-rag.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 10: Advanced RAG', () => {
@@ -2038,7 +2038,7 @@ describe('Exercise 10: Advanced RAG', () => {
 
 **Specification:**
 
-1. Create `src/exercises/ex10-hybrid-search.ts`
+1. Create `src/exercises/m10/ex02-hybrid-search.ts`
 2. Implement the BM25 index and scoring from this module
 3. Implement hybrid search with configurable semantic/keyword weighting
 4. Create a test suite with two categories of queries:
@@ -2053,7 +2053,7 @@ describe('Exercise 10: Advanced RAG', () => {
 **Test specification:**
 
 ```typescript
-// tests/ex10-hybrid.test.ts
+// tests/exercises/m10/ex02-hybrid-search.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 10: Hybrid Search', () => {

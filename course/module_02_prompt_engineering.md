@@ -1317,7 +1317,7 @@ You have a classification prompt that works perfectly with Claude but returns in
 
 **Specification:**
 
-1. Create a file `src/exercises/ex05-code-review-prompt.ts`
+1. Create a file `src/exercises/m02/ex01-code-review-prompt.ts`
 2. Export a function `reviewCode(code: string, language: string): Promise<string>` that uses `generateText` with a carefully crafted system prompt
 3. The system prompt must define a role, specify focus areas (correctness, type safety, performance, security), and require a structured output format
 4. The output format should include: issue description, severity (critical/warning/info), the problematic code, and a fix
@@ -1331,7 +1331,7 @@ You have a classification prompt that works perfectly with Claude but returns in
 
 **Specification:**
 
-1. Create a file `src/exercises/ex06-few-shot-classifier.ts`
+1. Create a file `src/exercises/m02/ex02-few-shot-classifier.ts`
 2. Define an interface:
    ```typescript
    interface ClassifierConfig {
@@ -1353,7 +1353,7 @@ You have a classification prompt that works perfectly with Claude but returns in
 
 **Specification:**
 
-1. Create a file `src/exercises/ex07-cot-math-solver.ts`
+1. Create a file `src/exercises/m02/ex03-cot-math-solver.ts`
 2. Export an async function `solveMathProblem(problem: string): Promise<{ reasoning: string; answer: string }>`
 3. Use a system prompt that requires the model to follow a structured reasoning format (Given, Steps, Answer)
 4. Parse the response to extract the reasoning and final answer separately
@@ -1367,7 +1367,7 @@ You have a classification prompt that works perfectly with Claude but returns in
 
 **Specification:**
 
-1. Create a file `src/exercises/ex08-template-registry.ts`
+1. Create a file `src/exercises/m02/ex04-template-registry.ts`
 2. Import `interpolate` from `../prompts/templates.js`
 3. Register at least three named templates (translation, summarization, code explanation) in a `Map<string, string>` — each template uses `{{variable}}` placeholders
 4. Export a `renderTemplate(name: string, variables: Record<string, string>)` function that looks up the template by name and renders it with `interpolate`
@@ -1381,7 +1381,7 @@ You have a classification prompt that works perfectly with Claude but returns in
 
 **Specification:**
 
-1. Create a file `src/exercises/ex09-prompt-ab-test.ts`
+1. Create a file `src/exercises/m02/ex05-prompt-ab-test.ts`
 2. Export an async function:
    ```typescript
    async function comparePrompts(

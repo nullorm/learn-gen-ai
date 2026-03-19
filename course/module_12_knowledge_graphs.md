@@ -1484,7 +1484,7 @@ You have a knowledge base of 500 technical documents. Users mostly ask "how-to" 
 
 **Specification:**
 
-1. Create `src/exercises/ex12-knowledge-graph.ts`
+1. Create `src/exercises/m12/ex01-knowledge-graph.ts`
 2. Create a set of 5-10 sample documents describing a fictional software organization (teams, people, services, projects, dependencies)
 3. Implement entity extraction using `generateText` with `Output.object` and a domain-specific schema
 4. Implement relationship extraction as subject-predicate-object triples
@@ -1515,7 +1515,7 @@ Answer: Project Alpha depends on: Authentication Service, Embedding Service, Pos
 **Test specification:**
 
 ```typescript
-// tests/ex12.test.ts
+// tests/exercises/m12/ex01-knowledge-graph.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 12: Knowledge Graph', () => {
@@ -1557,7 +1557,7 @@ describe('Exercise 12: Knowledge Graph', () => {
 
 **Specification:**
 
-1. Create `src/exercises/ex12-graph-rag.ts`
+1. Create `src/exercises/m12/ex02-graph-rag.ts`
 2. Build a knowledge graph from the sample documents (from Exercise 1)
 3. Embed the document chunks in a vector store (simulated in-memory)
 4. Implement Graph RAG that:
@@ -1573,7 +1573,7 @@ describe('Exercise 12: Knowledge Graph', () => {
 **Test specification:**
 
 ```typescript
-// tests/ex12-graph-rag.test.ts
+// tests/exercises/m12/ex02-graph-rag.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 12: Graph RAG', () => {

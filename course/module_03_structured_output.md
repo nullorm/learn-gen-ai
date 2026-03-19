@@ -1156,7 +1156,7 @@ You have a schema with a `total` field that should equal the sum of item prices.
 
 **Specification:**
 
-1. Create a file `src/exercises/ex10-review-schema.ts`
+1. Create a file `src/exercises/m03/ex01-review-schema.ts`
 2. Define a `ReviewAnalysis` schema with:
    - `sentiment`: enum (positive, negative, neutral, mixed)
    - `rating`: number 1-5
@@ -1174,7 +1174,7 @@ You have a schema with a `total` field that should equal the sum of item prices.
 
 **Specification:**
 
-1. Create a file `src/exercises/ex11-entity-extractor.ts`
+1. Create a file `src/exercises/m03/ex02-entity-extractor.ts`
 2. Define an `Extraction` schema with:
    - `entities`: array of `{ value: string, type: enum('person' | 'organization' | 'location' | 'date' | 'money'), source: string }`
    - `entityCount`: number
@@ -1191,7 +1191,7 @@ You have a schema with a `total` field that should equal the sum of item prices.
 
 **Specification:**
 
-1. Create a file `src/exercises/ex12-form-filler.ts`
+1. Create a file `src/exercises/m03/ex03-form-filler.ts`
 2. Define a `RegistrationForm` schema with:
    - Required: `fullName`, `email`
    - Optional: `phone`, `company`, `role`, `dietaryRestrictions`
@@ -1208,7 +1208,7 @@ You have a schema with a `total` field that should equal the sum of item prices.
 
 **Specification:**
 
-1. Create a file `src/exercises/ex13-stream-object.ts`
+1. Create a file `src/exercises/m03/ex04-stream-object.ts`
 2. Define a schema with at least 6 fields for a "Movie Analysis":
    - `title`, `year`, `genre` (enum), `rating` (1-10), `themes` (string array), `synopsis` (string)
 3. Export `streamMovieAnalysis(description: string): Promise<MovieAnalysis>`
