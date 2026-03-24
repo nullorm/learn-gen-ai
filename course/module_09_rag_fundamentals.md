@@ -941,6 +941,8 @@ function orderSandwich(chunks: RetrievedChunk[]): RetrievedChunk[] {
 
 > **Beginner Note:** Start with "most relevant first" ordering. This works well in most cases. Only switch to attention-optimized ordering if you notice the model ignoring important middle context in long retrieval sets.
 
+> **Advanced Note (Contextual Compression):** Retrieved chunks often contain irrelevant text alongside the useful parts. Before injecting chunks, you can use an LLM to extract only the query-relevant portions — this is the same summarization technique from Module 4 applied to retrieval results. Send each chunk with the query and ask the model to extract only the relevant parts. This reduces token usage and improves signal-to-noise, but adds an LLM call per chunk. Consider it when chunks are large and retrieval returns many results.
+
 ---
 
 ## Section 7: Citation and Attribution

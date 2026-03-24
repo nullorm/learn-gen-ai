@@ -764,7 +764,81 @@ IMPORTANT:
 
 ---
 
-## Section 6: Observation Processing
+## Section 6: Self-RAG — Adaptive Retrieval
+
+### The Idea: Let the Agent Decide
+
+Standard RAG always retrieves, regardless of whether retrieval is needed. If the user asks "What is 2 + 2?", the pipeline dutifully searches the knowledge base, finds irrelevant chunks, and injects them into the context — wasting tokens and potentially confusing the model.
+
+Self-RAG gives the agent control over the retrieval process. The agent decides:
+
+1. **Whether** to retrieve (is external knowledge needed for this query?)
+2. **What** to retrieve (which knowledge source, what search query?)
+3. **Whether the results help** (are the retrieved chunks actually useful?)
+
+This is fundamentally an agent behavior, not a retrieval technique — the agent uses retrieval as a tool and reasons about when to invoke it.
+
+### Implementing Self-RAG
+
+```typescript
+import { generateText, Output } from 'ai'
+import { mistral } from '@ai-sdk/mistral'
+import { z } from 'zod'
+
+const RetrievalDecisionSchema = z.object({
+  needsRetrieval: z.boolean().describe('Whether external knowledge is needed'),
+  reason: z.string().describe('Why retrieval is or is not needed'),
+  searchQuery: z.string().optional().describe('Optimized search query if retrieval is needed'),
+})
+
+async function shouldRetrieve(
+  query: string,
+  conversationContext: string
+): Promise<z.infer<typeof RetrievalDecisionSchema>> {
+  const { output } = await generateText({
+    model: mistral('mistral-small-latest'),
+    output: Output.object({ schema: RetrievalDecisionSchema }),
+    system: `You are a retrieval decision maker. Given a user query and conversation context, decide whether external knowledge retrieval is needed.
+
+Retrieval is NOT needed for:
+- Simple math, logic, or common knowledge questions
+- Questions answerable from the conversation context
+- Greetings, clarifications, or meta-questions
+
+Retrieval IS needed for:
+- Domain-specific facts not in the conversation
+- Questions about specific documents, policies, or data
+- Anything requiring up-to-date or specialized information`,
+    prompt: `Context: ${conversationContext}\n\nQuery: ${query}`,
+  })
+  return output
+}
+```
+
+### Self-RAG in the Agent Loop
+
+In practice, Self-RAG is a tool the agent can choose to invoke — the `search` tool. When the agent has retrieval as one of several available tools, it naturally learns when retrieval is useful through the ReAct loop:
+
+```typescript
+// The agent has multiple tools including search
+const tools = {
+  search: { description: 'Search the knowledge base for relevant information', ... },
+  calculate: { description: 'Perform mathematical calculations', ... },
+  lookup_user: { description: 'Look up user account details', ... },
+}
+
+// The ReAct loop handles tool selection — the agent decides whether
+// to search, calculate, or look up a user based on the query.
+// No special Self-RAG logic needed — it emerges from good tool descriptions.
+```
+
+> **Beginner Note:** The simplest form of Self-RAG is just making retrieval a tool that the agent can choose to call or not. You do not need a separate "retrieval decision" step if your agent loop already handles tool selection well.
+
+> **Advanced Note:** For more sophisticated Self-RAG, the agent can also assess retrieval results before using them. After retrieving chunks, it can decide "these chunks don't actually help — I'll answer from my own knowledge" or "I need to search again with a different query."
+
+---
+
+## Section 7: Observation Processing
 
 ### Feeding Results Back
 
@@ -911,7 +985,7 @@ const resilientTools = {
 
 ---
 
-## Section 7: Termination Conditions
+## Section 8: Termination Conditions
 
 ### When Should an Agent Stop?
 
@@ -1087,7 +1161,7 @@ console.log(`Steps taken: ${result.steps.length}`)
 
 ---
 
-## Section 8: Agent Memory
+## Section 9: Agent Memory
 
 ### Within-Session Context
 
@@ -1293,7 +1367,7 @@ console.log(answer)
 
 ---
 
-## Section 9: Debugging Agents
+## Section 10: Debugging Agents
 
 ### Why Agent Debugging is Hard
 

@@ -7,8 +7,8 @@
 - Build a HyDE (Hypothetical Document Embeddings) pipeline that generates hypothetical answers before retrieval
 - Combine semantic search with keyword/BM25 search using hybrid retrieval strategies
 - Apply reranking with cross-encoders, Cohere Rerank, and LLM-based reranking to improve precision
-- Implement Self-RAG where the model decides when to retrieve and self-assesses its answers
-- Use contextual compression to summarize retrieved chunks before injection
+- Understand structure-aware retrieval and build tree indexes for navigating long, structured documents
+- Implement LLM-navigated tree search as an alternative to vector similarity for structured document retrieval
 - Build a systematic RAG assessment framework with precision, recall, faithfulness, and relevance metrics
 
 ---
@@ -19,7 +19,7 @@ If you completed Module 9, you have a working RAG pipeline. You can embed docume
 
 A user asks "What were our Q3 revenue numbers?" and the naive pipeline retrieves chunks about Q2 revenue because the embedding vectors are similar. A user asks a compound question — "Compare our hiring strategy in 2023 vs 2024" — and the pipeline retrieves chunks about one year but not the other. A user asks a question that requires reasoning across multiple documents, and the pipeline retrieves fragments that individually seem relevant but together miss the point.
 
-These are not edge cases. They are the normal experience of deploying RAG in production. The techniques in this module — query transformation, HyDE, hybrid search, reranking, self-RAG, and contextual compression — are how you move from a demo that works on cherry-picked examples to a system that works reliably on arbitrary user queries.
+These are not edge cases. They are the normal experience of deploying RAG in production. The techniques in this module — query transformation, HyDE, hybrid search, reranking, and structure-aware tree indexing — are how you move from a demo that works on cherry-picked examples to a system that works reliably on arbitrary user queries.
 
 Advanced RAG is not one technique. It is a toolkit of composable strategies. You will rarely use all of them at once. The skill is knowing which ones to apply for your specific failure modes, and this module gives you that diagnostic ability along with the implementation patterns.
 
@@ -124,16 +124,16 @@ demonstrateHallucination().catch(console.error)
 
 Each failure mode has corresponding solutions:
 
-| Failure Mode           | Solutions                                   | Module Section |
-| ---------------------- | ------------------------------------------- | -------------- |
-| Wrong chunks retrieved | Query transformation, HyDE, hybrid search   | Sections 2-4   |
-| Missed context         | Query decomposition, hybrid search          | Sections 2, 4  |
-| Hallucination          | Reranking, self-RAG, contextual compression | Sections 5-7   |
-| Unknown quality        | Assessment framework                        | Section 8      |
+| Failure Mode           | Solutions                                            | Module Section |
+| ---------------------- | ---------------------------------------------------- | -------------- |
+| Wrong chunks retrieved | Query transformation, HyDE, hybrid search            | Sections 2-3   |
+| Missed context         | Query decomposition, hybrid search, tree indexing     | Sections 2, 3, 5-7 |
+| Hallucination          | Reranking, structure-aware retrieval                  | Sections 4-7   |
+| Unknown quality        | Assessment framework                                 | Section 8      |
 
 > **Beginner Note:** You do not need to implement all these techniques at once. Start with the naive pipeline from Module 9, measure its failures, then add techniques one at a time. Each technique addresses specific failure modes — diagnose first, then prescribe.
 
-> **Advanced Note:** In production systems, the combination of techniques matters. A common high-performing stack is: query rewriting + hybrid search + reranking. HyDE and self-RAG add latency and cost, so they are reserved for high-stakes use cases where accuracy justifies the overhead.
+> **Advanced Note:** In production systems, the combination of techniques matters. A common high-performing stack is: query rewriting + hybrid search + reranking. HyDE and tree indexing add latency and cost, so they are reserved for high-stakes use cases where accuracy justifies the overhead.
 
 ---
 
@@ -427,11 +427,9 @@ main().catch(console.error)
 
 > **Advanced Note:** You can make query transformation conditional — use a lightweight classifier to decide whether the query needs rewriting, expansion, or decomposition. This avoids the overhead for simple queries while still handling complex ones correctly.
 
----
+### HyDE — Hypothetical Document Embeddings
 
-## Section 3: HyDE — Hypothetical Document Embeddings
-
-### The Core Insight
+#### The Core Insight
 
 Standard retrieval embeds the _query_ and searches for similar _documents_. But queries and documents are fundamentally different kinds of text. A query is short and interrogative ("What is our refund policy?"). A document is long and declarative ("Refund Policy: Full refunds are available within 30 days..."). Their embedding vectors may not be close in the vector space even when they are semantically related.
 
@@ -439,7 +437,7 @@ HyDE (Hypothetical Document Embeddings) flips the approach: instead of embedding
 
 The hypothetical answer does not need to be correct. It just needs to _look like_ the kind of document that would answer the question. A hallucinated answer with the right vocabulary and structure will have a better embedding for retrieval than the raw query.
 
-### Implementing HyDE
+#### Implementing HyDE
 
 ```typescript
 // src/advanced-rag/hyde.ts
@@ -527,7 +525,7 @@ async function compareStandardVsHyDE(
 export { generateHypotheticalDocument, hydeRetrieve, compareStandardVsHyDE }
 ```
 
-### Multi-HyDE: Multiple Hypothetical Documents
+#### Multi-HyDE: Multiple Hypothetical Documents
 
 A single hypothetical document might capture only one angle of the query. Generate multiple hypothetical documents and use their embeddings for broader recall.
 
@@ -618,7 +616,7 @@ export { multiHyDE }
 
 ---
 
-## Section 4: Hybrid Search
+## Section 3: Hybrid Search
 
 ### Why Combine Semantic and Keyword Search?
 
@@ -900,7 +898,7 @@ export { reciprocalRankFusion, type RRFResult }
 
 ---
 
-## Section 5: Reranking
+## Section 4: Reranking
 
 ### Why Rerank?
 
@@ -1118,416 +1116,261 @@ export { cohereRerank, retrieveRerankGenerate }
 
 ---
 
-## Section 6: Self-RAG
+## Section 5: Structure-Aware Retrieval
 
-### The Idea: Let the Model Decide
+### Why Similarity ≠ Relevance
 
-Standard RAG always retrieves, regardless of whether retrieval is needed. If the user asks "What is 2 + 2?", the pipeline dutifully searches the knowledge base, finds irrelevant chunks, and injects them into the context — wasting tokens and potentially confusing the model.
+Vector similarity search finds chunks that are semantically close to the query. But "close" is not always "relevant." Consider a financial analyst asking "What drove Q3 revenue growth?":
 
-Self-RAG gives the model agency over the retrieval process. The model decides:
+- A chunk about Q2 revenue might be very similar (same vocabulary: revenue, growth, quarterly) but is the wrong quarter
+- A chunk about a new product launch in Q3 might be less similar (different vocabulary) but is the actual answer
+- A chunk titled "Management Discussion: Factors Affecting Performance" might have low similarity to "revenue growth" but contains the exact analysis needed
 
-1. **Whether** to retrieve (is external knowledge needed?)
-2. **When** to retrieve (after seeing the question, or mid-generation?)
-3. **How to assess** the retrieved results (are they actually useful?)
+The fundamental issue: embedding similarity measures lexical and semantic proximity, not logical relevance. For complex documents with structure (sections, chapters, hierarchies), the structure itself carries information that embeddings discard.
 
-### Implementing Self-RAG
+### The Tree Indexing Approach
 
-```typescript
-// src/advanced-rag/self-rag.ts
+Instead of chunking a document and embedding the chunks, tree indexing preserves the document's natural structure as a navigable hierarchy — like an LLM-optimized table of contents.
 
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-// Step 1: Decide if retrieval is needed
-const RetrievalDecisionSchema = z.object({
-  needsRetrieval: z.boolean().describe('Whether external knowledge is needed'),
-  reason: z.string().describe('Why retrieval is or is not needed'),
-  searchQuery: z.string().optional().describe('Optimized search query if retrieval is needed'),
-})
-
-type RetrievalDecision = z.infer<typeof RetrievalDecisionSchema>
-
-async function decideRetrieval(query: string, conversationHistory?: string): Promise<RetrievalDecision> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: RetrievalDecisionSchema }),
-    system: `You are a retrieval decision maker. Determine if the user's
-question requires external knowledge retrieval.
-
-Retrieval IS needed when:
-- The question asks about specific facts, data, or policies
-- The question references documents, reports, or specific entities
-- You are not confident in your parametric knowledge for this topic
-
-Retrieval is NOT needed when:
-- The question is about general knowledge you are confident about
-- The question is a simple calculation or logic problem
-- The question is asking for your opinion or creative output
-- The question is a follow-up that can be answered from conversation context
-
-If retrieval is needed, provide an optimized search query.`,
-    messages: [
-      {
-        role: 'user',
-        content: conversationHistory ? `Conversation so far: ${conversationHistory}\n\nNew question: ${query}` : query,
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-// Step 2: Assess retrieved documents
-const RetrievalAssessmentSchema = z.object({
-  documents: z.array(
-    z.object({
-      index: z.number(),
-      isRelevant: z.boolean(),
-      supportsClaim: z.enum(['fully', 'partially', 'not_at_all']),
-      usefulExcerpt: z.string().optional().describe('The most useful part'),
-    })
-  ),
-  sufficientForAnswer: z.boolean().describe('Whether the relevant documents are sufficient to answer the query'),
-  needsAdditionalRetrieval: z.boolean(),
-  additionalQuery: z.string().optional(),
-})
-
-type RetrievalAssessment = z.infer<typeof RetrievalAssessmentSchema>
-
-async function assessRetrievedDocs(query: string, documents: string[]): Promise<RetrievalAssessment> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: RetrievalAssessmentSchema }),
-    system: `You are a document relevance assessor. For each retrieved document,
-determine whether it is relevant to the query and how well it supports
-answering it.
-
-Be strict: a document is "relevant" only if it contains information that
-directly helps answer the query. Tangentially related documents are not
-relevant.`,
-    messages: [
-      {
-        role: 'user',
-        content: `Query: ${query}\n\nRetrieved documents:\n${documents.map((d, i) => `[${i}]: ${d}`).join('\n\n')}`,
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-// Step 3: Self-check the generated answer
-const AnswerCheckSchema = z.object({
-  isGrounded: z.boolean().describe('Answer is fully supported by the provided context'),
-  isFaithful: z.boolean().describe('Answer does not contain claims beyond the context'),
-  isComplete: z.boolean().describe('Answer fully addresses the query'),
-  confidence: z.number().min(0).max(1).describe('Confidence in the answer quality'),
-  issues: z.array(z.string()).describe('Any issues found with the answer'),
-})
-
-async function selfCheckAnswer(
-  query: string,
-  answer: string,
-  context: string
-): Promise<z.infer<typeof AnswerCheckSchema>> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: AnswerCheckSchema }),
-    system: `You are an answer quality checker. Verify if the answer:
-1. Is grounded in the provided context (no hallucination)
-2. Is faithful to the sources (does not distort information)
-3. Completely addresses the question
-4. Has any factual or logical issues`,
-    messages: [
-      {
-        role: 'user',
-        content: `Context: ${context}\n\nQuestion: ${query}\n\nAnswer: ${answer}`,
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-// Full Self-RAG Pipeline
-interface SelfRAGResult {
-  answer: string
-  retrievalUsed: boolean
-  documentsRetrieved: number
-  documentsUsed: number
-  selfCheck: z.infer<typeof AnswerCheckSchema>
-  iterations: number
-}
-
-async function selfRAG(
-  query: string,
-  searchFn: (query: string) => Promise<string[]>,
-  maxIterations: number = 2
-): Promise<SelfRAGResult> {
-  let iteration = 0
-  const allContext: string[] = []
-
-  // Step 1: Decide if retrieval is needed
-  const decision = await decideRetrieval(query)
-  console.log(`Retrieval needed: ${decision.needsRetrieval} — ${decision.reason}`)
-
-  if (!decision.needsRetrieval) {
-    // Answer without retrieval
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      messages: [{ role: 'user', content: query }],
-    })
-
-    const check = await selfCheckAnswer(query, result.text, '')
-    return {
-      answer: result.text,
-      retrievalUsed: false,
-      documentsRetrieved: 0,
-      documentsUsed: 0,
-      selfCheck: check,
-      iterations: 1,
-    }
-  }
-
-  // Retrieval loop
-  let searchQuery = decision.searchQuery ?? query
-
-  while (iteration < maxIterations) {
-    iteration++
-    console.log(`\nIteration ${iteration}: searching for "${searchQuery}"`)
-
-    // Step 2: Retrieve
-    const documents = await searchFn(searchQuery)
-    console.log(`Retrieved ${documents.length} documents`)
-
-    // Step 3: Assess retrieved documents
-    const assessment = await assessRetrievedDocs(query, documents)
-    const relevantDocs = assessment.documents.filter(d => d.isRelevant).map(d => documents[d.index])
-
-    allContext.push(...relevantDocs)
-    console.log(`Relevant documents: ${relevantDocs.length}/${documents.length}`)
-
-    if (assessment.sufficientForAnswer || !assessment.needsAdditionalRetrieval) {
-      break
-    }
-
-    // Need more retrieval
-    searchQuery = assessment.additionalQuery ?? query
-    console.log(`Insufficient — retrying with query: "${searchQuery}"`)
-  }
-
-  // Step 4: Generate answer from collected context
-  const contextStr = allContext.join('\n\n---\n\n')
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `Answer the question based on the provided context.
-Cite specific parts of the context. If the context is insufficient, say so.`,
-    messages: [
-      {
-        role: 'user',
-        content: `Context:\n${contextStr}\n\nQuestion: ${query}`,
-      },
-    ],
-  })
-
-  // Step 5: Self-check
-  const selfCheck = await selfCheckAnswer(query, result.text, contextStr)
-  console.log(`Self-check: confidence=${selfCheck.confidence}, grounded=${selfCheck.isGrounded}`)
-
-  return {
-    answer: result.text,
-    retrievalUsed: true,
-    documentsRetrieved: allContext.length,
-    documentsUsed: allContext.length,
-    selfCheck,
-    iterations: iteration,
-  }
-}
-
-export { selfRAG, decideRetrieval, assessRetrievedDocs, selfCheckAnswer }
+```
+Document
+├── Section 1: Company Overview
+│   ├── 1.1 History
+│   └── 1.2 Mission
+├── Section 2: Financial Performance
+│   ├── 2.1 Q1 Results
+│   ├── 2.2 Q2 Results
+│   ├── 2.3 Q3 Results ← LLM navigates here
+│   │   ├── Revenue Drivers  ← and finds this
+│   │   └── Cost Analysis
+│   └── 2.4 Q4 Outlook
+└── Section 3: Risk Factors
 ```
 
-> **Beginner Note:** Self-RAG makes multiple LLM calls per query (decision, assessment, generation, self-check). This is expensive. Use it for high-stakes scenarios — legal research, medical information, financial analysis — where accuracy matters more than speed or cost.
+The retrieval process:
 
-> **Advanced Note:** You can optimize Self-RAG by using a smaller, faster model for the retrieval decision and document assessment steps, reserving the larger model only for final answer generation. Claude Haiku works well for the classification tasks, while Sonnet handles generation.
+1. **Index phase:** Parse the document into a tree of sections, each with a title, summary, and page range
+2. **Query phase:** An LLM navigates the tree top-down, reading summaries to decide which branches to explore — like a human expert scanning a table of contents
+
+No embeddings. No vector database. No chunking. The LLM reasons about document structure to find relevant sections.
+
+### When Tree Indexing Wins
+
+| Scenario | Vector RAG | Tree Indexing |
+|----------|-----------|--------------|
+| Short FAQ documents | Better (simple, fast) | Overkill |
+| Long structured reports (financial, legal, technical) | Chunks lose structure | Better — preserves hierarchy |
+| Queries requiring cross-section reasoning | Misses connections | Follows document logic |
+| Heterogeneous document sets | Better — embeddings generalize | Harder — needs consistent structure |
+| Exact fact lookup ("what was Q3 revenue?") | Depends on chunk boundaries | Navigates directly to section |
+| Semantic/conceptual queries | Better — similarity works well | May over-navigate |
+
+> **Beginner Note:** Tree indexing requires documents with clear structure (headings, sections, numbered parts). For unstructured text like chat logs or social media posts, vector RAG is still the better approach.
+
+> **Advanced Note:** Projects like PageIndex (github.com/VectifyAI/PageIndex) implement this approach and have achieved 98.7% accuracy on FinanceBench, outperforming vector-based RAG systems on structured financial documents. The trade-off is that tree indexing requires an LLM call during retrieval (to navigate the tree), making it more expensive per query than a vector lookup. For high-value queries on complex documents, this is worthwhile.
 
 ---
 
-## Section 7: Contextual Compression
+## Section 6: Building a Tree Index
 
-### Shrinking Retrieved Chunks
+### Index Structure
 
-Even after reranking, the retrieved chunks may contain a lot of text that is not directly relevant to the query. A 500-word chunk might have one paragraph that actually answers the question and four paragraphs of background. Injecting the full chunk wastes tokens and dilutes the signal.
-
-Contextual compression uses an LLM to extract or summarize only the parts of each retrieved chunk that are relevant to the specific query. This is "contextual" because the compression is query-aware — different queries produce different compressions of the same chunk.
+A tree index node contains:
 
 ```typescript
-// src/advanced-rag/contextual-compression.ts
+interface TreeNode {
+  id: string
+  title: string
+  summary: string
+  level: number // 0 = root, 1 = chapter, 2 = section, etc.
+  pageStart: number
+  pageEnd: number
+  children: TreeNode[]
+  content?: string // leaf nodes may store the actual text
+}
 
+interface TreeIndex {
+  root: TreeNode
+  documentTitle: string
+  totalPages: number
+}
+```
+
+Each non-leaf node has a summary generated by the LLM. The summary is what the retrieval LLM reads when deciding which branch to explore — it needs to be informative enough to guide navigation without being so long that it defeats the purpose of the tree.
+
+### Building the Index
+
+The index construction process:
+
+1. **Parse structure:** Extract headings, sections, and page boundaries from the document
+2. **Build hierarchy:** Organize sections into a tree based on heading levels (H1 → H2 → H3)
+3. **Generate summaries:** For each node, use the LLM to summarize what that section covers
+4. **Assign metadata:** Page ranges, section IDs, content length
+
+```typescript
+import { generateText } from 'ai'
+import { mistral } from '@ai-sdk/mistral'
+
+async function summarizeSection(title: string, content: string): Promise<string> {
+  const { text } = await generateText({
+    model: mistral('mistral-small-latest'),
+    system: 'Summarize what this document section covers in 1-2 sentences. Focus on the topics and key information a reader would find here. Be specific.',
+    prompt: `Section: ${title}\n\n${content}`,
+    maxOutputTokens: 100,
+  })
+  return text
+}
+
+function parseMarkdownToTree(markdown: string): TreeNode {
+  const lines = markdown.split('\n')
+  const root: TreeNode = {
+    id: 'root',
+    title: 'Document',
+    summary: '',
+    level: 0,
+    pageStart: 0,
+    pageEnd: 0,
+    children: [],
+  }
+
+  // Implementation: parse heading levels, group content under headings,
+  // build parent-child relationships based on heading depth
+  // This is document-format specific — Markdown, PDF, HTML each need different parsers
+
+  return root
+}
+```
+
+### Summary Quality Matters
+
+The quality of node summaries directly determines retrieval quality. A vague summary ("This section discusses various topics") forces the LLM to explore that branch speculatively. A specific summary ("This section analyzes Q3 2024 revenue by product line, showing 23% growth driven by the Enterprise tier") lets the LLM make confident navigation decisions.
+
+```typescript
+// Bad: too vague — LLM can't decide if this branch is relevant
+{ summary: "Discusses company performance and metrics." }
+
+// Good: specific — LLM knows exactly what's here
+{ summary: "Q3 2024 revenue breakdown: $12M total, Enterprise tier grew 23%, SMB flat. Key driver was the DataFlow product launch in August." }
+```
+
+> **Beginner Note:** Building a tree index is an upfront cost — you run LLM calls during indexing, not just during querying. For a 100-page document, you might make 20-50 summarization calls. This is a one-time cost that amortizes over many queries.
+
+> **Advanced Note:** The tree index can be persisted as JSON and reloaded without re-indexing. When the source document changes, you can do incremental updates — only re-summarize the sections that changed. This is analogous to re-embedding changed chunks in vector RAG, but cheaper since summarization is faster than embedding + indexing.
+
+---
+
+## Section 7: LLM-Navigated Tree Search
+
+### The Retrieval Algorithm
+
+Given a query and a tree index, the LLM navigates top-down:
+
+1. Start at the root — read summaries of all top-level children
+2. Ask the LLM: "Which of these sections is most likely to contain the answer?"
+3. Descend into the chosen branch — read summaries of its children
+4. Repeat until reaching a leaf node (actual content)
+5. Return the leaf content as the retrieved context
+
+```typescript
 import { generateText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
-const CompressedChunkSchema = z.object({
-  isRelevant: z.boolean().describe('Whether any part of this chunk is relevant'),
-  compressedContent: z.string().describe('The relevant portion extracted and/or summarized'),
-  relevanceRatio: z.number().min(0).max(1).describe('What fraction of the original chunk was relevant'),
+const NavigationSchema = z.object({
+  selectedNodeId: z.string().describe('ID of the most relevant child node'),
+  confidence: z.number().min(0).max(1).describe('How confident the selection is'),
+  reasoning: z.string().describe('Why this node was selected'),
 })
 
-type CompressedChunk = z.infer<typeof CompressedChunkSchema>
-
-async function compressChunk(query: string, chunk: string): Promise<CompressedChunk> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: CompressedChunkSchema }),
-    system: `You are a document compression expert. Given a query and a
-document chunk, extract ONLY the information that is directly relevant
-to answering the query.
-
-Rules:
-- If no part of the chunk is relevant, set isRelevant to false
-- Keep exact quotes, numbers, dates, and specific claims — do not
-  paraphrase facts
-- Remove background information, tangential details, and boilerplate
-- The compressed version should be shorter than the original
-- Maintain enough context for the compressed version to be
-  understandable on its own`,
-    messages: [
-      {
-        role: 'user',
-        content: `Query: ${query}\n\nDocument chunk:\n${chunk}`,
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-interface CompressionStats {
-  originalChunks: number
-  relevantChunks: number
-  filteredChunks: number
-  originalLength: number
-  compressedLength: number
-  compressionRatio: number
-  avgRelevanceRatio: number
-}
-
-async function compressAndFilter(
+async function navigateTree(
   query: string,
-  chunks: string[]
-): Promise<{ compressed: string[]; stats: CompressionStats }> {
-  const results = await Promise.all(chunks.map(chunk => compressChunk(query, chunk)))
-
-  const compressed = results.filter(r => r.isRelevant).map(r => r.compressedContent)
-
-  const originalTokens = chunks.join('').length // Approximate
-  const compressedTokens = compressed.join('').length
-
-  const stats: CompressionStats = {
-    originalChunks: chunks.length,
-    relevantChunks: compressed.length,
-    filteredChunks: chunks.length - compressed.length,
-    originalLength: originalTokens,
-    compressedLength: compressedTokens,
-    compressionRatio: compressedTokens / originalTokens,
-    avgRelevanceRatio: results.reduce((sum, r) => sum + r.relevanceRatio, 0) / results.length,
+  node: TreeNode,
+  model = mistral('mistral-small-latest')
+): Promise<TreeNode[]> {
+  // Base case: leaf node — return it
+  if (node.children.length === 0) {
+    return [node]
   }
 
-  return { compressed, stats }
-}
+  // Present children summaries to the LLM
+  const childDescriptions = node.children
+    .map(c => `[${c.id}] ${c.title}: ${c.summary}`)
+    .join('\n')
 
-// Full pipeline: retrieve -> compress -> generate
-async function ragWithCompression(
-  query: string,
-  searchFn: (query: string) => Promise<string[]>
-): Promise<{ answer: string; stats: CompressionStats }> {
-  // Step 1: Retrieve
-  const chunks = await searchFn(query)
-  console.log(`Retrieved ${chunks.length} chunks`)
-
-  // Step 2: Compress
-  const { compressed, stats } = await compressAndFilter(query, chunks)
-  console.log(
-    `Compressed: ${stats.originalChunks} -> ${stats.relevantChunks} chunks, ` +
-      `${(stats.compressionRatio * 100).toFixed(1)}% of original size`
-  )
-
-  // Step 3: Generate from compressed context
-  const context = compressed.join('\n\n---\n\n')
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `Answer the question based on the provided context.
-Be precise and cite the context where relevant.`,
-    messages: [
-      {
-        role: 'user',
-        content: `Context:\n${context}\n\nQuestion: ${query}`,
-      },
-    ],
+  const { output } = await generateText({
+    model,
+    output: Output.object({ schema: NavigationSchema }),
+    system: 'You are a document navigator. Given a query and a list of document sections with summaries, select the section most likely to contain the answer.',
+    prompt: `Query: ${query}\n\nAvailable sections:\n${childDescriptions}`,
   })
 
-  return { answer: result.text, stats }
-}
+  const selected = node.children.find(c => c.id === output.selectedNodeId)
+  if (!selected) return []
 
-export { compressChunk, compressAndFilter, ragWithCompression }
+  // Recurse into the selected branch
+  return navigateTree(query, selected, model)
+}
 ```
 
-### Chain of Compression
+### Multi-Path Navigation
 
-For very long documents, you can apply compression hierarchically: first compress each chunk, then compress the compressed results into a single focused summary.
+Sometimes the answer spans multiple sections. Instead of picking one branch, explore the top-N most promising:
 
 ```typescript
-// src/advanced-rag/chain-compression.ts
+const MultiNavigationSchema = z.object({
+  selectedNodes: z.array(z.object({
+    nodeId: z.string(),
+    relevanceScore: z.number().min(0).max(1),
+  })).describe('Top nodes ranked by relevance to the query'),
+})
 
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { compressAndFilter } from './contextual-compression.js'
+async function multiPathNavigate(
+  query: string,
+  node: TreeNode,
+  maxPaths: number = 2,
+  model = mistral('mistral-small-latest')
+): Promise<TreeNode[]> {
+  if (node.children.length === 0) return [node]
 
-async function hierarchicalCompress(query: string, chunks: string[], maxFinalTokens: number = 2000): Promise<string> {
-  // Level 1: Compress individual chunks
-  const { compressed } = await compressAndFilter(query, chunks)
-  console.log(`Level 1: ${chunks.length} -> ${compressed.length} chunks`)
+  const childDescriptions = node.children
+    .map(c => `[${c.id}] ${c.title}: ${c.summary}`)
+    .join('\n')
 
-  // Check if we are within budget
-  const totalLength = compressed.join('\n\n').length
-  if (totalLength <= maxFinalTokens * 4) {
-    // Rough char-to-token estimate
-    return compressed.join('\n\n---\n\n')
-  }
-
-  // Level 2: Synthesize compressed chunks into a focused summary
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a research synthesizer. Combine the following document
-excerpts into a single, focused summary that answers the query. Preserve
-all specific facts, numbers, and claims. Remove redundancy.
-
-Target length: ${maxFinalTokens} tokens or less.`,
-    messages: [
-      {
-        role: 'user',
-        content: `Query: ${query}\n\nExcerpts:\n${compressed.map((c, i) => `[${i + 1}] ${c}`).join('\n\n')}`,
-      },
-    ],
-    maxOutputTokens: maxFinalTokens,
+  const { output } = await generateText({
+    model,
+    output: Output.object({ schema: MultiNavigationSchema }),
+    system: `You are a document navigator. Select up to ${maxPaths} sections most relevant to the query. Rank by relevance.`,
+    prompt: `Query: ${query}\n\nAvailable sections:\n${childDescriptions}`,
   })
 
-  console.log(`Level 2: Synthesized to ${result.text.length} chars`)
-  return result.text
-}
+  const results: TreeNode[] = []
+  for (const { nodeId } of output.selectedNodes.slice(0, maxPaths)) {
+    const child = node.children.find(c => c.id === nodeId)
+    if (child) {
+      const leaves = await multiPathNavigate(query, child, maxPaths, model)
+      results.push(...leaves)
+    }
+  }
 
-export { hierarchicalCompress }
+  return results
+}
 ```
 
-> **Beginner Note:** Contextual compression is most valuable when your chunks are large (500+ words) or when you retrieve many chunks (10+). For small, well-crafted chunks (100-200 words) from a good chunking strategy, compression adds cost without much benefit.
+### Comparing Retrieval Approaches
 
-> **Advanced Note:** Compression can be done in parallel across chunks, making it faster than sequential processing. The `Promise.all` approach in `compressAndFilter` above already does this. Monitor the total LLM cost — compressing 20 chunks means 20 LLM calls before you even generate the answer.
+The three retrieval paradigms each have different strengths:
+
+| Approach | How it finds relevant content | Strengths | Weaknesses |
+|----------|------------------------------|-----------|------------|
+| **Vector RAG** | Embed query → cosine similarity → top-K chunks | Fast, works on unstructured text, no LLM during retrieval | Similarity ≠ relevance, loses document structure |
+| **Tree Indexing** | LLM navigates document hierarchy top-down | Preserves structure, high precision on structured docs | Requires structured documents, LLM cost during retrieval |
+| **Graph RAG** | Traverse entity/relationship graph from query entities | Captures relationships, multi-hop reasoning | Complex setup, entity extraction quality critical |
+
+In practice, these can be combined. Use vector RAG for broad recall, tree indexing for structured document deep-dives, and graph RAG for relationship-heavy queries.
+
+> **Beginner Note:** Start with vector RAG (Module 9). Add tree indexing when you work with long structured documents where vector search misses context. Add graph RAG (Module 12) when relationships between entities matter more than the text itself.
+
+> **Advanced Note:** A production system might route queries to different retrieval backends: simple factual queries go to vector search, analytical queries about structured reports go to tree search, and relationship queries go to graph search. The routing itself can be done by an LLM (see Module 14: Agent Fundamentals).
 
 ---
 
@@ -1535,7 +1378,7 @@ export { hierarchicalCompress }
 
 ### Why You Need Systematic Measurement
 
-The techniques in this module — HyDE, hybrid search, reranking, compression — each add complexity and cost. How do you know they actually improve your pipeline? How do you decide which combination to use?
+The techniques in this module — HyDE, hybrid search, reranking, tree indexing — each add complexity and cost. How do you know they actually improve your pipeline? How do you decide which combination to use?
 
 You need a systematic assessment framework that measures multiple dimensions of RAG quality. Without it, you are tuning by vibes and cherry-picked examples.
 
@@ -2088,12 +1931,12 @@ describe('Exercise 10: Hybrid Search', () => {
 In this module, you learned:
 
 1. **Naive RAG failures:** Wrong chunks, missed context, and hallucination are predictable failure modes with specific solutions.
-2. **Query transformation:** Rewriting, expansion, and decomposition improve retrieval by transforming user queries into better search queries.
-3. **HyDE:** Generating hypothetical answers and embedding them produces better retrieval than embedding the raw query, because hypothetical answers are structurally similar to corpus documents.
-4. **Hybrid search:** Combining semantic (embedding) and keyword (BM25) search gives you meaning-understanding with exact-match precision.
-5. **Reranking:** A second pass with a cross-encoder or LLM dramatically improves precision by scoring each candidate carefully.
-6. **Self-RAG:** Letting the model decide when to retrieve, assessing retrieved documents, and self-checking answers adds intelligence to the retrieval loop.
-7. **Contextual compression:** Extracting only the query-relevant parts of retrieved chunks reduces noise and saves tokens.
+2. **Query transformation and HyDE:** Rewriting, expansion, decomposition, and hypothetical document embeddings improve retrieval by transforming user queries into better search queries — or into hypothetical answers that are structurally similar to corpus documents.
+3. **Hybrid search:** Combining semantic (embedding) and keyword (BM25) search gives you meaning-understanding with exact-match precision.
+4. **Reranking:** A second pass with a cross-encoder or LLM dramatically improves precision by scoring each candidate carefully.
+5. **Structure-aware retrieval:** Vector similarity does not equal relevance — tree indexing preserves document structure as a navigable hierarchy for more precise retrieval on structured documents.
+6. **Building a tree index:** Parsing documents into tree nodes with LLM-generated summaries creates a structure that supports top-down navigation without embeddings or vector databases.
+7. **LLM-navigated tree search:** An LLM can navigate a tree index top-down, reading summaries to find the most relevant sections — an alternative to vector search for structured documents.
 8. **Assessment framework:** Systematic measurement of context relevance, faithfulness, answer relevance, and correctness lets you compare pipeline configurations objectively.
 
 In Module 11, you will tackle the other side of the RAG pipeline — document processing. Better ingestion, chunking, and metadata extraction feed directly into the retrieval quality improvements you built here.
