@@ -110,13 +110,12 @@ export type { Document, DocumentType, DocumentMetadata, Chunk, ChunkMetadata }
 
 ### PDF Extraction
 
-PDF is the most challenging format because PDFs are designed for display, not text extraction. The "text" in a PDF is a collection of positioned glyphs — there is no guarantee that characters are in reading order, that spaces exist between words, or that paragraphs are semantically grouped.
+PDF is the most challenging format because PDFs are designed for display, not text extraction. The "text" in a PDF is a collection of positioned glyphs -- there is no guarantee that characters are in reading order, that spaces exist between words, or that paragraphs are semantically grouped.
+
+You will use the `pdf-parse` library (`bun add pdf-parse`). Since it is a CommonJS module, you need a dynamic import.
 
 ```typescript
 // src/document-processing/pdf-extraction.ts
-
-// Using pdf-parse for basic PDF extraction
-// Install: bun add pdf-parse
 
 import { readFile } from 'fs/promises'
 
@@ -132,88 +131,49 @@ interface PDFExtractionResult {
   pages: string[] // Text per page
 }
 
-async function extractPDF(filePath: string): Promise<PDFExtractionResult> {
-  // Dynamic import for pdf-parse (CommonJS module)
-  const pdfParse = (await import('pdf-parse')).default
-
-  const buffer = await readFile(filePath)
-  const data = await pdfParse(buffer)
-
-  // Split text by page breaks (pdf-parse uses form feed characters)
-  const pages = data.text.split('\f').filter((page: string) => page.trim().length > 0)
-
-  return {
-    text: data.text,
-    pageCount: data.numpages,
-    metadata: {
-      title: data.info?.Title,
-      author: data.info?.Author,
-      creator: data.info?.Creator,
-      creationDate: data.info?.CreationDate,
-    },
-    pages,
-  }
-}
-
-// Clean extracted PDF text
-function cleanPDFText(text: string): string {
-  return (
-    text
-      // Remove page numbers (common patterns)
-      .replace(/^\s*\d+\s*$/gm, '')
-      // Normalize whitespace
-      .replace(/[ \t]+/g, ' ')
-      // Fix broken words from line wrapping (hyphenation)
-      .replace(/(\w)-\n(\w)/g, '$1$2')
-      // Join lines that are part of the same paragraph
-      .replace(/([^\n])\n([a-z])/g, '$1 $2')
-      // Normalize multiple newlines
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
-  )
-}
-
-// Advanced: Use LLM to clean and structure messy PDF text
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function llmCleanPDFText(rawText: string, pageNumber?: number): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a document cleaning expert. Clean up the following text
-extracted from a PDF. Fix:
-- Broken words from line wrapping
-- Garbled characters from poor OCR
-- Headers/footers that appear mid-text
-- Table formatting that was lost
-
-Preserve the actual content and structure. Return ONLY the cleaned text.
-Do not add commentary.`,
-    messages: [
-      {
-        role: 'user',
-        content: pageNumber ? `Page ${pageNumber}:\n\n${rawText}` : rawText,
-      },
-    ],
-    temperature: 0,
-    maxOutputTokens: 4000,
-  })
-
-  return result.text
-}
-
-export { extractPDF, cleanPDFText, llmCleanPDFText }
+async function extractPDF(filePath: string): Promise<PDFExtractionResult>
 ```
+
+Build `extractPDF` so that it:
+
+1. Dynamically imports `pdf-parse` and reads the file into a buffer with `readFile`.
+2. Calls `pdfParse(buffer)` and pulls out `.text`, `.numpages`, and `.info` (Title, Author, Creator, CreationDate).
+3. Splits the raw text into per-page strings. Hint: `pdf-parse` inserts form feed characters (`\f`) between pages.
+4. Returns the result matching `PDFExtractionResult`.
+
+What character does `pdf-parse` use to separate pages, and why would filtering out empty pages matter?
+
+### Cleaning PDF Text
+
+Raw PDF text is messy -- page numbers floating on their own lines, double spaces, broken words from hyphenation at line ends, and single newlines inside paragraphs. Build a `cleanPDFText` function that applies regex-based fixes:
+
+```typescript
+function cleanPDFText(text: string): string
+```
+
+Think about these cleaning steps in order:
+
+- How would you remove standalone page numbers (lines that are just a number)?
+- How do you rejoin words split by end-of-line hyphenation (`"docu-\nment"` should become `"document"`)?
+- How do you distinguish a newline inside a paragraph (should become a space) from a newline between paragraphs (should stay)?
+- How do you collapse excessive blank lines?
+
+### LLM-Assisted Cleaning
+
+For badly OCR'd or garbled PDFs, regex is not enough. Build an `llmCleanPDFText` function that sends a page of raw text to an LLM with a system prompt instructing it to fix broken words, garbled characters, stray headers/footers, and lost table formatting. Use `generateText` with `temperature: 0` and `maxOutputTokens: 4000`.
+
+```typescript
+async function llmCleanPDFText(rawText: string, pageNumber?: number): Promise<string>
+```
+
+When would you choose regex cleaning vs LLM cleaning? What is the cost trade-off?
 
 ### HTML Extraction
 
-HTML extraction requires stripping away all the non-content elements — navigation bars, scripts, styles, ads, cookie banners — while preserving the semantic structure of the actual content.
+HTML extraction requires stripping away all the non-content elements -- navigation bars, scripts, styles, ads, cookie banners -- while preserving the semantic structure of the actual content. You will use `cheerio` (`bun add cheerio`) for server-side DOM manipulation.
 
-````typescript
+```typescript
 // src/document-processing/html-extraction.ts
-
-// Using cheerio for HTML parsing
-// Install: bun add cheerio
 
 import * as cheerio from 'cheerio'
 import type { Element } from 'domhandler'
@@ -230,130 +190,24 @@ interface HTMLExtractionResult {
   }
 }
 
-function extractHTML(html: string): HTMLExtractionResult {
-  const $ = cheerio.load(html)
+function extractHTML(html: string): HTMLExtractionResult
+```
 
-  // Remove non-content elements
-  $(
-    'script, style, nav, header, footer, iframe, ' +
-      '.sidebar, .advertisement, .cookie-banner, .nav, ' +
-      '#navigation, #header, #footer, .menu'
-  ).remove()
+Build `extractHTML` with these steps:
 
-  // Extract title
-  const title = $('h1').first().text().trim() || $('title').text().trim() || 'Untitled'
+1. Load the HTML with `cheerio.load(html)`.
+2. Remove non-content elements: `script`, `style`, `nav`, `header`, `footer`, `iframe`, and common class/ID selectors like `.sidebar`, `.advertisement`, `.cookie-banner`, `#navigation`.
+3. Extract the title from `<h1>` (falling back to `<title>`), headings from `h1-h6` tags, and metadata from `<meta>` tags (description, author, `article:published_time`).
+4. Find the main content area (`main`, `article`, `.content`, `#content`, `.post-body`) falling back to `body`.
+5. Convert the content to clean text. Build a helper `htmlToCleanText` that walks child elements and converts headings to markdown-style `#` prefixes, `<p>` to text with blank lines, `<ul>`/`<ol>` to markdown lists, `<pre>`/`<code>` to fenced code blocks, and `<table>` to markdown table format.
 
-  // Extract headings with hierarchy
-  const headings: Array<{ level: number; text: string }> = []
-  $('h1, h2, h3, h4, h5, h6').each((_, el) => {
-    const tagName = (el as Element).tagName
-    const level = parseInt(tagName.charAt(1))
-    headings.push({ level, text: $(el).text().trim() })
-  })
-
-  // Extract main content
-  // Try to find the main content area first
-  let contentElement = $('main, article, .content, #content, .post-body')
-  if (contentElement.length === 0) {
-    contentElement = $('body')
-  }
-
-  // Convert to clean text preserving structure
-  const content = htmlToCleanText($, contentElement)
-
-  // Extract metadata
-  const metadata = {
-    description: $('meta[name="description"]').attr('content') || $('meta[property="og:description"]').attr('content'),
-    author: $('meta[name="author"]').attr('content') || $('[rel="author"]').text().trim(),
-    publishDate: $('meta[property="article:published_time"]').attr('content') || $('time').attr('datetime'),
-  }
-
-  // Extract links
-  const links: Array<{ text: string; href: string }> = []
-  contentElement.find('a[href]').each((_, el) => {
-    const href = $(el).attr('href')
-    const text = $(el).text().trim()
-    if (href && text) {
-      links.push({ text, href })
-    }
-  })
-
-  return { title, content, headings, links, metadata }
-}
-
-function htmlToCleanText($: cheerio.CheerioAPI, element: cheerio.Cheerio<cheerio.AnyNode>): string {
-  const lines: string[] = []
-
-  element.children().each((_, child) => {
-    const el = $(child)
-    const tagName = (child as Element).tagName?.toLowerCase() ?? ''
-
-    if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
-      const prefix = '#'.repeat(parseInt(tagName.charAt(1)))
-      lines.push(`\n${prefix} ${el.text().trim()}\n`)
-    } else if (tagName === 'p') {
-      lines.push(el.text().trim())
-      lines.push('')
-    } else if (tagName === 'ul' || tagName === 'ol') {
-      el.find('li').each((i, li) => {
-        const prefix = tagName === 'ol' ? `${i + 1}.` : '-'
-        lines.push(`${prefix} ${$(li).text().trim()}`)
-      })
-      lines.push('')
-    } else if (tagName === 'pre' || tagName === 'code') {
-      lines.push('```')
-      lines.push(el.text().trim())
-      lines.push('```')
-      lines.push('')
-    } else if (tagName === 'table') {
-      lines.push(tableToText($, el))
-      lines.push('')
-    } else if (el.text().trim()) {
-      lines.push(el.text().trim())
-    }
-  })
-
-  return lines
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function tableToText($: cheerio.CheerioAPI, table: cheerio.Cheerio<cheerio.AnyNode>): string {
-  const rows: string[][] = []
-
-  table.find('tr').each((_, tr) => {
-    const cells: string[] = []
-    $(tr)
-      .find('td, th')
-      .each((_, cell) => {
-        cells.push($(cell).text().trim())
-      })
-    rows.push(cells)
-  })
-
-  if (rows.length === 0) return ''
-
-  // Format as markdown table
-  const tableHeader = rows[0]
-  const separator = tableHeader.map(() => '---')
-  const body = rows.slice(1)
-
-  return [
-    '| ' + tableHeader.join(' | ') + ' |',
-    '| ' + separator.join(' | ') + ' |',
-    ...body.map(row => '| ' + row.join(' | ') + ' |'),
-  ].join('\n')
-}
-
-export { extractHTML, type HTMLExtractionResult }
-````
+How would you handle a `<table>` -- what helper would you write to convert rows and cells into markdown pipe-delimited format?
 
 ### Markdown Extraction
 
 Markdown is the easiest format to work with because it is already structured text. The main challenge is preserving the hierarchy and handling embedded code blocks and tables correctly.
 
-````typescript
+```typescript
 // src/document-processing/markdown-extraction.ts
 
 interface MarkdownSection {
@@ -371,121 +225,16 @@ interface MarkdownExtractionResult {
   codeBlocks: Array<{ language: string; code: string }>
 }
 
-function extractMarkdown(markdown: string): MarkdownExtractionResult {
-  // Parse YAML frontmatter if present
-  let content = markdown
-  let frontmatter: Record<string, string> | undefined
+function extractMarkdown(markdown: string): MarkdownExtractionResult
+```
 
-  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
-  if (frontmatterMatch) {
-    frontmatter = parseFrontmatter(frontmatterMatch[1])
-    content = frontmatterMatch[2]
-  }
+Build `extractMarkdown` to:
 
-  // Extract code blocks before parsing sections
-  // (to avoid treating # in code as headings)
-  const codeBlocks: Array<{ language: string; code: string }> = []
-  const codeBlockPattern = /```(\w*)\n([\s\S]*?)```/g
-  let codeMatch
+1. Parse YAML frontmatter if present (the `---` delimited block at the top). A simple `parseFrontmatter` helper that splits on newlines and colons will do.
+2. Extract all fenced code blocks before section parsing -- otherwise `#` characters inside code get treated as headings. Replace them with `[CODE_BLOCK]` placeholders for section parsing.
+3. Parse sections by scanning lines for heading patterns (`/^(#{1,6})\s+(.+)$/`). Maintain a heading stack to build the `parentHeadings` breadcrumb trail and nest `subsections` correctly.
 
-  while ((codeMatch = codeBlockPattern.exec(content)) !== null) {
-    codeBlocks.push({
-      language: codeMatch[1] || 'plaintext',
-      code: codeMatch[2].trim(),
-    })
-  }
-
-  // Replace code blocks with placeholders for section parsing
-  const contentNoCode = content.replace(/```[\s\S]*?```/g, '[CODE_BLOCK]')
-
-  // Parse sections
-  const sections = parseMarkdownSections(contentNoCode, content)
-
-  // Extract title
-  const title = frontmatter?.title || sections[0]?.heading || content.match(/^#\s+(.+)$/m)?.[1] || 'Untitled'
-
-  return { title, sections, frontmatter, codeBlocks }
-}
-
-function parseFrontmatter(raw: string): Record<string, string> {
-  const result: Record<string, string> = {}
-  for (const line of raw.split('\n')) {
-    const colonIndex = line.indexOf(':')
-    if (colonIndex > 0) {
-      const key = line.slice(0, colonIndex).trim()
-      const value = line
-        .slice(colonIndex + 1)
-        .trim()
-        .replace(/^["']|["']$/g, '')
-      result[key] = value
-    }
-  }
-  return result
-}
-
-function parseMarkdownSections(textNoCode: string, _fullText: string): MarkdownSection[] {
-  const lines = textNoCode.split('\n')
-  const sections: MarkdownSection[] = []
-  const headingStack: MarkdownSection[] = []
-
-  let currentContent: string[] = []
-
-  for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
-
-    if (headingMatch) {
-      // Save current content to the previous section
-      if (headingStack.length > 0) {
-        headingStack[headingStack.length - 1].content = currentContent.join('\n').trim()
-      }
-      currentContent = []
-
-      const level = headingMatch[1].length
-      const heading = headingMatch[2].trim()
-
-      // Build parent heading trail
-      const parentHeadings: string[] = []
-      for (const parent of headingStack) {
-        if (parent.level < level) {
-          parentHeadings.push(parent.heading)
-        }
-      }
-
-      const section: MarkdownSection = {
-        heading,
-        level,
-        content: '',
-        subsections: [],
-        parentHeadings,
-      }
-
-      // Pop stack to find correct parent
-      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {
-        headingStack.pop()
-      }
-
-      if (headingStack.length > 0) {
-        headingStack[headingStack.length - 1].subsections.push(section)
-      } else {
-        sections.push(section)
-      }
-
-      headingStack.push(section)
-    } else {
-      currentContent.push(line)
-    }
-  }
-
-  // Save final section content
-  if (headingStack.length > 0) {
-    headingStack[headingStack.length - 1].content = currentContent.join('\n').trim()
-  }
-
-  return sections
-}
-
-export { extractMarkdown, type MarkdownSection, type MarkdownExtractionResult }
-````
+Think about this: when you encounter a `## Heading` after a `### Subheading`, how do you know to pop the stack back to the right parent level?
 
 > **Advanced Note:** For code files, consider using a proper AST parser (e.g., `@typescript-eslint/parser` for TypeScript, `tree-sitter` for multi-language support) instead of text-based extraction. AST-aware chunking preserves function boundaries, class definitions, and import relationships far better than character splitting.
 
@@ -495,7 +244,7 @@ export { extractMarkdown, type MarkdownSection, type MarkdownExtractionResult }
 
 ### Why Recursive Splitting?
 
-The naive approach to chunking is to split text at a fixed character count — every 1000 characters, create a new chunk. This produces terrible results because it splits mid-sentence, mid-paragraph, and mid-section. A chunk that starts with "...tion of the policy" and ends with "In the next sec..." is useless for retrieval.
+The naive approach to chunking is to split text at a fixed character count -- every 1000 characters, create a new chunk. This produces terrible results because it splits mid-sentence, mid-paragraph, and mid-section. A chunk that starts with "...tion of the policy" and ends with "In the next sec..." is useless for retrieval.
 
 Recursive character splitting tries to split at natural boundaries, in order of preference:
 
@@ -530,94 +279,23 @@ const DEFAULT_SEPARATORS = [
   '', // Characters (last resort)
 ]
 
-function recursiveSplit(text: string, options: Partial<SplitterOptions> = {}): string[] {
-  const { maxChunkSize = 1000, minChunkSize = 100, overlap = 200, separators = DEFAULT_SEPARATORS } = options
-
-  function splitRecursive(textBlock: string, separatorIndex: number): string[] {
-    if (textBlock.length <= maxChunkSize) {
-      return [textBlock.trim()].filter(t => t.length >= minChunkSize)
-    }
-
-    if (separatorIndex >= separators.length) {
-      // Last resort: hard split at maxChunkSize
-      const result: string[] = []
-      for (let i = 0; i < textBlock.length; i += maxChunkSize - overlap) {
-        result.push(textBlock.slice(i, i + maxChunkSize).trim())
-      }
-      return result.filter(t => t.length >= minChunkSize)
-    }
-
-    const separator = separators[separatorIndex]
-    const parts = textBlock.split(separator)
-
-    if (parts.length === 1) {
-      // This separator did not split the text — try the next one
-      return splitRecursive(textBlock, separatorIndex + 1)
-    }
-
-    // Merge parts into chunks that fit within maxChunkSize
-    const result: string[] = []
-    let currentChunk = ''
-
-    for (const part of parts) {
-      const candidate = currentChunk ? currentChunk + separator + part : part
-
-      if (candidate.length <= maxChunkSize) {
-        currentChunk = candidate
-      } else {
-        // Current chunk is full
-        if (currentChunk.trim().length >= minChunkSize) {
-          result.push(currentChunk.trim())
-        }
-
-        // If the part itself is too large, recursively split it
-        if (part.length > maxChunkSize) {
-          const subChunks = splitRecursive(part, separatorIndex + 1)
-          result.push(...subChunks)
-          currentChunk = ''
-        } else {
-          currentChunk = part
-        }
-      }
-    }
-
-    // Do not forget the last chunk
-    if (currentChunk.trim().length >= minChunkSize) {
-      result.push(currentChunk.trim())
-    }
-
-    return result
-  }
-
-  const rawChunks = splitRecursive(text, 0)
-
-  // Apply overlap
-  if (overlap > 0 && rawChunks.length > 1) {
-    const overlappedChunks: string[] = [rawChunks[0]]
-
-    for (let i = 1; i < rawChunks.length; i++) {
-      const prevChunk = rawChunks[i - 1]
-      const overlapText = prevChunk.slice(-overlap)
-      // Find a clean break point in the overlap
-      const breakPoint = overlapText.lastIndexOf(' ')
-      const cleanOverlap = breakPoint > 0 ? overlapText.slice(breakPoint + 1) : overlapText
-      overlappedChunks.push(cleanOverlap + ' ' + rawChunks[i])
-    }
-
-    return overlappedChunks
-  }
-
-  return rawChunks
-}
-
-export { recursiveSplit, type SplitterOptions, DEFAULT_SEPARATORS }
+function recursiveSplit(text: string, options: Partial<SplitterOptions> = {}): string[]
 ```
+
+Build `recursiveSplit` with a recursive inner function `splitRecursive(textBlock, separatorIndex)`:
+
+1. **Base case 1:** If the text block fits within `maxChunkSize`, return it (filtering out chunks below `minChunkSize`).
+2. **Base case 2:** If you have exhausted all separators, hard-split at `maxChunkSize` with overlap.
+3. **Recursive case:** Split by the current separator. If that separator does not split the text (only 1 part), try the next separator. Otherwise, merge adjacent parts into chunks that fit within `maxChunkSize`. If any single part is still too large, recursively split it with the next separator.
+4. After generating raw chunks, apply overlap: for each chunk after the first, prepend the last `overlap` characters from the previous chunk, finding a clean word boundary.
+
+What happens if you set `minChunkSize` too high -- say, 800 with a `maxChunkSize` of 1000? How would that affect short paragraphs?
 
 ### Structure-Aware Splitting
 
 The recursive splitter above works on any text. But for documents with known structure (markdown headings, HTML sections), we can do better by splitting at structural boundaries.
 
-````typescript
+```typescript
 // src/document-processing/structure-aware-splitter.ts
 
 interface StructuredChunk {
@@ -627,148 +305,18 @@ interface StructuredChunk {
   type: 'text' | 'code' | 'table' | 'list'
 }
 
-function splitMarkdownByStructure(markdown: string, maxChunkSize: number = 1000): StructuredChunk[] {
-  const chunks: StructuredChunk[] = []
-  const lines = markdown.split('\n')
+function splitMarkdownByStructure(markdown: string, maxChunkSize: number = 1000): StructuredChunk[]
+```
 
-  let currentHeading = ''
-  const headingStack: string[] = []
-  let currentContent: string[] = []
-  let currentType: 'text' | 'code' | 'table' | 'list' = 'text'
-  let inCodeBlock = false
+Build `splitMarkdownByStructure` to walk through the markdown line by line, tracking:
 
-  for (const line of lines) {
-    // Track code blocks
-    if (line.startsWith('```')) {
-      inCodeBlock = !inCodeBlock
-      if (inCodeBlock) {
-        // Flush current text content before code block
-        if (currentContent.length > 0) {
-          chunks.push({
-            content: currentContent.join('\n').trim(),
-            heading: currentHeading,
-            parentHeadings: [...headingStack],
-            type: currentType,
-          })
-          currentContent = []
-        }
-        currentType = 'code'
-      }
-      currentContent.push(line)
-      if (!inCodeBlock) {
-        // End of code block
-        chunks.push({
-          content: currentContent.join('\n').trim(),
-          heading: currentHeading,
-          parentHeadings: [...headingStack],
-          type: 'code',
-        })
-        currentContent = []
-        currentType = 'text'
-      }
-      continue
-    }
+- Whether you are inside a fenced code block (toggled by ` ``` ` lines)
+- The current heading and a heading stack for parent breadcrumbs
+- The current content type (text, code, table, list) -- detect tables by lines starting/ending with `|`, detect lists by lines matching `[-*+]\s` or `\d+\.\s`
 
-    if (inCodeBlock) {
-      currentContent.push(line)
-      continue
-    }
+When you encounter a heading or a type change, flush the accumulated content as a `StructuredChunk`. Also flush when content exceeds `maxChunkSize`. This produces chunks that respect document structure rather than arbitrary character boundaries.
 
-    // Detect headings
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
-    if (headingMatch) {
-      // Flush current content
-      if (currentContent.length > 0) {
-        const text = currentContent.join('\n').trim()
-        if (text.length > 0) {
-          chunks.push({
-            content: text,
-            heading: currentHeading,
-            parentHeadings: [...headingStack],
-            type: currentType,
-          })
-        }
-        currentContent = []
-        currentType = 'text'
-      }
-
-      const level = headingMatch[1].length
-      const heading = headingMatch[2].trim()
-
-      // Update heading stack
-      while (headingStack.length > 0 && headingStack.length >= level) {
-        headingStack.pop()
-      }
-      headingStack.push(heading)
-      currentHeading = heading
-      continue
-    }
-
-    // Detect tables
-    if (line.startsWith('|') && line.endsWith('|')) {
-      if (currentType !== 'table' && currentContent.length > 0) {
-        chunks.push({
-          content: currentContent.join('\n').trim(),
-          heading: currentHeading,
-          parentHeadings: [...headingStack],
-          type: currentType,
-        })
-        currentContent = []
-      }
-      currentType = 'table'
-    }
-
-    // Detect lists
-    if (/^[\s]*[-*+]\s/.test(line) || /^[\s]*\d+\.\s/.test(line)) {
-      if (currentType !== 'list' && currentContent.length > 0) {
-        const text = currentContent.join('\n').trim()
-        if (text.length > 0) {
-          chunks.push({
-            content: text,
-            heading: currentHeading,
-            parentHeadings: [...headingStack],
-            type: currentType,
-          })
-          currentContent = []
-        }
-      }
-      currentType = 'list'
-    }
-
-    currentContent.push(line)
-
-    // Check if current content exceeds max size
-    const currentSize = currentContent.join('\n').length
-    if (currentSize > maxChunkSize) {
-      chunks.push({
-        content: currentContent.join('\n').trim(),
-        heading: currentHeading,
-        parentHeadings: [...headingStack],
-        type: currentType,
-      })
-      currentContent = []
-      currentType = 'text'
-    }
-  }
-
-  // Flush remaining content
-  if (currentContent.length > 0) {
-    const text = currentContent.join('\n').trim()
-    if (text.length > 0) {
-      chunks.push({
-        content: text,
-        heading: currentHeading,
-        parentHeadings: [...headingStack],
-        type: currentType,
-      })
-    }
-  }
-
-  return chunks
-}
-
-export { splitMarkdownByStructure, type StructuredChunk }
-````
+Why does tracking content type matter for retrieval? How would a chunk of type `'code'` be retrieved differently than a chunk of type `'text'`?
 
 > **Beginner Note:** The overlap parameter is important. Without overlap, a sentence that straddles two chunks is split in half, and neither chunk has the complete thought. An overlap of 100-200 characters ensures that boundary sentences appear in both chunks, so retrieval can find them regardless of which chunk is matched.
 
@@ -791,14 +339,14 @@ Good metadata includes:
 
 ### Automatic Metadata Extraction
 
+You will build two approaches: rule-based (fast, free) and LLM-based (slower, semantic).
+
 ```typescript
 // src/document-processing/metadata-extraction.ts
 
 import { generateText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
-
-// Rule-based metadata extraction (fast, no LLM needed)
 
 interface ExtractedMetadata {
   title: string
@@ -809,52 +357,22 @@ interface ExtractedMetadata {
   keyTerms: string[]
 }
 
-function extractBasicMetadata(text: string): ExtractedMetadata {
-  // Extract dates (various formats)
-  const datePatterns = [
-    /\d{4}-\d{2}-\d{2}/g, // ISO: 2024-01-15
-    /\d{1,2}\/\d{1,2}\/\d{4}/g, // US: 1/15/2024
-    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s+\d{4}/gi,
-  ]
+function extractBasicMetadata(text: string): ExtractedMetadata
+```
 
-  const dates: string[] = []
-  for (const pattern of datePatterns) {
-    const matches = text.match(pattern)
-    if (matches) dates.push(...matches)
-  }
+Build `extractBasicMetadata` using regex patterns only -- no LLM calls:
 
-  // Extract emails
-  const emails = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) ?? []
+1. **Dates:** Match ISO format (`\d{4}-\d{2}-\d{2}`), US format (`\d{1,2}/\d{1,2}/\d{4}`), and English format (`Jan 15, 2024`). Deduplicate the results.
+2. **Emails and URLs:** Standard patterns. What regex would you use for emails?
+3. **Headings:** Match markdown heading lines and strip the `#` prefix.
+4. **Title:** Use the first heading, or the first line truncated to 100 characters.
+5. **Key terms:** Find capitalized multi-word phrases (likely proper nouns) with `/\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+\b/g`. Cap at 20 terms.
 
-  // Extract URLs
-  const urls = text.match(/https?:\/\/[^\s)>\]]+/g) ?? []
+### LLM-Powered Metadata
 
-  // Extract headings (markdown-style)
-  const headings = text.match(/^#{1,6}\s+(.+)$/gm)?.map(h => h.replace(/^#+\s+/, '')) ?? []
+For semantic fields that regex cannot extract, define a Zod schema and use `Output.object`:
 
-  // Extract title (first heading or first line)
-  const title = headings[0] || text.split('\n')[0]?.slice(0, 100) || 'Untitled'
-
-  // Extract key terms (capitalized phrases, likely proper nouns)
-  const keyTermSet = new Set<string>()
-  const termPattern = /\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+\b/g
-  let termMatch
-  while ((termMatch = termPattern.exec(text)) !== null) {
-    keyTermSet.add(termMatch[0])
-  }
-
-  return {
-    title,
-    dates: [...new Set(dates)],
-    emails: [...new Set(emails)],
-    urls: [...new Set(urls)],
-    headings,
-    keyTerms: [...keyTermSet].slice(0, 20),
-  }
-}
-
-// LLM-powered metadata extraction (slower but more accurate)
-
+```typescript
 const DocumentMetadataSchema = z.object({
   title: z.string().describe('Document title'),
   summary: z.string().describe('2-3 sentence summary of the document'),
@@ -882,24 +400,16 @@ const DocumentMetadataSchema = z.object({
   dateReferences: z.array(z.string()).describe('Dates or time periods mentioned'),
 })
 
-async function extractLLMMetadata(text: string): Promise<z.infer<typeof DocumentMetadataSchema>> {
-  // Truncate to first 3000 characters for metadata extraction
-  // (we do not need the full document)
-  const truncated = text.length > 3000 ? text.slice(0, 3000) + '\n...[truncated]' : text
+async function extractLLMMetadata(text: string): Promise<z.infer<typeof DocumentMetadataSchema>>
+```
 
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: DocumentMetadataSchema }),
-    system: `Extract metadata from the following document. Be precise
-and extract only what is clearly present in the text.`,
-    messages: [{ role: 'user', content: truncated }],
-    temperature: 0,
-  })
+Build `extractLLMMetadata` to truncate the input to the first 3000 characters (metadata extraction does not need the full document) and call `generateText` with `Output.object({ schema: DocumentMetadataSchema })`.
 
-  return output
-}
+### Enriching Chunks
 
-// Enrich chunks with contextual metadata
+Build an `enrichChunkMetadata` function that takes a single chunk plus its document context (title, type, section heading) and uses an LLM to extract chunk-specific topics, entities, and a one-sentence summary. This per-chunk metadata enables fine-grained filtering at retrieval time.
+
+```typescript
 interface EnrichedChunk {
   content: string
   metadata: {
@@ -915,47 +425,13 @@ interface EnrichedChunk {
 
 async function enrichChunkMetadata(
   chunk: string,
-  documentContext: {
-    title: string
-    type: string
-    sectionHeading?: string
-    parentHeadings?: string[]
-  }
-): Promise<EnrichedChunk> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        topics: z.array(z.string()).describe('Topics in this specific chunk'),
-        entities: z.array(z.string()).describe('Named entities in this chunk'),
-        chunkSummary: z.string().describe('One sentence describing what this chunk contains'),
-      }),
-    }),
-    system: `Extract metadata for this specific chunk of a larger document.
-Document: "${documentContext.title}" (${documentContext.type})
-Section: ${documentContext.sectionHeading ?? 'Unknown'}`,
-    messages: [{ role: 'user', content: chunk }],
-    temperature: 0,
-  })
-
-  return {
-    content: chunk,
-    metadata: {
-      sectionHeading: documentContext.sectionHeading ?? '',
-      parentHeadings: documentContext.parentHeadings ?? [],
-      documentTitle: documentContext.title,
-      documentType: documentContext.type,
-      topics: output.topics,
-      entities: output.entities,
-      chunkSummary: output.chunkSummary,
-    },
-  }
-}
-
-export { extractBasicMetadata, extractLLMMetadata, enrichChunkMetadata, type ExtractedMetadata, type EnrichedChunk }
+  documentContext: { title: string; type: string; sectionHeading?: string; parentHeadings?: string[] }
+): Promise<EnrichedChunk>
 ```
 
-> **Beginner Note:** Start with rule-based metadata extraction (dates, emails, URLs, headings). It is free, fast, and reliable. Add LLM-based metadata extraction only for fields that rule-based approaches cannot handle — like document type classification, topic extraction, or summarization.
+When would enriching every chunk be too expensive? How would you decide which chunks are worth the LLM call?
+
+> **Beginner Note:** Start with rule-based metadata extraction (dates, emails, URLs, headings). It is free, fast, and reliable. Add LLM-based metadata extraction only for fields that rule-based approaches cannot handle -- like document type classification, topic extraction, or summarization.
 
 > **Advanced Note:** Metadata-filtered retrieval is extremely powerful. Instead of searching all chunks, filter by document type ("policy"), date range ("2024"), or topic ("refund") before semantic search. This reduces the search space and dramatically improves precision. Most vector databases support metadata filtering natively.
 
@@ -965,7 +441,7 @@ export { extractBasicMetadata, extractLLMMetadata, enrichChunkMetadata, type Ext
 
 ### Beyond Plain Text
 
-Some documents contain structured information — tables, key-value pairs, forms, specifications — that is lost when extracted as plain text. An LLM can recover this structure and convert it into machine-readable formats.
+Some documents contain structured information -- tables, key-value pairs, forms, specifications -- that is lost when extracted as plain text. An LLM can recover this structure and convert it into machine-readable formats.
 
 ### Table Extraction
 
@@ -989,55 +465,24 @@ const ExtractedTableSchema = z.object({
 
 type ExtractedTable = z.infer<typeof ExtractedTableSchema>['tables'][0]
 
-async function extractTables(text: string): Promise<ExtractedTable[]> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ExtractedTableSchema }),
-    system: `Extract all tables from the following text. The text may
-contain tables in various formats:
-- Markdown tables
-- ASCII tables
-- Tab-separated data
-- Aligned columns
-
-Convert each table into a structured format with headers and rows.
-If a table has no explicit headers, infer them from the data.`,
-    messages: [{ role: 'user', content: text }],
-    temperature: 0,
-  })
-
-  return output.tables
-}
-
-// Convert extracted table back to different formats
-
-function tableToCSV(table: ExtractedTable): string {
-  const escapeCell = (cell: string) => (cell.includes(',') ? `"${cell}"` : cell)
-  const lines = [table.headers.map(escapeCell).join(','), ...table.rows.map(row => row.map(escapeCell).join(','))]
-  return lines.join('\n')
-}
-
-function tableToJSON(table: ExtractedTable): Array<Record<string, string>> {
-  return table.rows.map(row => {
-    const obj: Record<string, string> = {}
-    table.headers.forEach((header, i) => {
-      obj[header] = row[i] ?? ''
-    })
-    return obj
-  })
-}
-
-export { extractTables, tableToCSV, tableToJSON, type ExtractedTable }
+async function extractTables(text: string): Promise<ExtractedTable[]>
 ```
+
+Build `extractTables` to call `generateText` with `Output.object({ schema: ExtractedTableSchema })`. The system prompt should instruct the LLM to find tables in various formats (markdown, ASCII, tab-separated, aligned columns) and convert each into the structured format. If a table has no explicit headers, the LLM should infer them.
+
+Also build two conversion utilities:
+
+```typescript
+function tableToCSV(table: ExtractedTable): string // Escape cells containing commas
+function tableToJSON(table: ExtractedTable): Array<Record<string, string>> // header -> cell value
+```
+
+How would you handle a cell that contains a comma in the CSV output? What about a cell that contains a double quote?
 
 ### Key-Value Pair Extraction
 
 ```typescript
 // src/document-processing/kv-extraction.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
 
 const KeyValueSchema = z.object({
   pairs: z.array(
@@ -1053,57 +498,14 @@ const KeyValueSchema = z.object({
 async function extractKeyValuePairs(
   text: string,
   expectedFields?: string[]
-): Promise<z.infer<typeof KeyValueSchema>['pairs']> {
-  const fieldGuidance = expectedFields ? `\n\nLook specifically for these fields: ${expectedFields.join(', ')}` : ''
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: KeyValueSchema }),
-    system: `Extract key-value pairs from the following text. Look for:
-- Labeled fields (e.g., "Name: John Smith")
-- Form-like data
-- Configuration parameters
-- Specification values
-- Any structured data that can be represented as key-value pairs
-${fieldGuidance}
-
-Set confidence based on how clear the extraction is:
-- 1.0: Explicitly labeled field
-- 0.7-0.9: Clearly implied but not explicitly labeled
-- Below 0.7: Uncertain extraction`,
-    messages: [{ role: 'user', content: text }],
-    temperature: 0,
-  })
-
-  return output.pairs
-}
-
-// Example: Extract invoice data
-async function extractInvoiceData(invoiceText: string): Promise<Record<string, string>> {
-  const pairs = await extractKeyValuePairs(invoiceText, [
-    'Invoice Number',
-    'Date',
-    'Due Date',
-    'Customer Name',
-    'Total Amount',
-    'Tax',
-    'Subtotal',
-  ])
-
-  const result: Record<string, string> = {}
-  for (const pair of pairs) {
-    if (pair.confidence >= 0.7) {
-      result[pair.key] = pair.value
-    }
-  }
-
-  return result
-}
-
-export { extractKeyValuePairs, extractInvoiceData }
+): Promise<z.infer<typeof KeyValueSchema>['pairs']>
 ```
 
-> **Beginner Note:** Structured extraction is most valuable for documents with consistent formats — invoices, resumes, specifications, forms. For free-form text like blog posts or essays, metadata extraction (Section 4) is more appropriate.
+Build `extractKeyValuePairs` with a system prompt that looks for labeled fields, form-like data, configuration parameters, and specification values. When `expectedFields` is provided, include them in the prompt to guide extraction. The confidence field should reflect how explicitly the pair was stated: 1.0 for `"Name: John Smith"`, 0.7-0.9 for clearly implied but unlabeled, below 0.7 for uncertain.
+
+Build a specialized `extractInvoiceData` that wraps `extractKeyValuePairs` with expected fields like Invoice Number, Date, Due Date, Customer Name, Total Amount, Tax, Subtotal -- and filters by confidence >= 0.7.
+
+> **Beginner Note:** Structured extraction is most valuable for documents with consistent formats -- invoices, resumes, specifications, forms. For free-form text like blog posts or essays, metadata extraction (Section 4) is more appropriate.
 
 > **Advanced Note:** For high-volume extraction of consistent document types (e.g., processing 10,000 invoices), fine-tune a smaller model on your specific format rather than using a large general model. The cost difference is significant at scale. Module 20 covers fine-tuning.
 
@@ -1113,7 +515,7 @@ export { extractKeyValuePairs, extractInvoiceData }
 
 ### Parent-Child Chunk Relationships
 
-In naive chunking, each chunk is independent. But real documents have hierarchy — a section belongs to a chapter, which belongs to a document. When a chunk is retrieved, knowing its parent context dramatically improves answer quality.
+In naive chunking, each chunk is independent. But real documents have hierarchy -- a section belongs to a chapter, which belongs to a document. When a chunk is retrieved, knowing its parent context dramatically improves answer quality.
 
 The parent-child pattern stores chunks at multiple levels of granularity:
 
@@ -1138,157 +540,23 @@ interface HierarchicalChunk {
   }
 }
 
-function buildHierarchy(markdown: string, documentId: string): HierarchicalChunk[] {
-  const chunks: HierarchicalChunk[] = []
-  let chunkCounter = 0
-
-  function nextId(): string {
-    return `${documentId}_chunk_${chunkCounter++}`
-  }
-
-  // Create document-level chunk
-  const docChunk: HierarchicalChunk = {
-    id: nextId(),
-    content: markdown.slice(0, 500) + '...', // Summary/preview
-    level: 'document',
-    parentId: null,
-    childIds: [],
-    metadata: {
-      headingPath: [],
-      documentId,
-      depth: 0,
-    },
-  }
-  chunks.push(docChunk)
-
-  // Parse sections
-  const lines = markdown.split('\n')
-  let currentSection: HierarchicalChunk | null = null
-  let currentSubsection: HierarchicalChunk | null = null
-  let contentBuffer: string[] = []
-  const headingStack: Array<{
-    id: string
-    heading: string
-    level: number
-  }> = []
-
-  function flushContent(): void {
-    const text = contentBuffer.join('\n').trim()
-    if (text.length === 0) {
-      contentBuffer = []
-      return
-    }
-
-    const target = currentSubsection ?? currentSection ?? docChunk
-    target.content += (target.content ? '\n\n' : '') + text
-
-    // If the content is large, create paragraph-level children
-    if (text.length > 500) {
-      const paragraphs = text.split('\n\n').filter(p => p.trim())
-      for (const para of paragraphs) {
-        if (para.trim().length < 50) continue
-
-        const paraChunk: HierarchicalChunk = {
-          id: nextId(),
-          content: para.trim(),
-          level: 'paragraph',
-          parentId: target.id,
-          childIds: [],
-          metadata: {
-            heading: target.metadata.heading,
-            headingPath: target.metadata.headingPath,
-            documentId,
-            depth: target.metadata.depth + 1,
-          },
-        }
-
-        target.childIds.push(paraChunk.id)
-        chunks.push(paraChunk)
-      }
-    }
-
-    contentBuffer = []
-  }
-
-  for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
-
-    if (headingMatch) {
-      // Flush content buffer
-      flushContent()
-
-      const level = headingMatch[1].length
-      const heading = headingMatch[2].trim()
-
-      // Determine hierarchy level
-      const hierarchyLevel = level <= 2 ? 'section' : 'subsection'
-
-      // Update heading stack
-      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {
-        headingStack.pop()
-      }
-
-      const newChunk: HierarchicalChunk = {
-        id: nextId(),
-        content: '', // Will be filled when we flush
-        level: hierarchyLevel,
-        parentId: headingStack.length > 0 ? headingStack[headingStack.length - 1].id : docChunk.id,
-        childIds: [],
-        metadata: {
-          heading,
-          headingPath: [...headingStack.map(h => h.heading), heading],
-          documentId,
-          depth: headingStack.length + 1,
-        },
-      }
-
-      // Link to parent
-      const parent = chunks.find(c => c.id === newChunk.parentId)
-      if (parent) {
-        parent.childIds.push(newChunk.id)
-      }
-
-      chunks.push(newChunk)
-      headingStack.push({ id: newChunk.id, heading, level })
-
-      if (hierarchyLevel === 'section') {
-        currentSection = newChunk
-        currentSubsection = null
-      } else {
-        currentSubsection = newChunk
-      }
-    } else {
-      contentBuffer.push(line)
-    }
-  }
-
-  // Flush remaining content
-  flushContent()
-
-  return chunks
-}
-
-// Retrieve with parent expansion
-function expandToParent(chunkId: string, allChunks: HierarchicalChunk[]): string {
-  const chunk = allChunks.find(c => c.id === chunkId)
-  if (!chunk) return ''
-
-  // Build context from heading path
-  const headingContext = chunk.metadata.headingPath.map((h, i) => '#'.repeat(i + 1) + ' ' + h).join('\n')
-
-  // If this is a paragraph, include the parent section content
-  if (chunk.level === 'paragraph' && chunk.parentId) {
-    const parent = allChunks.find(c => c.id === chunk.parentId)
-    if (parent) {
-      return `${headingContext}\n\n${parent.content}`
-    }
-  }
-
-  return `${headingContext}\n\n${chunk.content}`
-}
-
-export { buildHierarchy, expandToParent, type HierarchicalChunk }
+function buildHierarchy(markdown: string, documentId: string): HierarchicalChunk[]
+function expandToParent(chunkId: string, allChunks: HierarchicalChunk[]): string
 ```
+
+Build `buildHierarchy` to create a tree of chunks from markdown:
+
+1. Create a document-level chunk (depth 0) with a preview of the first 500 characters.
+2. Walk lines, detecting headings. Map heading levels 1-2 to `'section'` and 3+ to `'subsection'`.
+3. Maintain a heading stack. When you encounter a heading, pop the stack to the correct parent level, then push the new heading. Use the stack to build `headingPath`.
+4. Accumulate content between headings in a buffer. When you hit a new heading, flush the buffer into the current chunk's content.
+5. For large content blocks (> 500 characters), split by `\n\n` and create `'paragraph'`-level children linked to their parent via `parentId`/`childIds`.
+
+A helper `nextId()` using a counter and the `documentId` keeps IDs unique: `${documentId}_chunk_${counter++}`.
+
+Build `expandToParent` for retrieval-time context expansion: given a chunk ID, reconstruct the heading path as a markdown heading breadcrumb, and if the chunk is a paragraph, include the parent section's full content instead of just the paragraph.
+
+Why does expanding to the parent improve answer quality? What is the trade-off in terms of context window usage?
 
 > **Beginner Note:** The simplest version of parent-child chunking is to store section headings as metadata on each chunk. When a chunk is retrieved, prepend its heading path ("Company Policies > Customer Service > Refund Policy") to give the LLM context about where this chunk lives in the document.
 
@@ -1300,7 +568,7 @@ export { buildHierarchy, expandToParent, type HierarchicalChunk }
 
 ### Detecting Changes
 
-When your document corpus changes — new documents are added, existing ones are updated, old ones are deleted — you do not want to re-process and re-embed everything. Incremental processing detects what changed and updates only the affected chunks and embeddings.
+When your document corpus changes -- new documents are added, existing ones are updated, old ones are deleted -- you do not want to re-process and re-embed everything. Incremental processing detects what changed and updates only the affected chunks and embeddings.
 
 ```typescript
 // src/document-processing/incremental.ts
@@ -1324,75 +592,30 @@ interface ChangeDetectionResult {
   unchanged: string[] // No changes
 }
 
-function computeContentHash(content: string): string {
-  return createHash('sha256').update(content).digest('hex')
-}
-
+function computeContentHash(content: string): string
 async function detectChanges(
   directoryPath: string,
   existingRecords: Map<string, DocumentRecord>,
-  supportedExtensions: string[] = ['.md', '.txt', '.html', '.pdf']
-): Promise<ChangeDetectionResult> {
-  const result: ChangeDetectionResult = {
-    added: [],
-    modified: [],
-    deleted: [],
-    unchanged: [],
-  }
+  supportedExtensions?: string[]
+): Promise<ChangeDetectionResult>
+```
 
-  // Scan current files
-  const currentFiles = new Set<string>()
+Build `computeContentHash` using `createHash('sha256').update(content).digest('hex')`.
 
-  async function scanDir(dir: string): Promise<void> {
-    const entries = await readdir(dir, {
-      withFileTypes: true,
-    })
-    for (const entry of entries) {
-      const fullPath = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        await scanDir(fullPath)
-      } else if (supportedExtensions.includes(extname(entry.name))) {
-        currentFiles.add(fullPath)
-      }
-    }
-  }
+Build `detectChanges` to:
 
-  await scanDir(directoryPath)
+1. Recursively scan the directory for files matching `supportedExtensions` (default: `.md`, `.txt`, `.html`, `.pdf`).
+2. For each file, read its content and compute the hash.
+3. Compare against `existingRecords`: if the path is not in records, it is added. If the path is in records but the hash differs, it is modified. If it matches, it is unchanged.
+4. Check for deleted files: paths in `existingRecords` that are not in the current file scan.
 
-  // Check each current file
-  for (const filePath of currentFiles) {
-    const content = await readFile(filePath, 'utf-8')
-    const hash = computeContentHash(content)
+### Incremental Update Pipeline
 
-    const existing = existingRecords.get(filePath)
-    if (!existing) {
-      result.added.push(filePath)
-    } else if (existing.contentHash !== hash) {
-      result.modified.push(filePath)
-    } else {
-      result.unchanged.push(filePath)
-    }
-  }
+Build an `incrementalUpdate` function that takes the change detection result and applies updates:
 
-  // Check for deleted files
-  for (const [path] of existingRecords) {
-    if (!currentFiles.has(path)) {
-      result.deleted.push(path)
-    }
-  }
-
-  return result
-}
-
-// Incremental update pipeline
+```typescript
 interface VectorStore {
-  upsert(
-    chunks: Array<{
-      id: string
-      embedding: number[]
-      metadata: Record<string, unknown>
-    }>
-  ): Promise<void>
+  upsert(chunks: Array<{ id: string; embedding: number[]; metadata: Record<string, unknown> }>): Promise<void>
   deleteByIds(ids: string[]): Promise<void>
 }
 
@@ -1401,89 +624,16 @@ async function incrementalUpdate(
   records: Map<string, DocumentRecord>,
   processFn: (path: string) => Promise<Array<{ id: string; content: string; embedding: number[] }>>,
   vectorStore: VectorStore
-): Promise<{
-  processedDocs: number
-  addedChunks: number
-  deletedChunks: number
-}> {
-  let addedChunks = 0
-  let deletedChunks = 0
-
-  // Process added documents
-  for (const path of changes.added) {
-    console.log(`Adding: ${path}`)
-    const chunks = await processFn(path)
-
-    await vectorStore.upsert(
-      chunks.map(c => ({
-        id: c.id,
-        embedding: c.embedding,
-        metadata: { path, content: c.content },
-      }))
-    )
-
-    const content = await readFile(path, 'utf-8')
-    records.set(path, {
-      path,
-      contentHash: computeContentHash(content),
-      lastProcessed: new Date(),
-      chunkIds: chunks.map(c => c.id),
-      embeddingIds: chunks.map(c => c.id),
-    })
-
-    addedChunks += chunks.length
-  }
-
-  // Process modified documents (delete old chunks, add new)
-  for (const path of changes.modified) {
-    console.log(`Updating: ${path}`)
-    const existing = records.get(path)
-    if (existing) {
-      await vectorStore.deleteByIds(existing.chunkIds)
-      deletedChunks += existing.chunkIds.length
-    }
-
-    const chunks = await processFn(path)
-    await vectorStore.upsert(
-      chunks.map(c => ({
-        id: c.id,
-        embedding: c.embedding,
-        metadata: { path, content: c.content },
-      }))
-    )
-
-    const content = await readFile(path, 'utf-8')
-    records.set(path, {
-      path,
-      contentHash: computeContentHash(content),
-      lastProcessed: new Date(),
-      chunkIds: chunks.map(c => c.id),
-      embeddingIds: chunks.map(c => c.id),
-    })
-
-    addedChunks += chunks.length
-  }
-
-  // Process deleted documents
-  for (const path of changes.deleted) {
-    console.log(`Deleting: ${path}`)
-    const existing = records.get(path)
-    if (existing) {
-      await vectorStore.deleteByIds(existing.chunkIds)
-      deletedChunks += existing.chunkIds.length
-      records.delete(path)
-    }
-  }
-
-  return {
-    processedDocs: changes.added.length + changes.modified.length + changes.deleted.length,
-    addedChunks,
-    deletedChunks,
-  }
-}
-
-export { detectChanges, incrementalUpdate, computeContentHash, type DocumentRecord, type ChangeDetectionResult }
+): Promise<{ processedDocs: number; addedChunks: number; deletedChunks: number }>
 ```
+
+The function should:
+
+- For added documents: process, upsert chunks, create a new record.
+- For modified documents: delete old chunks from the vector store, process the updated document, upsert new chunks, update the record.
+- For deleted documents: delete chunks from the vector store, remove the record.
+
+What happens if the process function fails mid-way through a modified document -- the old chunks are deleted but the new ones are not yet inserted? How would you make this operation atomic?
 
 > **Beginner Note:** The simplest change detection is file modification timestamp. Content hashing (SHA-256) is more reliable because it detects actual content changes rather than timestamp changes from file copying or backup restoration.
 
@@ -1495,9 +645,9 @@ export { detectChanges, incrementalUpdate, computeContentHash, type DocumentReco
 
 ### The 500-Page Problem
 
-A 500-page PDF might contain 250,000 words — far too much for any single LLM context window. You need strategies for processing, chunking, and querying documents of this size.
+A 500-page PDF might contain 250,000 words -- far too much for any single LLM context window. You need strategies for processing, chunking, and querying documents of this size.
 
-### Map-Reduce Processing
+### Strategy 1: Hierarchical Summarization
 
 Process the document in parts (map), then combine the results (reduce).
 
@@ -1522,211 +672,137 @@ const DEFAULT_CONFIG: LargeDocumentConfig = {
   maxContextTokens: 100000,
 }
 
-// Strategy 1: Hierarchical summarization
-// Summarize groups of chunks, then summarize the summaries
-
 async function hierarchicalSummarize(
   text: string,
-  config: LargeDocumentConfig = DEFAULT_CONFIG
-): Promise<{
-  fullSummary: string
-  sectionSummaries: Array<{
-    section: string
-    summary: string
-  }>
-}> {
-  // Step 1: Split into manageable chunks
-  const chunks = recursiveSplit(text, {
-    maxChunkSize: config.maxChunkSize,
-    overlap: config.overlapSize,
-  })
+  config?: LargeDocumentConfig
+): Promise<{ fullSummary: string; sectionSummaries: Array<{ section: string; summary: string }> }>
+```
 
-  console.log(`Split into ${chunks.length} chunks`)
+Build `hierarchicalSummarize` in three steps:
 
-  // Step 2: Summarize in batches
-  const batchSummaries: string[] = []
-  const totalBatches = Math.ceil(chunks.length / config.summaryBatchSize)
+1. **Split** the text into manageable chunks using `recursiveSplit`.
+2. **Map:** Group chunks into batches of `summaryBatchSize`. For each batch, call `generateText` with a system prompt like "Summarize this section of a larger document. Preserve key facts, numbers, names. This is section X of Y." Collect the batch summaries.
+3. **Reduce:** Concatenate all batch summaries and call `generateText` again to synthesize them into a single comprehensive summary.
 
-  for (let i = 0; i < chunks.length; i += config.summaryBatchSize) {
-    const batch = chunks.slice(i, i + config.summaryBatchSize)
-    const batchText = batch.join('\n\n---\n\n')
-    const batchIndex = Math.floor(i / config.summaryBatchSize) + 1
+Why does the batch summarization prompt include "section X of Y"? How does that help the model?
 
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: `Summarize the following section of a larger document.
-Preserve key facts, numbers, names, and conclusions. Be concise
-but thorough. This is section ${batchIndex} of ${totalBatches}.`,
-      messages: [{ role: 'user', content: batchText }],
-      maxOutputTokens: 500,
-      temperature: 0,
-    })
+### Strategy 2: Sliding Window Processing
 
-    batchSummaries.push(result.text)
-    console.log(`Summarized batch ${batchIndex}/${totalBatches}`)
-  }
-
-  // Step 3: Synthesize batch summaries into final summary
-  const allSummaries = batchSummaries.map((s, i) => `[Section ${i + 1}]\n${s}`).join('\n\n')
-
-  const finalResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are given summaries of consecutive sections of a large
-document. Synthesize these into a single comprehensive summary that:
-1. Captures the main thesis and key arguments
-2. Preserves all important facts, numbers, and conclusions
-3. Maintains the logical flow of the document
-4. Is structured with clear paragraphs`,
-    messages: [{ role: 'user', content: allSummaries }],
-    maxOutputTokens: 2000,
-    temperature: 0,
-  })
-
-  return {
-    fullSummary: finalResult.text,
-    sectionSummaries: batchSummaries.map((s, i) => ({
-      section: `Section ${i + 1}`,
-      summary: s,
-    })),
-  }
-}
-
-// Strategy 2: Sliding window processing
-// Process overlapping windows across the document
-
+```typescript
 async function slidingWindowProcess(
   text: string,
-  windowSize: number = 5000,
-  stepSize: number = 3000,
+  windowSize?: number, // default 5000
+  stepSize?: number, // default 3000
   processFn: (windowText: string, windowIndex: number) => Promise<string>
-): Promise<string[]> {
-  const results: string[] = []
-  let position = 0
-  let windowIndex = 0
+): Promise<string[]>
+```
 
-  while (position < text.length) {
-    const windowEnd = Math.min(position + windowSize, text.length)
-    const windowText = text.slice(position, windowEnd)
+Build this to move a window across the document with `windowSize` characters and `stepSize` advancement. The overlap (`windowSize - stepSize`) ensures continuity between windows. Each window is passed to `processFn` for whatever processing you need (extraction, summarization, analysis).
 
-    const result = await processFn(windowText, windowIndex)
-    results.push(result)
+What happens if `stepSize > windowSize`? What gets missed?
 
-    position += stepSize
-    windowIndex++
+### Strategy 3: Multi-Level Indexing
 
-    console.log(`Processed window ${windowIndex}: chars ${position}-${windowEnd} of ${text.length}`)
-  }
+Create a two-level index: coarse (section summaries) for routing, and fine (individual chunks) for precise retrieval.
 
-  return results
-}
-
-// Strategy 3: Multi-level indexing
-// Create a two-level index: coarse (section summaries) + fine (chunks)
-
+```typescript
 interface MultiLevelIndex {
   documentSummary: string
   sections: Array<{
     heading: string
     summary: string
     summaryEmbedding: number[]
-    chunks: Array<{
-      content: string
-      embedding: number[]
-    }>
+    chunks: Array<{ content: string; embedding: number[] }>
   }>
 }
 
 async function buildMultiLevelIndex(
   text: string,
   embeddingModel: Parameters<typeof embed>[0]['model'],
-  config: LargeDocumentConfig = DEFAULT_CONFIG
-): Promise<MultiLevelIndex> {
-  // Split into sections first
-  const sections = text.split(/\n#{1,2}\s+/).filter(s => s.trim())
+  config?: LargeDocumentConfig
+): Promise<MultiLevelIndex>
+```
 
-  const indexedSections: MultiLevelIndex['sections'] = []
+Build `buildMultiLevelIndex` to:
 
-  for (const section of sections) {
-    // Get heading
-    const headingMatch = section.match(/^(.+)\n/)
-    const heading = headingMatch?.[1]?.trim() ?? 'Untitled Section'
+1. Split text into sections by top-level headings.
+2. For each section: summarize it (2-3 sentences), embed the summary, split the section into chunks, embed each chunk.
+3. Create a document-level summary from the section summaries.
 
-    // Summarize section
-    const summaryResult = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'Summarize this section in 2-3 sentences.',
-      messages: [
-        {
-          role: 'user',
-          content: section.slice(0, 5000),
-        },
-      ],
-      maxOutputTokens: 200,
-      temperature: 0,
-    })
+At retrieval time, you first search section summaries to find the relevant section, then search that section's chunks for the precise answer. This two-stage approach avoids searching all chunks in a 500-page document.
 
-    // Embed summary
-    const { embedding: summaryEmbedding } = await embed({
-      model: embeddingModel,
-      value: summaryResult.text,
-    })
+When would you prefer multi-level indexing over simply embedding all chunks in a flat index? What is the trade-off?
 
-    // Split section into chunks and embed each
-    const sectionChunks = recursiveSplit(section, {
-      maxChunkSize: config.maxChunkSize,
-      overlap: config.overlapSize,
-    })
+> **Beginner Note:** For most use cases, you do not need all these strategies. Hierarchical summarization (Strategy 1) is the simplest and works for most documents. Use multi-level indexing (Strategy 3) when you need to query large documents repeatedly -- the upfront cost is high but subsequent queries are fast.
 
-    const embeddedChunks = await Promise.all(
-      sectionChunks.map(async content => {
-        const { embedding } = await embed({
-          model: embeddingModel,
-          value: content,
-        })
-        return { content, embedding }
-      })
-    )
+> **Advanced Note:** Modern models like Claude have context windows of 200K tokens, which can fit approximately 150,000 words -- a full-length book. For documents within this range, you can sometimes skip chunking entirely and use the full document as context, relying on the model's attention mechanism to find relevant information. This approach ("long context RAG") trades compute cost for simplicity and can be surprisingly effective. Module 5 covers long context strategies.
 
-    indexedSections.push({
-      heading,
-      summary: summaryResult.text,
-      summaryEmbedding,
-      chunks: embeddedChunks,
-    })
-  }
+---
 
-  // Create document-level summary
-  const docSummary = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: 'Provide a comprehensive summary of this document.',
-    messages: [
-      {
-        role: 'user',
-        content: `Section summaries:\n${indexedSections.map(s => `- ${s.heading}: ${s.summary}`).join('\n')}`,
-      },
-    ],
-    maxOutputTokens: 500,
-    temperature: 0,
-  })
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-  return {
-    documentSummary: docSummary.text,
-    sections: indexedSections,
-  }
+## Section 9: Bounded Reading Within Token Budgets
+
+Production file reading tools do not read entire files blindly. They enforce constraints:
+
+- **Max token limit per read** — truncate content that exceeds the budget
+- **Max file size in bytes** — skip files that are too large before even reading
+- **Offset/limit parameters** — support paginated reading of large files
+- **Binary file detection** — skip non-text files automatically
+- **Image handling** — pass image files as visual content rather than text
+- **PDF page ranges** — read specific pages instead of the entire document
+
+Document processing is not just about extracting text — it is about reading intelligently within constraints. Every token you spend reading a file is a token you cannot spend on the LLM's response or other context.
+
+```typescript
+interface ReadOptions {
+  maxTokens?: number
+  offset?: number
+  limit?: number
 }
 
-export {
-  hierarchicalSummarize,
-  slidingWindowProcess,
-  buildMultiLevelIndex,
-  type LargeDocumentConfig,
-  type MultiLevelIndex,
+async function readWithBudget(path: string, maxTokens: number): Promise<string> {
+  /* ... */
 }
 ```
 
-> **Beginner Note:** For most use cases, you do not need all these strategies. Hierarchical summarization (Strategy 1) is the simplest and works for most documents. Use multi-level indexing (Strategy 3) when you need to query large documents repeatedly — the upfront cost is high but subsequent queries are fast.
+Build this function with a two-stage check: first, check the file size via `stat()` and reject files that exceed the budget (estimated as `maxTokens * 4` bytes). If the file is small enough to read, load its content and estimate the token count. If within budget, return the full content. Otherwise, truncate to fit and append a `[...truncated]` marker.
 
-> **Advanced Note:** Modern models like Claude have context windows of 200K tokens, which can fit approximately 150,000 words — a full-length book. For documents within this range, you can sometimes skip chunking entirely and use the full document as context, relying on the model's attention mechanism to find relevant information. This approach ("long context RAG") trades compute cost for simplicity and can be surprisingly effective. Module 5 covers long context strategies.
+The `readWithBudget` pattern is essential for any document processing pipeline that operates under token constraints. Rather than reading everything and hoping it fits, you enforce budgets at the reading layer.
+
+---
+
+## Section 10: File Type Routing
+
+Different document types need different processing strategies. Production systems detect the file type and route to the appropriate processor:
+
+- **Markdown** — split by headings, extract YAML frontmatter, preserve code blocks
+- **PDF** — extract by page, handle tables and layouts, support page range selection
+- **Source code** — split by functions/classes, preserve imports, respect language syntax
+- **Structured data (JSON, TOML, YAML)** — parse the structure, extract fields
+- **Images** — pass as visual content for multimodal models
+- **Plain text** — fall back to recursive character splitting
+
+```typescript
+type FileProcessor = (content: string, metadata: FileMetadata) => Chunk[]
+
+const processors: Record<string, FileProcessor> = {
+  '.md': markdownProcessor, // Heading-aware splitting
+  '.pdf': pdfProcessor, // Page-based extraction
+  '.ts': codeProcessor, // Function-level splitting
+  '.json': structuredDataProcessor, // Schema-aware parsing
+  '.txt': plainTextProcessor, // Recursive character splitting
+}
+
+function routeFile(path: string): FileProcessor {
+  const ext = extname(path).toLowerCase()
+  return processors[ext] ?? plainTextProcessor
+}
+```
+
+The routing pattern normalizes diverse document types into a common `Chunk` format before they enter the embedding and retrieval pipeline. This separation of concerns — detection, routing, processing, normalization — keeps each processor focused and testable.
+
+> **Note: LSP and Structure-Aware Processing** — This module teaches chunking strategies that try to respect code structure: split by functions, preserve class boundaries, keep imports together. Language Server Protocol provides the exact structural understanding that chunking approximates. LSP knows precisely where every function starts and ends, what its parameters are, and what it calls. When you chunk source code by function boundaries, you are approximating what a language server already knows exactly. This comparison motivates why structure-preserving chunking matters: the closer your chunks align with actual code structure, the better your retrieval quality.
 
 ---
 
@@ -1794,6 +870,34 @@ You are processing a 500-page technical manual for a RAG system. The manual has 
 - D) Summarize the entire document into one chunk
 
 **Answer: B** — A well-structured technical manual with a clear table of contents is ideally suited for structure-aware splitting: split at heading boundaries (preserving section integrity), build a parent-child hierarchy (sections contain subsections), and create a multi-level index (section summaries for coarse retrieval, individual chunks for fine-grained retrieval). Cross-references can be preserved as metadata, linking related sections. Option A ignores structure, C discards the heading hierarchy, and D loses all detail.
+
+### Question 6 (Medium)
+
+Why should a production file reading tool enforce a maximum token budget per read rather than reading entire files?
+
+a) Reading full files is slower than reading partial files
+b) Every token spent reading a file is a token unavailable for the LLM's response or other context — unbounded reads can consume the entire context window on a single large file
+c) Token budgets reduce disk I/O
+d) LLMs cannot process files larger than 1000 tokens
+
+**Answer: B**
+
+**Explanation:** The context window is a shared resource. If a single file read consumes 80% of the window, there is little room left for the system prompt, conversation history, other retrieved chunks, or the model's response. Bounded reading with token budgets ensures no single file monopolizes the context. The `readWithBudget` pattern validates file size before reading, truncates if needed, and provides clear feedback about truncation.
+
+---
+
+### Question 7 (Hard)
+
+Your document processing pipeline handles markdown, PDF, source code, and JSON files. Rather than using one splitting strategy for all types, you implement file type routing. What is the primary benefit of routing each type to a specialized processor?
+
+a) It reduces the total number of chunks produced
+b) Specialized processors respect each format's natural structure (headings in markdown, pages in PDF, functions in code, fields in JSON), producing higher-quality chunks that preserve semantic coherence within each chunk
+c) File type routing eliminates the need for embeddings
+d) It allows processing all files in parallel
+
+**Answer: B**
+
+**Explanation:** A markdown file has headings that define semantic boundaries. A source code file has functions and classes. A JSON file has nested fields. A one-size-fits-all recursive character splitter ignores these structures and may split mid-function or mid-JSON-object. Specialized processors know where the natural split points are for each format, producing chunks that contain complete, coherent units of information. This directly improves embedding quality and retrieval precision because each chunk represents a meaningful unit rather than an arbitrary text fragment.
 
 ---
 
@@ -1940,6 +1044,142 @@ describe('Exercise 11: Incremental Updates', () => {
 
 ---
 
+### Exercise 3: Bounded Document Reader
+
+**Objective:** Build a document reader that handles large files gracefully by enforcing token budgets, supporting pagination, and detecting file types.
+
+**Specification:**
+
+1. Create `src/exercises/m11/ex03-bounded-reader.ts`
+2. Implement a `readWithBudget(path, maxTokens)` function that:
+   - Checks file size before reading (skip files over a configurable byte limit)
+   - Detects binary files and returns a placeholder instead of garbled content
+   - Reads text content and truncates to the token budget with a `[...truncated]` marker
+   - Supports `offset` and `limit` parameters for paginated reading of large files
+   - Returns metadata alongside content: file size, token count, whether truncated, file type
+3. Implement a `readDirectory(dirPath, totalBudget)` function that:
+   - Reads all supported files in a directory
+   - Allocates the token budget across files (equal split or proportional to file size)
+   - Returns each file's content within its allocated budget
+4. Test with files of varying sizes — small (fits in budget), medium (requires truncation), and large (skipped entirely)
+
+```typescript
+interface BoundedReadResult {
+  path: string
+  content: string
+  tokenCount: number
+  truncated: boolean
+  fileType: string
+  fileSizeBytes: number
+}
+
+async function readWithBudget(path: string, maxTokens: number): Promise<BoundedReadResult> {
+  // TODO: Implement bounded reading
+  throw new Error('Not implemented')
+}
+```
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m11/ex03-bounded-reader.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 11.3: Bounded Document Reader', () => {
+  it('should read small files completely', async () => {
+    const result = await readWithBudget('test-docs/small.md', 1000)
+    expect(result.truncated).toBe(false)
+    expect(result.tokenCount).toBeLessThanOrEqual(1000)
+  })
+
+  it('should truncate large files to budget', async () => {
+    const result = await readWithBudget('test-docs/large.md', 100)
+    expect(result.truncated).toBe(true)
+    expect(result.content).toContain('[...truncated]')
+  })
+
+  it('should detect and skip binary files', async () => {
+    const result = await readWithBudget('test-docs/image.png', 1000)
+    expect(result.content).toContain('[binary file]')
+  })
+})
+```
+
+---
+
+### Exercise 4: Incremental Processing with Content Hashing
+
+**Objective:** Build a document processor that hashes content on first read, detects changes on subsequent reads, and only re-processes modified documents.
+
+**Specification:**
+
+1. Create `src/exercises/m11/ex04-hash-processing.ts`
+2. Implement a `HashedDocumentProcessor` that:
+   - Computes a content hash (SHA-256) for each processed document
+   - Stores the hash alongside the document's chunk IDs in a manifest
+   - On subsequent processing runs, compares current hashes to stored hashes
+   - Only re-processes documents whose hash has changed
+   - Removes chunks for deleted documents
+   - Reports a change summary: added, modified, unchanged, deleted
+3. Demonstrate with a scenario:
+   - Process 5 documents initially (all new)
+   - Modify 1 document and add 1 new document
+   - Run incremental processing — only 2 documents should be processed
+   - Delete 1 document
+   - Run again — deleted document's chunks should be removed
+
+```typescript
+interface ChangeReport {
+  added: string[]
+  modified: string[]
+  unchanged: string[]
+  deleted: string[]
+  chunksAdded: number
+  chunksRemoved: number
+}
+
+class HashedDocumentProcessor {
+  async processAll(paths: string[]): Promise<ChangeReport> {
+    // TODO: Hash-based incremental processing
+    throw new Error('Not implemented')
+  }
+}
+```
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m11/ex04-hash-processing.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 11.4: Incremental Processing with Hashing', () => {
+  it('should process all documents on first run', async () => {
+    const processor = new HashedDocumentProcessor()
+    const report = await processor.processAll(testPaths)
+    expect(report.added.length).toBe(testPaths.length)
+    expect(report.modified.length).toBe(0)
+  })
+
+  it('should skip unchanged documents on second run', async () => {
+    const processor = new HashedDocumentProcessor()
+    await processor.processAll(testPaths)
+    const report = await processor.processAll(testPaths)
+    expect(report.unchanged.length).toBe(testPaths.length)
+    expect(report.added.length).toBe(0)
+  })
+
+  it('should detect modified documents by hash comparison', async () => {
+    const processor = new HashedDocumentProcessor()
+    await processor.processAll(testPaths)
+    // After modifying a file's content
+    const report = await processor.processAll(testPaths)
+    expect(report.modified.length).toBeGreaterThanOrEqual(0)
+  })
+})
+```
+
+---
+
 ## Summary
 
 In this module, you learned:
@@ -1952,5 +1192,7 @@ In this module, you learned:
 6. **Document hierarchies:** Parent-child chunk relationships provide precise retrieval with contextual expansion.
 7. **Incremental processing:** Content hashing and change detection enable efficient updates when documents change.
 8. **Large document strategies:** Hierarchical summarization, sliding windows, and multi-level indexing handle documents that exceed context windows.
+9. **Bounded reading:** Enforcing token budgets, file size limits, and pagination at the reading layer prevents documents from consuming more context than they are worth.
+10. **File type routing:** Detecting file types and routing to specialized processors (markdown heading splitter, PDF page extractor, code function splitter) produces higher-quality chunks than one-size-fits-all splitting.
 
 In Module 12, you will learn how to extract entities and relationships from documents to build knowledge graphs — a complementary retrieval strategy that captures connections that vector search alone cannot.

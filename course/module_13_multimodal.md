@@ -23,6 +23,8 @@ This module teaches you how to send images to multi-modal models via the Vercel 
 
 The practical impact is immediate. Instead of asking users to describe their error, you can ask them to screenshot it. Instead of manually transcribing whiteboard diagrams, you can photograph them. Instead of ignoring the charts in a report, you can extract the data they contain.
 
+> **Provider Note:** Vision/image features require a multi-modal provider. This module uses Anthropic (`claude-sonnet-4-20250514`). Mistral's Pixtral models or OpenAI GPT-4 are alternatives.
+
 ---
 
 ## Connection to Other Modules
@@ -52,11 +54,13 @@ Multi-modal models accept multiple input types and reason across them. Current c
 
 The Vercel AI SDK supports image input across providers through a unified interface. Audio support varies by provider.
 
+### Building a Model Capability Registry
+
+Your first task is to build a capability registry that tracks which models support which modalities, so the rest of your multi-modal code can select the right model at runtime.
+
+Create `src/multimodal/capabilities.ts` exporting:
+
 ```typescript
-// src/multimodal/capabilities.ts
-
-// Multi-modal model capabilities and selection
-
 interface ModelCapability {
   model: string
   provider: string
@@ -67,61 +71,26 @@ interface ModelCapability {
   maxImageSize: string // e.g., "20MB"
   supportedFormats: string[]
 }
-
-const MODEL_CAPABILITIES: ModelCapability[] = [
-  {
-    model: 'pixtral-12b-2409',
-    provider: 'mistral',
-    imageInput: true,
-    audioInput: false,
-    videoInput: false,
-    maxImages: 20,
-    maxImageSize: '20MB',
-    supportedFormats: ['png', 'jpg', 'gif', 'webp'],
-  },
-  {
-    model: 'gpt-5.4',
-    provider: 'openai',
-    imageInput: true,
-    audioInput: true,
-    videoInput: false,
-    maxImages: 20,
-    maxImageSize: '20MB',
-    supportedFormats: ['png', 'jpg', 'gif', 'webp'],
-  },
-  {
-    model: 'gemini-1.5-pro', // TODO: Update to the latest Gemini model available (e.g., gemini-2.0-flash or gemini-2.5-pro)
-    provider: 'google',
-    imageInput: true,
-    audioInput: true,
-    videoInput: true,
-    maxImages: 100,
-    maxImageSize: '20MB',
-    supportedFormats: ['png', 'jpg', 'gif', 'webp', 'mp4'],
-  },
-]
-
-function selectModelForModality(
-  needs: {
-    image?: boolean
-    audio?: boolean
-    video?: boolean
-  },
-  preferredProvider: string = 'mistral'
-): ModelCapability | undefined {
-  return MODEL_CAPABILITIES.find(
-    m =>
-      (!needs.image || m.imageInput) &&
-      (!needs.audio || m.audioInput) &&
-      (!needs.video || m.videoInput) &&
-      (m.provider === preferredProvider || preferredProvider === 'any')
-  )
-}
-
-export { MODEL_CAPABILITIES, selectModelForModality }
 ```
 
+Export a `MODEL_CAPABILITIES` array containing entries for at least three providers (Mistral's Pixtral, OpenAI, and Google Gemini). Each entry should populate all fields of `ModelCapability` based on each provider's actual limits.
+
+Export a `selectModelForModality` function with this signature:
+
+```typescript
+function selectModelForModality(
+  needs: { image?: boolean; audio?: boolean; video?: boolean },
+  preferredProvider?: string
+): ModelCapability | undefined
+```
+
+The function should find the first capability entry matching all requested modalities. If `preferredProvider` is given (and is not `'any'`), filter to that provider.
+
+Think about: what should happen when no model matches all requested modalities? What if the preferred provider does not support video but another does?
+
 > **Beginner Note:** The course default provider is Mistral, but Mistral does not support image or audio input. This module uses Anthropic for image examples because Claude has strong vision capabilities. If you are using Anthropic, you have image input but not audio. For audio, you will need the OpenAI provider or a separate transcription step (Section 5).
+>
+> **Important:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-20250514')` for all image-related calls. If you prefer a different provider, OpenAI (`openai('gpt-4o')`) and Mistral's Pixtral (`mistral('pixtral-large-latest')`) also support image input. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
 
 ---
 
@@ -131,165 +100,46 @@ export { MODEL_CAPABILITIES, selectModelForModality }
 
 The Vercel AI SDK supports three methods for including images in messages:
 
-1. **Base64 encoded** — Image data inline in the message
-2. **URL reference** — A publicly accessible URL pointing to the image
-3. **File-based** — Read from the local filesystem
+1. **Base64 encoded** — Image data inline as a data URI string
+2. **URL reference** — A publicly accessible URL wrapped in `new URL(...)`
+3. **File-based** — A `Buffer` or `Uint8Array` read from the filesystem
+
+All three use the same message structure — a content array mixing `{ type: 'image', image: ... }` and `{ type: 'text', text: ... }` parts:
 
 ```typescript
-// src/multimodal/image-input.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { readFile } from 'fs/promises'
-
-// Method 1: Base64 encoded image
-async function analyzeImageBase64(imagePath: string, prompt: string): Promise<string> {
-  const imageBuffer = await readFile(imagePath)
-  const base64Image = imageBuffer.toString('base64')
-
-  // Determine MIME type from extension
-  const extension = imagePath.split('.').pop()?.toLowerCase()
-  const mimeTypes: Record<string, string> = {
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-  }
-  const mimeType = mimeTypes[extension ?? 'png'] ?? 'image/png'
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            image: `data:${mimeType};base64,${base64Image}`,
-          },
-          {
-            type: 'text',
-            text: prompt,
-          },
-        ],
-      },
-    ],
-  })
-
-  return result.text
-}
-
-// Method 2: URL reference
-async function analyzeImageURL(imageUrl: string, prompt: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            image: new URL(imageUrl),
-          },
-          {
-            type: 'text',
-            text: prompt,
-          },
-        ],
-      },
-    ],
-  })
-
-  return result.text
-}
-
-// Method 3: File buffer (Uint8Array)
-async function analyzeImageFile(imagePath: string, prompt: string): Promise<string> {
-  const imageBuffer = await readFile(imagePath)
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            image: imageBuffer,
-          },
-          {
-            type: 'text',
-            text: prompt,
-          },
-        ],
-      },
-    ],
-  })
-
-  return result.text
-}
-
-// Multiple images in a single message
-async function compareImages(imagePaths: string[], prompt: string): Promise<string> {
-  const imageContents = await Promise.all(
-    imagePaths.map(async path => {
-      const buffer = await readFile(path)
-      return {
-        type: 'image' as const,
-        image: buffer,
-      }
-    })
-  )
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          ...imageContents,
-          {
-            type: 'text',
-            text: prompt,
-          },
-        ],
-      },
-    ],
-  })
-
-  return result.text
-}
-
-// Example usage
-async function main(): Promise<void> {
-  // Analyze a local screenshot
-  const description = await analyzeImageFile(
-    'screenshots/error.png',
-    'What error is shown in this screenshot? Describe the error message and suggest a fix.'
-  )
-  console.log('Analysis:', description)
-
-  // Compare two UI designs
-  const comparison = await compareImages(
-    ['designs/v1.png', 'designs/v2.png'],
-    'Compare these two UI designs. What changed between v1 and v2? List the differences.'
-  )
-  console.log('Comparison:', comparison)
-}
-
-main().catch(console.error)
-
-export { analyzeImageBase64, analyzeImageURL, analyzeImageFile, compareImages }
+// The content array pattern used for all three methods
+content: [
+  { type: 'image', image: imageData },
+  { type: 'text', text: prompt },
+]
 ```
 
-### Image Input Best Practices
+For base64, `imageData` is a string like `data:image/png;base64,<encoded>`. For URL, it is `new URL('https://...')`. For file-based, it is a `Buffer` from `readFile`.
+
+Create `src/multimodal/image-input.ts` exporting four async functions:
 
 ```typescript
-// src/multimodal/image-utils.ts
+async function analyzeImageBase64(imagePath: string, prompt: string): Promise<string>
+async function analyzeImageURL(imageUrl: string, prompt: string): Promise<string>
+async function analyzeImageFile(imagePath: string, prompt: string): Promise<string>
+async function compareImages(imagePaths: string[], prompt: string): Promise<string>
+```
 
-import { readFile, stat } from 'fs/promises'
+For `analyzeImageBase64`: read the file, convert to base64, determine the MIME type from the file extension (map `png`, `jpg`, `jpeg`, `gif`, `webp` to their `image/*` types), and construct the data URI. Pass it as the `image` field in a content part.
 
+For `analyzeImageURL`: wrap the URL string in `new URL(...)` and pass it as the `image` field.
+
+For `analyzeImageFile`: read the file into a buffer and pass the buffer directly as the `image` field. This is the simplest approach.
+
+For `compareImages`: read all images into buffers, spread them as separate `{ type: 'image' }` content parts, then append a single `{ type: 'text' }` part with the prompt. This lets the model see multiple images in one message.
+
+All functions should call `generateText` with `anthropic('claude-sonnet-4-20250514')` and return `result.text`.
+
+### Image Validation Utility
+
+Before sending images to the API, you should validate them. Create `src/multimodal/image-utils.ts` exporting:
+
+```typescript
 interface ImageValidation {
   isValid: boolean
   issues: string[]
@@ -297,63 +147,13 @@ interface ImageValidation {
   estimatedTokens: number
 }
 
-async function validateImage(imagePath: string): Promise<ImageValidation> {
-  const issues: string[] = []
-
-  // Check file exists and size
-  const fileStat = await stat(imagePath)
-  const sizeBytes = fileStat.size
-  const sizeMB = sizeBytes / (1024 * 1024)
-
-  if (sizeMB > 20) {
-    issues.push(`Image is ${sizeMB.toFixed(1)}MB — exceeds 20MB limit`)
-  }
-
-  // Check extension
-  const extension = imagePath.split('.').pop()?.toLowerCase()
-  const supportedFormats = ['png', 'jpg', 'jpeg', 'gif', 'webp']
-  if (!extension || !supportedFormats.includes(extension)) {
-    issues.push(`Unsupported format: .${extension}. Use: ${supportedFormats.join(', ')}`)
-  }
-
-  // Estimate token cost (rough approximation)
-  // Claude charges ~1600 tokens for a 1568x1568 image
-  // Smaller images cost proportionally less
-  const estimatedTokens = Math.min(1600, Math.ceil(sizeBytes / 750))
-
-  return {
-    isValid: issues.length === 0,
-    issues,
-    sizeBytes,
-    estimatedTokens,
-  }
-}
-
-// Resize image to reduce token cost (requires sharp)
-// Install: bun add sharp
-async function resizeForVision(imagePath: string, maxDimension: number = 1568): Promise<Buffer> {
-  const sharp = (await import('sharp')).default
-
-  const image = sharp(imagePath)
-  const metadata = await image.metadata()
-
-  const width = metadata.width ?? 0
-  const height = metadata.height ?? 0
-
-  if (width <= maxDimension && height <= maxDimension) {
-    return await readFile(imagePath)
-  }
-
-  return await image
-    .resize(maxDimension, maxDimension, {
-      fit: 'inside',
-      withoutEnlargement: true,
-    })
-    .toBuffer()
-}
-
-export { validateImage, resizeForVision }
+async function validateImage(imagePath: string): Promise<ImageValidation>
+async function resizeForVision(imagePath: string, maxDimension?: number): Promise<Buffer>
 ```
+
+For `validateImage`: use `stat` to get the file size, check that it is under 20MB, and verify the extension is one of the supported formats. Estimate token cost roughly — Claude charges about 1600 tokens for a 1568x1568 image, with smaller images costing proportionally less. A simple heuristic like `Math.min(1600, Math.ceil(sizeBytes / 750))` is a reasonable starting point.
+
+For `resizeForVision`: use the `sharp` package (`bun add sharp`) to read image metadata. If neither dimension exceeds `maxDimension` (default 1568), return the original buffer. Otherwise, resize with `fit: 'inside'` and `withoutEnlargement: true` to maintain aspect ratio.
 
 > **Beginner Note:** Start with the file-based method (`analyzeImageFile`). It is the most straightforward: read the file, pass the buffer. URL-based input is useful when images are hosted online. Base64 is useful when you receive images from APIs or user uploads as strings.
 
@@ -367,46 +167,18 @@ export { validateImage, resizeForVision }
 
 Multi-modal models are surprisingly good at reading text from images. They handle printed text, handwriting, text in photos, and even text at odd angles.
 
+Create `src/multimodal/ocr.ts` exporting two functions:
+
 ```typescript
-// src/multimodal/ocr.ts
+async function extractText(imagePath: string): Promise<string>
+async function structuredOCR(imagePath: string): Promise<z.infer<typeof OCRResultSchema>>
+```
 
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { readFile } from 'fs/promises'
+For `extractText`: read the image, send it to the model with a prompt that instructs it to extract ALL visible text while preserving formatting (line breaks, indentation, headers, bullet points). Tell it to mark unclear text with `[unclear]` and return only the extracted text with no commentary. Use `temperature: 0` for consistency.
 
-// Basic OCR: extract all text from an image
-async function extractText(imagePath: string): Promise<string> {
-  const imageBuffer = await readFile(imagePath)
+For `structuredOCR`: define an `OCRResultSchema` using Zod with this shape:
 
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Extract ALL text visible in this image. Preserve the
-original formatting as much as possible:
-- Maintain line breaks where they appear
-- Preserve indentation and alignment
-- Keep headers, bullet points, and numbered lists
-- Note any text that is unclear with [unclear]
-
-Return ONLY the extracted text, no commentary.`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return result.text
-}
-
-// Structured OCR: extract text with layout information
+```typescript
 const OCRResultSchema = z.object({
   blocks: z.array(
     z.object({
@@ -420,170 +192,42 @@ const OCRResultSchema = z.object({
   hasHandwriting: z.boolean(),
   imageDescription: z.string().describe('Brief description of the image context'),
 })
-
-async function structuredOCR(imagePath: string): Promise<z.infer<typeof OCRResultSchema>> {
-  const imageBuffer = await readFile(imagePath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: OCRResultSchema }),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: 'Extract all text from this image with structural information.',
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { extractText, structuredOCR }
 ```
+
+Use `Output.object({ schema: OCRResultSchema })` to get structured output. What prompt would you give the model to extract text with structural information? How does it differ from the basic `extractText` prompt?
 
 ### Diagram Understanding
 
 Multi-modal models can interpret diagrams — architecture diagrams, flowcharts, org charts, UML diagrams — and describe their structure and meaning.
 
+Create `src/multimodal/diagram-analysis.ts` exporting:
+
 ```typescript
-// src/multimodal/diagram-analysis.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { readFile } from 'fs/promises'
-
-const DiagramAnalysisSchema = z.object({
-  diagramType: z.enum([
-    'architecture',
-    'flowchart',
-    'sequence',
-    'class',
-    'entity_relationship',
-    'network',
-    'org_chart',
-    'mindmap',
-    'other',
-  ]),
-  title: z.string().describe('Title of the diagram if visible'),
-  components: z.array(
-    z.object({
-      name: z.string(),
-      type: z.string().describe('Type of component (e.g., service, database, user)'),
-      description: z.string(),
-    })
-  ),
-  connections: z.array(
-    z.object({
-      from: z.string(),
-      to: z.string(),
-      label: z.string().describe('Connection label or description'),
-      direction: z.enum(['unidirectional', 'bidirectional', 'none']),
-    })
-  ),
-  summary: z.string().describe('Overall description of what the diagram shows'),
-})
-
-async function analyzeDiagram(imagePath: string, context?: string): Promise<z.infer<typeof DiagramAnalysisSchema>> {
-  const imageBuffer = await readFile(imagePath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: DiagramAnalysisSchema }),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Analyze this diagram. Extract all components and their connections.
-${context ? `Context: ${context}` : ''}`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { analyzeDiagram }
+async function analyzeDiagram(imagePath: string, context?: string): Promise<z.infer<typeof DiagramAnalysisSchema>>
 ```
+
+Define `DiagramAnalysisSchema` to capture the diagram type (architecture, flowchart, sequence, class, entity_relationship, network, org_chart, mindmap, other), a title, an array of components (each with name, type, and description), an array of connections (each with from, to, label, and direction), and a summary.
+
+The function should read the image buffer, call `generateText` with `Output.object({ schema: DiagramAnalysisSchema })`, and use a prompt that asks the model to extract all components and their connections. If optional `context` is provided, include it in the prompt to help the model understand domain-specific terminology.
 
 ### Screenshot Analysis
 
 Analyzing screenshots is one of the most practical vision applications — understanding UI states, error messages, and application behavior from visual evidence.
 
+Create `src/multimodal/screenshot-analysis.ts` exporting:
+
 ```typescript
-// src/multimodal/screenshot-analysis.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { readFile } from 'fs/promises'
-
-const ScreenshotAnalysisSchema = z.object({
-  applicationType: z.string().describe('What application is shown'),
-  currentState: z.string().describe('What state/page the application is in'),
-  visibleElements: z.array(
-    z.object({
-      element: z.string().describe('UI element description'),
-      state: z.string().describe('Current state (e.g., active, disabled, error)'),
-    })
-  ),
-  errors: z
-    .array(
-      z.object({
-        errorText: z.string(),
-        errorType: z.enum(['validation', 'network', 'permission', 'server', 'client', 'unknown']),
-        suggestedFix: z.string(),
-      })
-    )
-    .describe('Any error messages visible'),
-  actionSuggestion: z.string().describe('What the user should do next'),
-})
-
 async function analyzeScreenshot(
   imagePath: string,
   userQuestion?: string
-): Promise<z.infer<typeof ScreenshotAnalysisSchema>> {
-  const imageBuffer = await readFile(imagePath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ScreenshotAnalysisSchema }),
-    system: `You are a technical support expert. Analyze the screenshot
-to understand the application state, identify any errors, and suggest
-next steps.`,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: userQuestion ?? 'What is happening in this screenshot? Are there any errors?',
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { analyzeScreenshot }
+): Promise<z.infer<typeof ScreenshotAnalysisSchema>>
 ```
+
+Define `ScreenshotAnalysisSchema` to capture: `applicationType` (string), `currentState` (string describing the page/view), `visibleElements` (array of element + state pairs), `errors` (array of objects with errorText, errorType enum, and suggestedFix), and `actionSuggestion` (what the user should do next).
+
+Use a system prompt that positions the model as a technical support expert. If `userQuestion` is provided, use it as the user message text; otherwise default to a general "What is happening in this screenshot? Are there any errors?" question.
+
+Think about: how would you handle screenshots that show no errors? How should the errorType enum help downstream code route issues?
 
 > **Beginner Note:** Multi-modal models are remarkably good at "reading" screenshots, even complex ones with multiple panels, modals, and overlapping elements. However, they can struggle with very small text, low-resolution images, and unusual fonts. Always test with your actual use case before relying on vision analysis in production.
 
@@ -597,124 +241,37 @@ export { analyzeScreenshot }
 
 Prompting with images requires different techniques than text-only prompting. The model needs guidance on what to look at, what to extract, and how to relate the image to the text.
 
+Create `src/multimodal/image-text-prompting.ts` exporting four functions that demonstrate four distinct image+text prompting patterns.
+
+**Pattern 1: Image with specific questions**
+
 ```typescript
-// src/multimodal/image-text-prompting.ts
+async function askAboutImage(imagePath: string, questions: string[]): Promise<Record<string, string>>
+```
 
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { readFile } from 'fs/promises'
+This function sends all questions in a single call for efficiency. Format them as a numbered list in the prompt, asking the model to respond with numbered answers. Then parse the numbered answers from the response text back into a `Record<string, string>` keyed by the original question text.
 
-// Pattern 1: Image with specific questions
-async function askAboutImage(imagePath: string, questions: string[]): Promise<Record<string, string>> {
-  const imageBuffer = await readFile(imagePath)
-  const results: Record<string, string> = {}
+How would you parse numbered answers from free-form text? What happens if the model includes sub-points under an answer?
 
-  // Ask all questions in a single call for efficiency
-  const numberedQuestions = questions.map((q, i) => `${i + 1}. ${q}`).join('\n')
+**Pattern 2: Image with reference text**
 
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Answer each of the following questions about this image.
-Format your response as numbered answers matching the question numbers.
+```typescript
+async function analyzeWithContext(imagePath: string, referenceText: string, task: string): Promise<string>
+```
 
-${numberedQuestions}`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
+This function includes both the image and a block of reference text in the same message. Structure the text part with labeled sections: "Reference information:" followed by the reference text, then "Task:" followed by the task description, then an instruction to use both the image and the reference.
 
-  // Parse numbered answers
-  const answerLines = result.text.split('\n')
-  let currentNumber = 0
-  let currentAnswer: string[] = []
+**Pattern 3: Sequential image analysis (before/after)**
 
-  for (const line of answerLines) {
-    const numberMatch = line.match(/^(\d+)\.\s*/)
-    if (numberMatch) {
-      if (currentNumber > 0 && currentNumber <= questions.length) {
-        results[questions[currentNumber - 1]] = currentAnswer.join('\n').trim()
-      }
-      currentNumber = parseInt(numberMatch[1])
-      currentAnswer = [line.replace(/^\d+\.\s*/, '')]
-    } else {
-      currentAnswer.push(line)
-    }
-  }
-  // Save last answer
-  if (currentNumber > 0 && currentNumber <= questions.length) {
-    results[questions[currentNumber - 1]] = currentAnswer.join('\n').trim()
-  }
+```typescript
+async function beforeAfterAnalysis(beforePath: string, afterPath: string, analysisPrompt: string): Promise<string>
+```
 
-  return results
-}
+This function sends two images with labels in a single message. The content array should alternate text labels and images: `'BEFORE:'`, then the first image, `'AFTER:'`, then the second image, then the analysis prompt. Labeling images helps the model track which is which.
 
-// Pattern 2: Image with reference text
-async function analyzeWithContext(imagePath: string, referenceText: string, task: string): Promise<string> {
-  const imageBuffer = await readFile(imagePath)
+**Pattern 4: Image grounding (verify claims against an image)**
 
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Reference information:
-${referenceText}
-
-Task: ${task}
-
-Use both the image and the reference information to complete the task.`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return result.text
-}
-
-// Pattern 3: Sequential image analysis (before/after)
-async function beforeAfterAnalysis(beforePath: string, afterPath: string, analysisPrompt: string): Promise<string> {
-  const [beforeBuffer, afterBuffer] = await Promise.all([readFile(beforePath), readFile(afterPath)])
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'BEFORE:' },
-          { type: 'image', image: beforeBuffer },
-          { type: 'text', text: 'AFTER:' },
-          { type: 'image', image: afterBuffer },
-          {
-            type: 'text',
-            text: analysisPrompt,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return result.text
-}
-
-// Pattern 4: Image grounding — verify claims against image
+```typescript
 const ImageGroundingSchema = z.object({
   claims: z.array(
     z.object({
@@ -725,35 +282,10 @@ const ImageGroundingSchema = z.object({
   ),
 })
 
-async function groundClaimsInImage(imagePath: string, claims: string[]): Promise<z.infer<typeof ImageGroundingSchema>> {
-  const imageBuffer = await readFile(imagePath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ImageGroundingSchema }),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `For each claim below, determine if it is supported by what you can see in the image.
-
-Claims:
-${claims.map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { askAboutImage, analyzeWithContext, beforeAfterAnalysis, groundClaimsInImage }
+async function groundClaimsInImage(imagePath: string, claims: string[]): Promise<z.infer<typeof ImageGroundingSchema>>
 ```
+
+This function takes a list of claims and asks the model to check each one against the image. Use `Output.object` for structured output. The prompt should present the claims as a numbered list and ask the model to determine if each is supported by what it can see.
 
 > **Beginner Note:** When prompting with images, be specific about what you want the model to focus on. "Describe this image" produces vague responses. "List all error messages visible in this screenshot and explain what each one means" produces actionable output.
 
@@ -767,116 +299,42 @@ export { askAboutImage, analyzeWithContext, beforeAfterAnalysis, groundClaimsInI
 
 Audio input is not natively supported by all providers in the Vercel AI SDK. The standard approach is a two-step pipeline: transcribe audio to text using Whisper, then process the text with your LLM.
 
+Create `src/multimodal/audio-transcription.ts` exporting three functions.
+
+**Transcription function:**
+
 ```typescript
-// src/multimodal/audio-transcription.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { readFile } from 'fs/promises'
-
-// Using OpenAI's Whisper API for transcription
-// This is separate from the Vercel AI SDK's generateText
-
 interface TranscriptionResult {
   text: string
   language: string
   duration: number
-  segments: Array<{
-    start: number
-    end: number
-    text: string
-  }>
+  segments: Array<{ start: number; end: number; text: string }>
 }
 
 async function transcribeAudio(
   audioPath: string,
-  options: {
-    language?: string
-    prompt?: string
-  } = {}
-): Promise<TranscriptionResult> {
-  const audioBuffer = await readFile(audioPath)
-  const audioBlob = new Blob([audioBuffer])
+  options?: { language?: string; prompt?: string }
+): Promise<TranscriptionResult>
+```
 
-  const formData = new FormData()
-  formData.append('file', audioBlob, audioPath.split('/').pop() ?? 'audio.wav')
-  formData.append('model', 'whisper-1')
-  formData.append('response_format', 'verbose_json')
+This function calls OpenAI's Whisper API directly (not via the Vercel AI SDK). Read the audio file, create a `FormData` with the file blob, model name (`'whisper-1'`), and response format (`'verbose_json'`). Optionally include language and prompt fields. POST to `https://api.openai.com/v1/audio/transcriptions` with the `Authorization: Bearer ${process.env.OPENAI_API_KEY}` header. Parse the JSON response into a `TranscriptionResult`.
 
-  if (options.language) {
-    formData.append('language', options.language)
-  }
-  if (options.prompt) {
-    formData.append('prompt', options.prompt)
-  }
+What should happen if the API returns a non-OK status? How would you handle the case where `segments` is missing from the response?
 
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: formData,
-  })
+**Audio processing pipeline:**
 
-  if (!response.ok) {
-    throw new Error(`Transcription failed: ${response.statusText}`)
-  }
-
-  const data = (await response.json()) as {
-    text: string
-    language: string
-    duration: number
-    segments: Array<{
-      start: number
-      end: number
-      text: string
-    }>
-  }
-
-  return {
-    text: data.text,
-    language: data.language,
-    duration: data.duration,
-    segments: data.segments ?? [],
-  }
-}
-
-// Full audio processing pipeline: transcribe -> analyze
+```typescript
 async function processAudio(
   audioPath: string,
   analysisPrompt: string
-): Promise<{
-  transcription: string
-  analysis: string
-}> {
-  // Step 1: Transcribe
-  console.log('Transcribing audio...')
-  const transcription = await transcribeAudio(audioPath)
-  console.log(`Transcribed: ${transcription.text.length} characters, ${transcription.duration}s`)
+): Promise<{ transcription: string; analysis: string }>
+```
 
-  // Step 2: Analyze with LLM
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are analyzing a transcribed audio recording.
-The transcription may contain minor errors from speech-to-text.`,
-    messages: [
-      {
-        role: 'user',
-        content: `Transcription:\n${transcription.text}\n\n${analysisPrompt}`,
-      },
-    ],
-  })
+This is a two-step pipeline: first transcribe with `transcribeAudio`, then analyze the transcription text with `generateText` using your default provider. The system prompt should note that the text came from speech-to-text and may contain minor errors.
 
-  return {
-    transcription: transcription.text,
-    analysis: result.text,
-  }
-}
+**Meeting notes extraction:**
 
-// Meeting notes extraction from audio
-import { z } from 'zod'
-import { generateText, Output } from 'ai'
-
+```typescript
 const MeetingNotesSchema = z.object({
   title: z.string().describe('Meeting topic/title'),
   participants: z.array(z.string()).describe('People mentioned or speaking'),
@@ -892,29 +350,10 @@ const MeetingNotesSchema = z.object({
   openQuestions: z.array(z.string()).describe('Questions that were not resolved'),
 })
 
-async function extractMeetingNotes(audioPath: string): Promise<z.infer<typeof MeetingNotesSchema>> {
-  const transcription = await transcribeAudio(audioPath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: MeetingNotesSchema }),
-    system: `Extract structured meeting notes from this transcription.
-Be thorough with action items and decisions. If a participant's name
-is unclear, use [Speaker N].`,
-    messages: [
-      {
-        role: 'user',
-        content: transcription.text,
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { transcribeAudio, processAudio, extractMeetingNotes }
+async function extractMeetingNotes(audioPath: string): Promise<z.infer<typeof MeetingNotesSchema>>
 ```
+
+Transcribe the audio, then use `Output.object({ schema: MeetingNotesSchema })` to extract structured meeting notes from the transcription text. The system prompt should instruct the model to be thorough with action items and to use `[Speaker N]` when a participant's name is unclear.
 
 > **Beginner Note:** Whisper's API accepts files up to 25MB. For longer audio (meetings, lectures), split the audio into segments first. Many audio processing libraries (like `ffmpeg`) can split audio at silence boundaries for cleaner segments.
 
@@ -928,174 +367,67 @@ export { transcribeAudio, processAudio, extractMeetingNotes }
 
 Standard RAG embeds text chunks for retrieval. Multi-modal RAG extends this to images. The approach: describe each image with text, embed the description, and store it alongside the image reference.
 
+Create `src/multimodal/multimodal-rag.ts` exporting the following types and functions.
+
+**Core type:**
+
 ```typescript
-// src/multimodal/multimodal-rag.ts
-
-import { generateText, embed, cosineSimilarity } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { readFile } from 'fs/promises'
-
 interface MultiModalDocument {
   id: string
   type: 'text' | 'image' | 'audio'
-  content: string // Text content or path for non-text
+  content: string // Text content or file path for non-text
   description: string // Text description for embedding
   embedding: number[]
   metadata: Record<string, string>
 }
+```
 
-// Generate a rich description of an image for embedding
-async function describeImageForEmbedding(imagePath: string, documentContext?: string): Promise<string> {
-  const imageBuffer = await readFile(imagePath)
+**Image description for embedding:**
 
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Provide a detailed description of this image for search indexing.
-Include:
-- What the image shows (type, subject matter)
-- All visible text
-- Key visual elements and their relationships
-- Data or information conveyed (for charts/diagrams)
-- Technical details visible
+```typescript
+async function describeImageForEmbedding(imagePath: string, documentContext?: string): Promise<string>
+```
 
-${documentContext ? `Document context: ${documentContext}` : ''}
+Send the image to the vision model with a prompt that asks for a detailed, search-optimized description. The description should cover: what the image shows, all visible text, key visual elements and relationships, data or information conveyed (for charts/diagrams), and technical details. If `documentContext` is provided, include it so the model can use domain vocabulary. Set `maxOutputTokens: 500` to keep descriptions focused.
 
-Be specific and thorough. This description will be used to find this
-image through text search.`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-    maxOutputTokens: 500,
-  })
+Why does the quality of this description matter so much for retrieval? What information would help a text search find this image?
 
-  return result.text
-}
+**Building the index:**
 
-// Build a multi-modal index
+```typescript
 async function buildMultiModalIndex(
-  items: Array<{
-    id: string
-    type: 'text' | 'image'
-    content: string
-    metadata?: Record<string, string>
-  }>,
+  items: Array<{ id: string; type: 'text' | 'image'; content: string; metadata?: Record<string, string> }>,
   embeddingModel: Parameters<typeof embed>[0]['model']
-): Promise<MultiModalDocument[]> {
-  const documents: MultiModalDocument[] = []
+): Promise<MultiModalDocument[]>
+```
 
-  for (const item of items) {
-    let description: string
+Iterate over items. For images, call `describeImageForEmbedding` to generate a text description. For text items, use the content directly as the description. Embed each description using the provided embedding model. Return an array of `MultiModalDocument` objects.
 
-    if (item.type === 'image') {
-      description = await describeImageForEmbedding(item.content)
-      console.log(`Described image: ${item.id} (${description.slice(0, 80)}...)`)
-    } else {
-      description = item.content
-    }
+**Cross-modal search:**
 
-    const { embedding } = await embed({
-      model: embeddingModel,
-      value: description,
-    })
-
-    documents.push({
-      id: item.id,
-      type: item.type,
-      content: item.content,
-      description,
-      embedding,
-      metadata: item.metadata ?? {},
-    })
-  }
-
-  return documents
-}
-
-// Search across text and images
+```typescript
 async function multiModalSearch(
   query: string,
   index: MultiModalDocument[],
   embeddingModel: Parameters<typeof embed>[0]['model'],
-  topK: number = 5
-): Promise<
-  Array<{
-    document: MultiModalDocument
-    score: number
-  }>
-> {
-  const { embedding: queryEmbedding } = await embed({
-    model: embeddingModel,
-    value: query,
-  })
+  topK?: number
+): Promise<Array<{ document: MultiModalDocument; score: number }>>
+```
 
-  const scored = index.map(doc => ({
-    document: doc,
-    score: cosineSimilarity(queryEmbedding, doc.embedding),
-  }))
+Embed the query, compute `cosineSimilarity` against every document's embedding, sort by score descending, and return the top K results (default 5).
 
-  return scored.sort((a, b) => b.score - a.score).slice(0, topK)
-}
+**RAG generation:**
 
-// Generate answer from multi-modal context
+```typescript
 async function multiModalRAG(
   query: string,
-  searchResults: Array<{
-    document: MultiModalDocument
-    score: number
-  }>
-): Promise<string> {
-  // Build multi-modal message content
-  const contextParts: Array<{ type: 'text'; text: string } | { type: 'image'; image: Buffer }> = []
-
-  for (const result of searchResults) {
-    if (result.document.type === 'image') {
-      // Include the actual image
-      const imageBuffer = await readFile(result.document.content)
-      contextParts.push({
-        type: 'text',
-        text: `[Image: ${result.document.description.slice(0, 100)}...]`,
-      })
-      contextParts.push({
-        type: 'image',
-        image: imageBuffer,
-      })
-    } else {
-      contextParts.push({
-        type: 'text',
-        text: `[Document]: ${result.document.content}`,
-      })
-    }
-  }
-
-  contextParts.push({
-    type: 'text',
-    text: `\nQuestion: ${query}\n\nAnswer the question using the documents and images above.`,
-  })
-
-  const response = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: contextParts,
-      },
-    ],
-  })
-
-  return response.text
-}
-
-export { describeImageForEmbedding, buildMultiModalIndex, multiModalSearch, multiModalRAG, type MultiModalDocument }
+  searchResults: Array<{ document: MultiModalDocument; score: number }>
+): Promise<string>
 ```
+
+Build a multi-modal message content array. For text results, include them as `{ type: 'text' }` parts with a `[Document]:` prefix. For image results, read the image file and include both a text label and the actual image buffer as content parts. Append the user's question at the end. Call `generateText` with the vision model and return the response.
+
+Think about: when should you include the actual image vs. just its description in the RAG context? What are the token cost implications of including images?
 
 > **Beginner Note:** The "describe then embed" approach is the simplest way to make images searchable. The description acts as a text proxy for the image, allowing standard text embedding and retrieval. The quality of the description directly determines retrieval quality — invest in a good description prompt.
 
@@ -1109,15 +441,11 @@ export { describeImageForEmbedding, buildMultiModalIndex, multiModalSearch, mult
 
 One of the most practical vision applications is extracting structured data from images of tables, forms, and charts.
 
+Create `src/multimodal/image-extraction.ts` exporting three functions for the three extraction types.
+
+**Table extraction:**
+
 ```typescript
-// src/multimodal/image-extraction.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { readFile } from 'fs/promises'
-
-// Extract table data from an image
 const ImageTableSchema = z.object({
   tables: z.array(
     z.object({
@@ -1130,36 +458,14 @@ const ImageTableSchema = z.object({
   confidence: z.number().min(0).max(1).describe('How confident in the extraction accuracy'),
 })
 
-async function extractTableFromImage(imagePath: string): Promise<z.infer<typeof ImageTableSchema>> {
-  const imageBuffer = await readFile(imagePath)
+async function extractTableFromImage(imagePath: string): Promise<z.infer<typeof ImageTableSchema>>
+```
 
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ImageTableSchema }),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Extract all tables from this image. For each table:
-- Identify column headers
-- Extract each row's cell values
-- Note any footnotes or annotations
-- If a cell is empty, use ""
-- If a cell is unclear, use "[unclear]" and lower the confidence`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
+Read the image, use `Output.object({ schema: ImageTableSchema })`, and prompt the model to identify column headers, extract each row's cell values, note footnotes, use `""` for empty cells, and use `"[unclear]"` (lowering confidence) for uncertain text. Use `temperature: 0`.
 
-  return output
-}
+**Form extraction:**
 
-// Extract form data from an image
+```typescript
 const FormDataSchema = z.object({
   formTitle: z.string().optional(),
   fields: z.array(
@@ -1174,36 +480,14 @@ const FormDataSchema = z.object({
   confidence: z.number().min(0).max(1),
 })
 
-async function extractFormData(imagePath: string): Promise<z.infer<typeof FormDataSchema>> {
-  const imageBuffer = await readFile(imagePath)
+async function extractFormData(imagePath: string): Promise<z.infer<typeof FormDataSchema>>
+```
 
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: FormDataSchema }),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Extract all form fields from this image. For each field:
-- Identify the label
-- Read the value (filled in or selected)
-- Determine the field type
-- Note if the field appears required (asterisk, bold, etc.)
-- Note if the field is filled or empty`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
+The prompt should ask the model to identify each field's label, read its value, determine the field type, note if it appears required (asterisk, bold), and note if it is filled or empty.
 
-  return output
-}
+**Chart extraction:**
 
-// Extract chart data from an image
+```typescript
 const ChartDataSchema = z.object({
   chartType: z.enum(['bar', 'line', 'pie', 'scatter', 'area', 'histogram', 'other']),
   title: z.string().optional(),
@@ -1220,40 +504,12 @@ const ChartDataSchema = z.object({
   confidence: z.number().min(0).max(1),
 })
 
-async function extractChartData(imagePath: string): Promise<z.infer<typeof ChartDataSchema>> {
-  const imageBuffer = await readFile(imagePath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ChartDataSchema }),
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          {
-            type: 'text',
-            text: `Extract data from this chart. Read:
-- Chart type and title
-- Axis labels
-- All data points (estimate values from the visual if exact numbers are not labeled)
-- Observable trends
-
-For bar/pie charts: extract category labels and values.
-For line charts: extract data points along the line.
-For scatter plots: estimate x,y coordinates of visible points.`,
-          },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { extractTableFromImage, extractFormData, extractChartData }
+async function extractChartData(imagePath: string): Promise<z.infer<typeof ChartDataSchema>>
 ```
+
+The prompt should instruct the model to read chart type, title, axis labels, and all data points (estimating values from the visual when exact numbers are not labeled). For bar/pie charts: extract category labels and values. For line charts: extract data points along the line. For scatter plots: estimate x,y coordinates.
+
+Why is the confidence field important for chart extraction specifically? How does chart extraction differ from table extraction in terms of accuracy?
 
 > **Beginner Note:** Chart data extraction is approximate — the model estimates values from the visual representation. For precise data extraction, always verify extracted numbers against the source data. For tables and forms, accuracy is much higher because the values are explicit text.
 
@@ -1267,73 +523,33 @@ export { extractTableFromImage, extractFormData, extractChartData }
 
 Multi-modal models have systematic failure modes that you need to know about and design around.
 
-```typescript
-// src/multimodal/limitations.ts
+Create `src/multimodal/limitations.ts`. Start by defining and exporting a `KNOWN_LIMITATIONS` array of objects with this shape:
 
+```typescript
 interface LimitationExample {
   category: string
   description: string
   workaround: string
   severity: 'high' | 'medium' | 'low'
 }
+```
 
-const KNOWN_LIMITATIONS: LimitationExample[] = [
-  {
-    category: 'Spatial reasoning',
-    description: 'Models may get left/right, above/below relationships wrong, especially in complex layouts',
-    workaround: 'Ask the model to describe spatial relationships explicitly and verify',
-    severity: 'medium',
-  },
-  {
-    category: 'Small text',
-    description: 'Text smaller than ~12px in a screenshot may be misread or missed entirely',
-    workaround: 'Crop the relevant area and resize to make text larger before sending',
-    severity: 'high',
-  },
-  {
-    category: 'Counting',
-    description: "Models are bad at counting objects in images (e.g., 'how many people are in this photo?')",
-    workaround: 'For counting tasks, use object detection models (YOLO, etc.) instead of multi-modal LLMs',
-    severity: 'medium',
-  },
-  {
-    category: 'Hallucinated text',
-    description: "Models may 'read' text that is not actually in the image, especially when the image is blurry",
-    workaround: 'Cross-reference extracted text with the original image; use confidence scoring',
-    severity: 'high',
-  },
-  {
-    category: 'Chart value estimation',
-    description: 'Numerical values read from charts are approximate, not exact',
-    workaround: 'Always verify chart-extracted numbers against source data; use wide tolerance',
-    severity: 'medium',
-  },
-  {
-    category: 'Resolution sensitivity',
-    description: 'Image resolution below 200 DPI significantly degrades text extraction accuracy',
-    workaround: 'Upscale low-resolution images before sending; target 300+ DPI for documents',
-    severity: 'high',
-  },
-  {
-    category: 'Multi-page documents',
-    description: 'Sending many pages as separate images is expensive and may lose inter-page context',
-    workaround: 'Use dedicated PDF extraction for text; use vision only for images and diagrams within PDFs',
-    severity: 'low',
-  },
-  {
-    category: 'Handwriting',
-    description: 'Handwriting recognition varies by quality; messy handwriting may be misread',
-    workaround: 'Ask the model to flag uncertain words with [unclear]; provide context',
-    severity: 'medium',
-  },
-]
+Populate it with entries for these eight failure modes:
 
-// Defensive multi-modal function with validation
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { readFile } from 'fs/promises'
+1. **Spatial reasoning** (medium) — models may get left/right, above/below relationships wrong in complex layouts. Workaround: ask the model to describe spatial relationships explicitly and verify.
+2. **Small text** (high) — text smaller than ~12px may be misread or missed. Workaround: crop and resize to make text larger.
+3. **Counting** (medium) — models are bad at counting objects in images. Workaround: use object detection models (YOLO, etc.) instead.
+4. **Hallucinated text** (high) — models may "read" text that is not in the image, especially when blurry. Workaround: cross-reference and use confidence scoring.
+5. **Chart value estimation** (medium) — numerical values from charts are approximate. Workaround: verify against source data.
+6. **Resolution sensitivity** (high) — resolution below 200 DPI degrades text extraction. Workaround: upscale to 300+ DPI.
+7. **Multi-page documents** (low) — sending many pages as images is expensive and loses inter-page context. Workaround: use PDF extraction for text, vision only for images/diagrams.
+8. **Handwriting** (medium) — recognition varies by quality. Workaround: flag uncertain words with `[unclear]`.
 
+### Defensive Extraction
+
+Next, export a `defensiveExtraction` function:
+
+```typescript
 const ValidatedExtractionSchema = z.object({
   extraction: z.string().describe('The extracted content'),
   confidence: z.number().min(0).max(1),
@@ -1344,92 +560,127 @@ const ValidatedExtractionSchema = z.object({
 async function defensiveExtraction(
   imagePath: string,
   prompt: string
-): Promise<z.infer<typeof ValidatedExtractionSchema>> {
-  const imageBuffer = await readFile(imagePath)
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ValidatedExtractionSchema }),
-    system: `You are a careful document analyst. Extract information from
-the image, but be honest about uncertainty:
-- If text is blurry or unclear, note it in uncertainAreas
-- If you are guessing at a value, flag it
-- Set confidence based on overall extraction quality
-- Suggest specific things a human should verify`,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'image', image: imageBuffer },
-          { type: 'text', text: prompt },
-        ],
-      },
-    ],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { KNOWN_LIMITATIONS, defensiveExtraction }
+): Promise<z.infer<typeof ValidatedExtractionSchema>>
 ```
 
-### Cost Considerations
+Use `Output.object` with the schema above. The system prompt should position the model as a careful document analyst: note blurry or unclear text in `uncertainAreas`, flag guessed values, set confidence based on overall quality, and suggest specific things a human should verify.
+
+### Cost Estimation
+
+Finally, export an `estimateImageCost` function:
 
 ```typescript
-// src/multimodal/cost-estimation.ts
-
 interface ImageCostEstimate {
   estimatedInputTokens: number
   estimatedCostUSD: number
   recommendation: string
 }
 
-function estimateImageCost(
-  widthPx: number,
-  heightPx: number,
-  provider: 'anthropic' | 'openai' = 'anthropic'
-): ImageCostEstimate {
-  // Anthropic pricing: images are tiled into 1568x1568 blocks
-  // Each block costs ~1600 tokens
-  const maxDim = Math.max(widthPx, heightPx)
-  let tokens: number
-
-  if (maxDim <= 384) {
-    tokens = 170 // Thumbnail
-  } else if (maxDim <= 768) {
-    tokens = 800 // Medium
-  } else {
-    // Large images are tiled
-    const tilesX = Math.ceil(widthPx / 1568)
-    const tilesY = Math.ceil(heightPx / 1568)
-    tokens = tilesX * tilesY * 1600
-  }
-
-  // Claude Sonnet pricing: $3/M input tokens
-  const costUSD = (tokens / 1_000_000) * 3.0
-
-  let recommendation = 'Good size for analysis'
-  if (tokens > 3200) {
-    recommendation = 'Consider resizing — image uses many tokens. Reduce to 1568px max dimension.'
-  }
-  if (tokens < 200) {
-    recommendation = 'Very small image — text may be hard to read. Consider using a higher resolution.'
-  }
-
-  return {
-    estimatedInputTokens: tokens,
-    estimatedCostUSD: costUSD,
-    recommendation,
-  }
-}
-
-export { estimateImageCost }
+function estimateImageCost(widthPx: number, heightPx: number, provider?: 'anthropic' | 'openai'): ImageCostEstimate
 ```
+
+Implement the token estimation logic based on image tiling. Most providers tile images into fixed blocks. For Anthropic: images up to 384px on the longest side cost about 170 tokens (thumbnail), up to 768px cost about 800 tokens (medium), and larger images are tiled into 1568x1568 blocks at about 1600 tokens each. Compute the cost in USD based on the provider's input token pricing (e.g., $3/M for Claude Sonnet). Generate a recommendation string: suggest resizing if tokens exceed 3200, or suggest higher resolution if tokens are below 200 (text may be hard to read).
 
 > **Beginner Note:** The biggest gotcha with multi-modal models is hallucinated text — the model "reads" text that is not actually in the image. Always verify critical extracted text (names, numbers, codes) against the original image. Never trust OCR output from a multi-modal model for financial, legal, or medical data without human verification.
 
 > **Advanced Note:** For production applications, build a confidence-based workflow: extract with the multi-modal model, flag low-confidence items, route those to human reviewers. This gives you the speed of automation with the accuracy of human oversight. Track accuracy metrics over time to identify systematic failure patterns in your specific domain.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: Image Preprocessing Pipeline
+
+### Why Preprocess?
+
+Production systems never send raw user images directly to the API. Images arrive in unexpected formats, at absurd resolutions, or with file sizes that blow through API limits. A preprocessing pipeline validates and normalizes images before they reach the model.
+
+The pipeline has three stages:
+
+1. **Validation** — check format (PNG, JPEG, GIF, WebP), reject unsupported types, verify the file is actually an image (not a renamed `.exe`)
+2. **Resize** — large images waste tokens. Resize to stay within the model's optimal range while maintaining aspect ratio
+3. **Optimize** — convert to an efficient format if needed, strip metadata, compress
+
+```typescript
+interface ImageValidationResult {
+  valid: boolean
+  format: string | null
+  width: number
+  height: number
+  fileSizeBytes: number
+  errors: string[]
+}
+```
+
+The validation step should detect format from the file header (magic bytes), not the file extension. A `.png` file might actually be a JPEG. Check dimensions and file size against configurable limits. Return actionable error messages: "Image is 8000x6000 — max allowed is 4096x4096" is far more useful than "Invalid image."
+
+For resizing, maintain the aspect ratio and cap the longest dimension. Most vision models get diminishing returns above 1568px on the longest side. A 4000x3000 photo resized to 1568x1176 looks identical to the model but uses significantly fewer tokens.
+
+> **Beginner Note:** You do not need a heavy image processing library for basic validation. Reading the first few bytes of a file tells you the format (PNG starts with `\x89PNG`, JPEG with `\xFF\xD8`). For resizing, the `sharp` npm package is the standard choice in Node.js/Bun.
+
+> **Advanced Note:** In production, run preprocessing asynchronously. When a user uploads an image, validate and resize in the background so the pipeline is ready when the LLM call happens. Cache preprocessed images to avoid re-processing the same image on retry.
+
+---
+
+## Section 10: Token Cost of Images
+
+### Images Are Expensive
+
+Image tokens are a significant cost driver in multi-modal applications. A single high-resolution image can consume as many tokens as several pages of text. Understanding this relationship lets you make informed trade-offs.
+
+The token cost depends on resolution. Most providers tile large images into fixed-size chunks and charge per tile. Smaller images that fit in a single tile cost a flat amount. The relationship is roughly:
+
+| Image Size | Approximate Tokens | Equivalent Text |
+| ---------- | ------------------ | --------------- |
+| 256x256    | ~200               | ~150 words      |
+| 768x768    | ~800               | ~600 words      |
+| 1568x1568  | ~1,600             | ~1,200 words    |
+| 3000x3000  | ~6,400             | ~4,800 words    |
+
+The practical implication: resizing a 3000x3000 image to 1568x1568 cuts token cost by 75% with negligible quality loss for most tasks (OCR, diagram understanding, screenshot analysis). Only keep full resolution when fine visual detail matters — reading tiny text, identifying small UI elements, or analyzing detailed charts.
+
+```typescript
+// Quick token estimate for planning
+const estimateTokens = (width: number, height: number): number => {
+  const maxDim = Math.max(width, height)
+  if (maxDim <= 512) return 200
+  if (maxDim <= 768) return 800
+  const tiles = Math.ceil(width / 1568) * Math.ceil(height / 1568)
+  return tiles * 1600
+}
+```
+
+When building multi-modal applications, track image token usage separately from text tokens. This lets you identify which images are driving cost and whether resizing would help. A dashboard that shows "image tokens: 80% of total input" tells you exactly where to optimize.
+
+---
+
+## Section 11: File Type Routing for Multi-modal
+
+### Connecting Document Processing to Vision
+
+In **Module 11 (Document Processing)**, you built file readers that extract text from documents. Multi-modal models extend this: files that are images should not be read as text — they should be sent as visual content to a vision model.
+
+A file type router sits at the entry point of your processing pipeline and decides how to handle each file:
+
+- **Text files** (`.txt`, `.md`, `.csv`) — read as text, pass to text-based LLM
+- **Image files** (`.png`, `.jpg`, `.gif`, `.webp`) — validate, preprocess, pass as visual content
+- **PDF files** — extract text for text-heavy PDFs, or render pages as images for scanned/visual PDFs
+- **Binary files** — skip with a warning
+
+```typescript
+type FileHandler = 'text' | 'image' | 'pdf' | 'skip'
+
+function routeFile(filePath: string, mimeType: string): FileHandler {
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType === 'application/pdf') return 'pdf'
+  if (mimeType.startsWith('text/')) return 'text'
+  return 'skip'
+}
+```
+
+The key insight is that the router makes multi-modal processing transparent to the rest of your pipeline. Upstream code sends files in, downstream code receives processed content — whether that content came from text extraction or image analysis.
+
+> **Advanced Note:** For PDFs, the routing decision is not always clear. A scanned PDF is really a collection of images and should be processed with vision. A text-heavy PDF should be extracted as text. Production systems detect this by checking if the PDF has extractable text layers — if yes, use text extraction; if no, render pages as images.
 
 ---
 
@@ -1497,6 +748,36 @@ Your RAG system processes a mix of 1000 text documents and 200 architecture diag
 - D) Convert all text documents to images and use a vision-only approach
 
 **Answer: B** — Generating descriptions once is a fixed upfront cost. After that, the descriptions live in the same vector index as your text chunks, making retrieval uniform and cheap. When a diagram description is retrieved as relevant, you fetch the actual image and include it in the LLM context alongside text chunks. This means you only pay the image token cost for the 1-3 diagrams actually relevant to each query, not all 200. Option A is extremely expensive (200 images per query), C loses valuable information, and D is wasteful and less accurate.
+
+---
+
+### Question 6 (Medium)
+
+Why should an image preprocessing pipeline validate file format using magic bytes (file header) rather than the file extension?
+
+a) Magic bytes are faster to read than file extensions
+b) A file's extension can be wrong — a `.png` file might actually be a JPEG. Reading the first few bytes of the file reveals the true format, preventing processing errors and potential security issues
+c) File extensions are not available on all operating systems
+d) Magic bytes provide better image quality
+
+**Answer: B**
+
+**Explanation:** File extensions are user-controlled metadata that can be incorrect, either by accident (renaming a file) or intentionally (disguising file types). The file header (magic bytes) is embedded in the file itself — PNG files start with `\x89PNG`, JPEGs with `\xFF\xD8`. Validating via magic bytes ensures you process the file with the correct decoder and avoids cryptic errors when a "PNG" file is actually a JPEG or vice versa.
+
+---
+
+### Question 7 (Hard)
+
+Your multi-modal RAG system processes a mix of text documents and architectural diagrams. A user asks "Which service handles authentication?" and a relevant diagram is retrieved. You need to include the diagram in the LLM context. What is the most token-efficient approach?
+
+a) Always send the full-resolution original image
+b) Send only the text description that was generated during indexing, without the image
+c) Resize the image to the model's optimal resolution (around 1568px on the longest side) before including it — this reduces token cost by up to 75% while preserving enough detail for the model to read labels and understand the architecture
+d) Convert the diagram to ASCII art
+
+**Answer: C**
+
+**Explanation:** Vision models get diminishing returns above approximately 1568px on the longest dimension. A 4000x3000 architecture diagram resized to 1568x1176 still has enough resolution for the model to read service names, arrows, and labels. The token savings are substantial — roughly 75% fewer image tokens. Option B loses visual information that the text description may not fully capture (spatial relationships, connections). Option A wastes tokens on resolution the model cannot effectively use.
 
 ---
 
@@ -1620,6 +901,157 @@ describe('Exercise 13: Image Data Extraction', () => {
 })
 ```
 
+---
+
+### Exercise 3: Image Preprocessing Pipeline
+
+**Objective:** Build a preprocessing pipeline that validates, resizes, and optimizes images before sending them to a multi-modal model.
+
+**Specification:**
+
+1. Create `src/exercises/m13/ex03-image-preprocessing.ts`
+2. Export an async function `preprocessImage(imagePath: string, options?: PreprocessOptions): Promise<PreprocessResult>`
+3. Define the types:
+
+```typescript
+interface PreprocessOptions {
+  maxDimension?: number // default: 1568
+  maxFileSizeBytes?: number // default: 5_000_000 (5MB)
+  allowedFormats?: string[] // default: ['png', 'jpg', 'jpeg', 'gif', 'webp']
+  outputFormat?: 'png' | 'jpeg' | 'webp' // default: 'png'
+}
+
+interface PreprocessResult {
+  valid: boolean
+  originalWidth: number
+  originalHeight: number
+  originalSizeBytes: number
+  processedWidth?: number
+  processedHeight?: number
+  processedSizeBytes?: number
+  format: string
+  wasResized: boolean
+  wasConverted: boolean
+  errors: string[]
+  outputPath?: string // Path to the preprocessed image
+}
+```
+
+4. Implement the pipeline:
+   - **Validate format** — detect actual format from file header bytes (not extension). Reject unsupported formats with a clear error message
+   - **Check dimensions** — read image width and height. If the longest dimension exceeds `maxDimension`, flag for resize
+   - **Resize** — resize to fit within `maxDimension` while maintaining aspect ratio. Use the `sharp` package or equivalent
+   - **Check file size** — reject files that exceed `maxFileSizeBytes` even after resize
+   - **Output** — write the processed image to a temp file and return the path
+
+5. Handle edge cases: corrupted files, zero-byte files, unsupported formats disguised with valid extensions
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m13/ex03-image-preprocessing.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 13: Image Preprocessing Pipeline', () => {
+  it('should accept valid images within size limits', async () => {
+    const result = await preprocessImage('test-images/small-valid.png')
+    expect(result.valid).toBe(true)
+    expect(result.wasResized).toBe(false)
+    expect(result.errors).toHaveLength(0)
+  })
+
+  it('should resize oversized images', async () => {
+    const result = await preprocessImage('test-images/large-4000x3000.png', {
+      maxDimension: 1568,
+    })
+    expect(result.valid).toBe(true)
+    expect(result.wasResized).toBe(true)
+    expect(Math.max(result.processedWidth!, result.processedHeight!)).toBeLessThanOrEqual(1568)
+  })
+
+  it('should reject unsupported formats', async () => {
+    const result = await preprocessImage('test-images/document.bmp')
+    expect(result.valid).toBe(false)
+    expect(result.errors.length).toBeGreaterThan(0)
+  })
+
+  it('should detect format from header, not extension', async () => {
+    // A JPEG file with a .png extension
+    const result = await preprocessImage('test-images/actually-jpeg.png')
+    expect(result.format).toBe('jpeg')
+    expect(result.valid).toBe(true)
+  })
+})
+```
+
+---
+
+### Exercise 4: Resolution and Token Cost Experiment
+
+**Objective:** Build a tool that sends the same image at different resolutions to a multi-modal model and compares the quality of responses against the token cost.
+
+**Specification:**
+
+1. Create `src/exercises/m13/ex04-token-cost-experiment.ts`
+2. Export an async function `runTokenExperiment(imagePath: string, question: string, resolutions: number[]): Promise<ExperimentResult>`
+3. Define the types:
+
+```typescript
+interface ResolutionTrial {
+  maxDimension: number
+  actualWidth: number
+  actualHeight: number
+  estimatedTokens: number
+  response: string
+  responseLength: number
+  durationMs: number
+}
+
+interface ExperimentResult {
+  question: string
+  trials: ResolutionTrial[]
+  recommendation: string // Which resolution offers the best quality/cost trade-off
+}
+```
+
+4. For each resolution in the `resolutions` array:
+   - Resize the image to that max dimension (reuse your preprocessing pipeline from Exercise 3 or build a simpler version)
+   - Estimate the token cost using the `estimateImageCost` function from Section 7
+   - Send the resized image to a multi-modal model with the same question
+   - Record the response, token estimate, and duration
+
+5. After all trials, compare responses and generate a recommendation: which resolution gives an acceptable response at the lowest cost?
+
+6. Print a comparison table showing resolution, tokens, duration, and response preview
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m13/ex04-token-cost-experiment.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 13: Token Cost Experiment', () => {
+  it('should run trials at multiple resolutions', async () => {
+    const result = await runTokenExperiment(
+      'test-images/chart.png',
+      'What data does this chart show?',
+      [256, 768, 1568]
+    )
+    expect(result.trials).toHaveLength(3)
+  })
+
+  it('should show increasing token estimates with resolution', async () => {
+    const result = await runTokenExperiment('test-images/chart.png', 'Describe this image', [256, 1568])
+    expect(result.trials[1].estimatedTokens).toBeGreaterThan(result.trials[0].estimatedTokens)
+  })
+
+  it('should produce a recommendation', async () => {
+    const result = await runTokenExperiment('test-images/chart.png', 'What does this show?', [256, 768])
+    expect(result.recommendation).toBeTruthy()
+  })
+})
+```
+
 > **Local Alternative (Ollama):** For vision tasks, use `ollama('ministral-3')` which has native vision support for image understanding, screenshot analysis, and visual question answering. For audio transcription, Whisper can be run locally via `whisper.cpp`. Multi-modal RAG works with local vision models for image understanding combined with `qwen3-embedding:0.6b` for text embeddings.
 
 ---
@@ -1636,5 +1068,8 @@ In this module, you learned:
 6. **Multi-modal RAG:** The "describe then embed" approach makes images searchable alongside text in standard vector stores.
 7. **Structured extraction:** Tables, forms, and charts in images can be converted to structured data (JSON, CSV) with LLM vision.
 8. **Limitations:** Hallucinated text, spatial reasoning errors, counting failures, and resolution sensitivity are systematic failure modes. Build confidence scoring and human verification into critical workflows.
+9. **Image preprocessing:** Production systems validate format (via magic bytes, not extension), resize to optimal dimensions, and strip metadata before sending images to the model, preventing API errors and reducing token waste.
+10. **Token cost of images:** Image tokens scale with resolution — resizing a 3000x3000 image to 1568x1568 cuts cost by roughly 75% with negligible quality loss for most vision tasks.
+11. **File type routing for multi-modal:** A router directs text files to text extraction and image files to vision processing, making multi-modal handling transparent to the rest of the pipeline.
 
 This completes Part III: Advanced Retrieval. You now have a comprehensive retrieval toolkit — vector search, hybrid search, reranking, knowledge graphs, document processing, and multi-modal understanding. In Part IV, you will learn to build agents that use these retrieval capabilities as tools, orchestrating complex multi-step workflows autonomously.

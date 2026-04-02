@@ -11,7 +11,7 @@ export interface Preferences {
     ollama_model: string
   }
   data: {
-    vector_store: 'chroma' | 'qdrant' | 'file'
+    vector_store: 'lancedb' | 'pgvector' | 'qdrant'
   }
 }
 
@@ -24,7 +24,7 @@ const DEFAULTS: Preferences = {
     ollama_model: 'qwen3.5',
   },
   data: {
-    vector_store: 'chroma',
+    vector_store: 'lancedb',
   },
 }
 

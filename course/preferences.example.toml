@@ -12,4 +12,4 @@ model = "openai/gpt-oss-20b"  # openai/gpt-oss-20b | openai/gpt-oss-120b | llama
 model = "qwen3.5"  # qwen3.5 | llama3.1
 
 [data]
-vector_store = "chroma"  # chroma | qdrant
+vector_store = "lancedb"  # lancedb | pgvector | qdrant

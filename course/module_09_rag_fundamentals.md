@@ -19,6 +19,8 @@ RAG solves both problems. Instead of relying solely on the model's training data
 
 RAG is the most widely deployed pattern in production LLM applications. Customer support systems retrieve relevant knowledge base articles. Coding assistants retrieve relevant source files. Legal tools retrieve relevant case law. Documentation chatbots retrieve relevant pages. Understanding RAG is not optional — it is a core competency for anyone building LLM applications.
 
+Here is an important insight before we dive in: the simplest form of RAG is just reading the right files and injecting them into the prompt. Production coding agents do this constantly — they read project configuration files from disk and inject those instructions into every conversation. That is file-based RAG: retrieve a file, augment the prompt, generate. Not everything needs vector search. This module starts with that intuition and builds toward the full pipeline.
+
 This module teaches you to build a complete RAG pipeline from scratch, from ingesting documents to generating cited answers. You will implement multiple chunking strategies, build retrieval with similarity search, and assess the quality of your pipeline. By the end, you will have a reusable RAG system that you can adapt to any document collection.
 
 ---
@@ -30,6 +32,8 @@ This module teaches you to build a complete RAG pipeline from scratch, from inge
 - **Module 3 (Structured Output)** taught `generateText` with `Output.object`. You will use structured output for citation extraction.
 - **Module 2 (Prompt Engineering)** taught prompt design. The RAG prompt template is one of the most important prompts you will write.
 - **Module 7 (Tool Use)** showed how LLMs can call functions. RAG retrieval can be exposed as a tool for agent-based systems.
+
+> **Building on Module 8:** You already built semantic search that finds relevant documents by embedding similarity. RAG adds the generation step — injecting retrieved documents into an LLM prompt to produce grounded answers.
 
 ---
 
@@ -68,44 +72,29 @@ The model receives both the question and the relevant context, and is instructed
 
 > **Beginner Note:** RAG is not the answer to every question. For general knowledge, the model's training data is usually better than any RAG pipeline you could build. RAG shines specifically for domain-specific, private, or frequently-updated information.
 
+### What to Build
+
+Build a script at `src/rag/demo-rag-motivation.ts` that demonstrates the difference between asking an LLM a question about private data with and without retrieved context.
+
+The script should:
+
+1. Call `generateText` with a question about a fictional company's refund policy (no context provided) and log the result
+2. Define a `retrievedContext` string containing a fake refund policy document
+3. Call `generateText` again, this time injecting the context into a user message alongside the question, with a system message instructing the model to answer based on the provided context and cite the source
+4. Log both results and compare
+
+Think about: what system prompt instructions prevent the model from going beyond the provided sources? How does the `messages` array differ from a simple `prompt` call when you need to separate instructions from context?
+
+The key API pattern for injecting context:
+
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-// Without RAG: model may not know the answer or may hallucinate
-const { text: withoutRag } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is the refund policy for Acme Corp?',
-})
-console.log('Without RAG:', withoutRag)
-// Likely: "I don't have information about Acme Corp's refund policy."
-// Or worse: A hallucinated policy that sounds real but is made up.
-
-// With RAG: model answers based on retrieved context
-const retrievedContext = `
-Acme Corp Refund Policy (Updated January 2026):
-- Full refund within 30 days of purchase
-- 50% refund between 30-60 days
-- No refunds after 60 days
-- Digital products are non-refundable after download
-- Contact support@acme.com to initiate a refund
-`
-
-const { text: withRag } = await generateText({
+const { text } = await generateText({
   model: mistral('mistral-small-latest'),
   messages: [
-    {
-      role: 'system',
-      content: `Answer the user's question based on the provided context. If the context does not contain the answer, say so. Always cite the source.`,
-    },
-    {
-      role: 'user',
-      content: `Context:\n${retrievedContext}\n\nQuestion: What is the refund policy for Acme Corp?`,
-    },
+    { role: 'system', content: `Answer based on provided context...` },
+    { role: 'user', content: `Context:\n${context}\n\nQuestion: ${question}` },
   ],
 })
-console.log('With RAG:', withRag)
-// Accurate answer based on the actual policy document
 ```
 
 ---
@@ -136,12 +125,14 @@ The RAG pipeline has two phases:
                               Chunks + Query -> LLM -> Answer
 ```
 
-### Complete Pipeline Implementation
+### What to Build
 
-Here is a minimal but complete RAG pipeline:
+Build a `SimpleRAG` class at `src/rag/simple-rag.ts` that implements both phases of the pipeline.
+
+Here are the types you will need:
 
 ```typescript
-import { embed, embedMany, generateText } from 'ai'
+import { embed, embedMany, generateText, cosineSimilarity } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { mistral } from '@ai-sdk/mistral'
 
@@ -160,158 +151,29 @@ interface RAGResult {
   answer: string
   sources: Array<{ text: string; source: string; score: number }>
 }
+```
 
+Your class needs two public methods:
+
+```typescript
 class SimpleRAG {
   private chunks: IndexedChunk[] = []
   private embeddingModel = openai.embedding('text-embedding-3-small')
   private chatModel = mistral('mistral-small-latest')
 
-  /** Phase 1: Ingest and index documents */
-  async ingest(documents: Array<{ name: string; content: string }>): Promise<number> {
-    const allChunks: Chunk[] = []
-
-    // Step 1: Chunk documents
-    for (const doc of documents) {
-      const chunks = this.chunkDocument(doc.content, doc.name)
-      allChunks.push(...chunks)
-    }
-
-    console.log(`Created ${allChunks.length} chunks from ${documents.length} documents`)
-
-    // Step 2: Embed all chunks
-    const { embeddings } = await embedMany({
-      model: this.embeddingModel,
-      values: allChunks.map(c => c.text),
-    })
-
-    // Step 3: Store with embeddings
-    this.chunks = allChunks.map((chunk, i) => ({
-      ...chunk,
-      embedding: embeddings[i] as number[],
-    }))
-
-    console.log(`Indexed ${this.chunks.length} chunks`)
-    return this.chunks.length
-  }
-
-  /** Phase 2: Query */
-  async query(question: string, topK: number = 3): Promise<RAGResult> {
-    // Step 1: Embed the question
-    const { embedding: queryEmbedding } = await embed({
-      model: this.embeddingModel,
-      value: question,
-    })
-
-    // Step 2: Find most similar chunks
-    const scored = this.chunks.map(chunk => ({
-      chunk,
-      score: this.cosineSimilarity(queryEmbedding, chunk.embedding),
-    }))
-
-    scored.sort((a, b) => b.score - a.score)
-    const topChunks = scored.slice(0, topK)
-
-    // Step 3: Generate answer with context
-    const context = topChunks
-      .map((item, i) => `[Source ${i + 1}: ${item.chunk.source}]\n${item.chunk.text}`)
-      .join('\n\n---\n\n')
-
-    const { text } = await generateText({
-      model: this.chatModel,
-      messages: [
-        {
-          role: 'system',
-          content: `You are a helpful assistant that answers questions based on the provided sources.
-Rules:
-- Only use information from the provided sources
-- Cite sources using [Source N] notation
-- If the sources don't contain the answer, say "I don't have enough information to answer this question."
-- Be concise and accurate`,
-        },
-        {
-          role: 'user',
-          content: `Sources:\n${context}\n\nQuestion: ${question}`,
-        },
-      ],
-    })
-
-    return {
-      answer: text,
-      sources: topChunks.map(item => ({
-        text: item.chunk.text.slice(0, 200),
-        source: item.chunk.source,
-        score: item.score,
-      })),
-    }
-  }
-
-  /** Split a document into chunks */
-  private chunkDocument(content: string, source: string, chunkSize: number = 500, overlap: number = 50): Chunk[] {
-    const words = content.split(/\s+/)
-    const chunks: Chunk[] = []
-    let index = 0
-
-    for (let i = 0; i < words.length; i += chunkSize - overlap) {
-      const chunkWords = words.slice(i, i + chunkSize)
-      if (chunkWords.length < 20) continue // Skip tiny chunks
-
-      chunks.push({
-        id: `${source}-${index}`,
-        text: chunkWords.join(' '),
-        source,
-        index: index++,
-      })
-    }
-
-    return chunks
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    let dot = 0,
-      magA = 0,
-      magB = 0
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i]
-      magA += a[i] * a[i]
-      magB += b[i] * b[i]
-    }
-    return dot / (Math.sqrt(magA) * Math.sqrt(magB))
-  }
-}
-
-// Usage
-const rag = new SimpleRAG()
-
-await rag.ingest([
-  {
-    name: 'typescript-guide.md',
-    content: `TypeScript is a typed superset of JavaScript that compiles to plain JavaScript.
-It adds optional static types, classes, interfaces, and modules. TypeScript helps catch
-errors early in the development process through type checking. The TypeScript compiler,
-tsc, converts TypeScript code into JavaScript that can run in any browser or runtime.
-TypeScript supports generics, which allow you to write reusable components that work
-with multiple types while maintaining type safety. Union types let a variable hold
-values of multiple types, and intersection types combine multiple types into one.`,
-  },
-  {
-    name: 'react-guide.md',
-    content: `React is a JavaScript library for building user interfaces. It uses a
-component-based architecture where UIs are composed of reusable components. React
-introduces JSX, a syntax extension that lets you write HTML-like code in JavaScript.
-The virtual DOM in React optimizes rendering by minimizing direct DOM manipulation.
-React hooks like useState and useEffect enable state management and side effects in
-functional components. The Context API provides a way to pass data through the
-component tree without prop drilling.`,
-  },
-])
-
-const result = await rag.query('How does TypeScript help with error prevention?')
-console.log('Answer:', result.answer)
-console.log('\nSources:')
-for (const s of result.sources) {
-  console.log(`  [${s.score.toFixed(3)}] ${s.source}: ${s.text.slice(0, 80)}...`)
+  async ingest(documents: Array<{ name: string; content: string }>): Promise<number>
+  async query(question: string, topK?: number): Promise<RAGResult>
+  private chunkDocument(content: string, source: string, chunkSize?: number, overlap?: number): Chunk[]
 }
 ```
+
+For `ingest`: iterate over documents, chunk each one using `chunkDocument`, embed all chunk texts with `embedMany`, and store the results in `this.chunks`. Return the total number of chunks indexed.
+
+For `query`: embed the question with `embed`, compute `cosineSimilarity` against every stored chunk, take the top-K, format them as numbered sources in a prompt, and call `generateText` with a system message that instructs the model to cite sources using `[Source N]` notation. Return the answer and source metadata.
+
+For `chunkDocument`: split content by whitespace into words, create chunks of `chunkSize` words with `overlap` word overlap. Skip tiny chunks (fewer than 20 words). Assign each chunk an ID of `${source}-${index}`.
+
+Questions to consider: Why do you embed the question with the same model as the chunks? What happens if `chunkSize` is too small? Too large? What should the system prompt say about information not found in the sources?
 
 ---
 
@@ -321,9 +183,11 @@ for (const s of result.sources) {
 
 Chunking is the most impactful decision in a RAG pipeline. Too large and you waste tokens on irrelevant content. Too small and you lose context. The right strategy depends on your document structure and query patterns.
 
-### Strategy 1: Fixed-Size Chunking
+### What to Build
 
-Split by word count or character count:
+Create `src/rag/chunking.ts` with four chunking functions. Each returns an array of chunks with `text`, `index`, and position metadata.
+
+**Strategy 1: Fixed-Size Chunking** -- `fixedSizeChunk(text, chunkSize?, overlap?): Chunk[]`
 
 ```typescript
 interface Chunk {
@@ -332,122 +196,19 @@ interface Chunk {
   startChar: number
   endChar: number
 }
-
-function fixedSizeChunk(
-  text: string,
-  chunkSize: number = 1000, // characters
-  overlap: number = 200 // character overlap
-): Chunk[] {
-  const chunks: Chunk[] = []
-  let start = 0
-  let index = 0
-
-  while (start < text.length) {
-    const end = Math.min(start + chunkSize, text.length)
-    let chunkText = text.slice(start, end)
-
-    // Try to break at a sentence boundary
-    if (end < text.length) {
-      const lastPeriod = chunkText.lastIndexOf('. ')
-      if (lastPeriod > chunkSize * 0.5) {
-        chunkText = chunkText.slice(0, lastPeriod + 1)
-      }
-    }
-
-    chunks.push({
-      text: chunkText.trim(),
-      index: index++,
-      startChar: start,
-      endChar: start + chunkText.length,
-    })
-
-    start += chunkText.length - overlap
-    if (start >= text.length) break
-  }
-
-  return chunks
-}
-
-// Usage
-const text = 'Lorem ipsum dolor sit amet... '.repeat(100)
-const chunks = fixedSizeChunk(text, 500, 100)
-console.log(`Document: ${text.length} chars -> ${chunks.length} chunks`)
 ```
 
-### Strategy 2: Sentence-Based Chunking
+Slice the text by character count (`chunkSize` defaults to 1000, `overlap` defaults to 200). Before finalizing each chunk, look for the last sentence boundary (`. `) in the second half of the chunk and break there if possible. Track `startChar`/`endChar` positions. Advance by `chunkText.length - overlap` each iteration.
 
-Split by sentences, then group into chunks:
+**Strategy 2: Sentence-Based Chunking** -- `sentenceChunk(text, sentencesPerChunk?, overlapSentences?): Chunk[]`
 
-```typescript
-function sentenceChunk(text: string, sentencesPerChunk: number = 5, overlapSentences: number = 1): Chunk[] {
-  // Split into sentences
-  const sentences = text.match(/[^.!?]+[.!?]+/g) ?? [text]
+Split text into sentences using a regex like `/[^.!?]+[.!?]+/g`. Group `sentencesPerChunk` sentences (default 5) into each chunk, with `overlapSentences` (default 1) sentence overlap between consecutive chunks.
 
-  const chunks: Chunk[] = []
-  let index = 0
+**Strategy 3: Paragraph-Based Chunking** -- `paragraphChunk(text, maxChunkSize?): Chunk[]`
 
-  for (let i = 0; i < sentences.length; i += sentencesPerChunk - overlapSentences) {
-    const chunkSentences = sentences.slice(i, i + sentencesPerChunk)
-    if (chunkSentences.length === 0) continue
+Split on double newlines. Accumulate paragraphs into a buffer until adding the next paragraph would exceed `maxChunkSize` (default 1500 chars), then flush the buffer as a chunk. Do not forget to emit the last chunk.
 
-    chunks.push({
-      text: chunkSentences.join(' ').trim(),
-      index: index++,
-      startChar: 0,
-      endChar: 0,
-    })
-  }
-
-  return chunks
-}
-```
-
-### Strategy 3: Paragraph-Based Chunking
-
-Respect natural document boundaries:
-
-```typescript
-function paragraphChunk(
-  text: string,
-  maxChunkSize: number = 1500 // max characters per chunk
-): Chunk[] {
-  const paragraphs = text.split(/\n\n+/).filter(p => p.trim())
-  const chunks: Chunk[] = []
-  let currentChunk = ''
-  let index = 0
-
-  for (const paragraph of paragraphs) {
-    // If adding this paragraph would exceed the limit, save current chunk
-    if (currentChunk && currentChunk.length + paragraph.length > maxChunkSize) {
-      chunks.push({
-        text: currentChunk.trim(),
-        index: index++,
-        startChar: 0,
-        endChar: 0,
-      })
-      currentChunk = ''
-    }
-
-    currentChunk += (currentChunk ? '\n\n' : '') + paragraph
-  }
-
-  // Don't forget the last chunk
-  if (currentChunk.trim()) {
-    chunks.push({
-      text: currentChunk.trim(),
-      index: index++,
-      startChar: 0,
-      endChar: 0,
-    })
-  }
-
-  return chunks
-}
-```
-
-### Strategy 4: Recursive Chunking (Best for Markdown)
-
-Split hierarchically: first by heading, then by paragraph, then by sentence:
+**Strategy 4: Recursive Markdown Chunking** -- `recursiveMarkdownChunk(markdown, maxChunkSize?): RecursiveChunk[]`
 
 ```typescript
 interface RecursiveChunk {
@@ -456,100 +217,9 @@ interface RecursiveChunk {
   level: number
   index: number
 }
-
-function recursiveMarkdownChunk(markdown: string, maxChunkSize: number = 1000): RecursiveChunk[] {
-  const chunks: RecursiveChunk[] = []
-  let index = 0
-
-  // Split by headings
-  const sections = markdown.split(/^(#{1,6}\s.+)$/gm)
-
-  let currentHeading = 'Introduction'
-  let currentLevel = 0
-
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i].trim()
-    if (!section) continue
-
-    // Check if this is a heading
-    const headingMatch = section.match(/^(#{1,6})\s(.+)$/)
-    if (headingMatch) {
-      currentHeading = headingMatch[2]
-      currentLevel = headingMatch[1].length
-      continue
-    }
-
-    // Split content if it's too large
-    if (section.length <= maxChunkSize) {
-      chunks.push({
-        text: section,
-        heading: currentHeading,
-        level: currentLevel,
-        index: index++,
-      })
-    } else {
-      // Split by paragraphs
-      const paragraphs = section.split(/\n\n+/)
-      let buffer = ''
-
-      for (const para of paragraphs) {
-        if (buffer && buffer.length + para.length > maxChunkSize) {
-          chunks.push({
-            text: buffer.trim(),
-            heading: currentHeading,
-            level: currentLevel,
-            index: index++,
-          })
-          buffer = ''
-        }
-        buffer += (buffer ? '\n\n' : '') + para
-      }
-
-      if (buffer.trim()) {
-        chunks.push({
-          text: buffer.trim(),
-          heading: currentHeading,
-          level: currentLevel,
-          index: index++,
-        })
-      }
-    }
-  }
-
-  return chunks
-}
-
-// Usage
-const markdown = `# Getting Started
-
-This is the introduction to our application.
-
-## Installation
-
-Install the dependencies using npm or bun:
-
-\`\`\`bash
-bun add ai @ai-sdk/mistral
-\`\`\`
-
-Make sure you have Node.js 18+ or Bun installed.
-
-## Configuration
-
-Create a \`.env\` file with your API keys.
-
-The configuration supports multiple providers.
-
-## Usage
-
-Import the functions you need and start making calls.
-`
-
-const chunks = recursiveMarkdownChunk(markdown, 200)
-for (const chunk of chunks) {
-  console.log(`[${chunk.heading}] (${chunk.text.length} chars) ${chunk.text.slice(0, 60)}...`)
-}
 ```
+
+Split by heading regex (`/^(#{1,6}\s.+)$/gm`). Track the current heading and its level. For each non-heading section, if it fits within `maxChunkSize` (default 1000), emit it as one chunk. If it exceeds the limit, split further by paragraph and buffer until the limit.
 
 ### Chunking Strategy Comparison
 
@@ -590,38 +260,18 @@ Chunk 1: "...The refund period is 30 days. Contact support@acme.com for details.
 Chunk 2: "...is 30 days. Contact support@acme.com for details. Please include your..."
 ```
 
-### Implementing Overlap
+### What to Build
 
-```typescript
-function chunkWithOverlap(
-  text: string,
-  chunkSize: number,
-  overlapPercent: number = 0.15 // 15% overlap
-): string[] {
-  const overlap = Math.floor(chunkSize * overlapPercent)
-  const step = chunkSize - overlap
-  const words = text.split(/\s+/)
-  const chunks: string[] = []
+Add a `chunkWithOverlap(text, chunkSize, overlapPercent?): string[]` function to your `src/rag/chunking.ts` file.
 
-  for (let i = 0; i < words.length; i += step) {
-    const chunk = words.slice(i, i + chunkSize).join(' ')
-    if (chunk.trim().length > 0) {
-      chunks.push(chunk)
-    }
-  }
+The function should:
 
-  return chunks
-}
+1. Calculate the overlap in words from `overlapPercent` (default 0.15, meaning 15%)
+2. Compute the step size as `chunkSize - overlap`
+3. Split text into words, then iterate with step-sized jumps, slicing `chunkSize` words each time
+4. Return the array of chunk strings
 
-// Visualize overlap
-const sampleText = Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ')
-const chunks = chunkWithOverlap(sampleText, 20, 0.2) // 20 words, 20% overlap
-
-for (const [i, chunk] of chunks.entries()) {
-  const words = chunk.split(' ')
-  console.log(`Chunk ${i}: words ${words[0]} ... ${words[words.length - 1]} (${words.length} words)`)
-}
-```
+After implementing, write a quick visualization that creates chunks from a 100-word sequence (`word0 word1 ... word99`) with `chunkSize = 20` and `overlapPercent = 0.2`. Log the first and last word of each chunk to verify the overlap is working correctly.
 
 ### How Much Overlap?
 
@@ -640,10 +290,14 @@ for (const [i, chunk] of chunks.entries()) {
 
 ### Top-K Similarity Search
 
-The most common retrieval method: embed the query, find the K most similar chunks:
+The most common retrieval method: embed the query, find the K most similar chunks.
+
+### What to Build
+
+Create `src/rag/retrieval.ts` with three retrieval functions. You will need these types:
 
 ```typescript
-import { embed } from 'ai'
+import { embed, cosineSimilarity } from 'ai'
 import { openai } from '@ai-sdk/openai'
 
 interface IndexedChunk {
@@ -657,117 +311,19 @@ interface RetrievalResult {
   chunk: IndexedChunk
   score: number
 }
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0,
-    magA = 0,
-    magB = 0
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i]
-    magA += a[i] * a[i]
-    magB += b[i] * b[i]
-  }
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB))
-}
-
-async function retrieve(
-  query: string,
-  index: IndexedChunk[],
-  options: {
-    topK?: number
-    minScore?: number
-    filter?: (chunk: IndexedChunk) => boolean
-  } = {}
-): Promise<RetrievalResult[]> {
-  const { topK = 5, minScore = 0.3, filter } = options
-
-  // Embed the query
-  const { embedding: queryEmbedding } = await embed({
-    model: openai.embedding('text-embedding-3-small'),
-    value: query,
-  })
-
-  // Score all chunks
-  let candidates = index
-  if (filter) {
-    candidates = candidates.filter(filter)
-  }
-
-  const scored: RetrievalResult[] = candidates.map(chunk => ({
-    chunk,
-    score: cosineSimilarity(queryEmbedding, chunk.embedding),
-  }))
-
-  // Sort and filter
-  return scored
-    .filter(r => r.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-}
-
-// Usage with metadata filtering
-// const results = await retrieve('How to deploy?', index, {
-//   topK: 3,
-//   minScore: 0.5,
-//   filter: (chunk) => chunk.metadata.category === 'devops',
-// });
 ```
 
-### Retrieval with Reranking
+**Function 1: `retrieve(query, index, options?): Promise<RetrievalResult[]>`**
 
-Two-stage retrieval: first retrieve broadly, then rerank with a more expensive method:
+Options should support `topK` (default 5), `minScore` (default 0.3), and an optional `filter` function `(chunk: IndexedChunk) => boolean`. The function should embed the query with `openai.embedding('text-embedding-3-small')`, compute cosine similarity against all chunks (applying the filter first if provided), filter out results below `minScore`, sort descending by score, and return the top K.
 
-```typescript
-import { embed, generateText } from 'ai'
-import { openai } from '@ai-sdk/openai'
-import { mistral } from '@ai-sdk/mistral'
+**Function 2: `retrieveWithReranking(query, index, options?): Promise<RetrievalResult[]>`**
 
-async function retrieveWithReranking(
-  query: string,
-  index: IndexedChunk[],
-  options: { initialK?: number; finalK?: number } = {}
-): Promise<RetrievalResult[]> {
-  const { initialK = 10, finalK = 3 } = options
+This implements two-stage retrieval. First, call `retrieve` with a larger `initialK` (default 10) and a lower `minScore` (0.2) to cast a wide net. Then use `generateText` with a system prompt that instructs the model to rank passages by relevance and return only the indices of the top `finalK` (default 3) most relevant passages as a comma-separated list. Parse the LLM's response to extract the indices and return the corresponding results.
 
-  // Stage 1: Broad retrieval
-  const initial = await retrieve(query, index, { topK: initialK, minScore: 0.2 })
+Think about: what happens if the LLM returns invalid indices? How do you handle that gracefully?
 
-  if (initial.length <= finalK) {
-    return initial // Not enough results to rerank
-  }
-
-  // Stage 2: LLM-based reranking
-  const { text: rankings } = await generateText({
-    model: mistral('mistral-small-latest'), // Use fast model for reranking
-    messages: [
-      {
-        role: 'system',
-        content: `You are a relevance ranker. Given a query and a list of text passages, rank them by relevance.
-Return only the indices of the top ${finalK} most relevant passages, comma-separated.
-Example output: 2,5,1`,
-      },
-      {
-        role: 'user',
-        content: `Query: ${query}\n\nPassages:\n${initial
-          .map((r, i) => `[${i}] ${r.chunk.text.slice(0, 200)}`)
-          .join('\n\n')}`,
-      },
-    ],
-  })
-
-  // Parse the rankings
-  const rankedIndices = rankings
-    .split(',')
-    .map(s => parseInt(s.trim()))
-    .filter(n => !isNaN(n) && n >= 0 && n < initial.length)
-
-  return rankedIndices.map(i => initial[i])
-}
-```
-
-### Hybrid Retrieval: Keyword + Semantic
-
-Combine keyword matching with semantic search for better results:
+**Function 3: `hybridRetrieve(query, index, topK?, semanticWeight?): Promise<HybridResult[]>`**
 
 ```typescript
 interface HybridResult {
@@ -776,47 +332,9 @@ interface HybridResult {
   keywordScore: number
   combinedScore: number
 }
-
-function keywordScore(query: string, text: string): number {
-  const queryWords = query.toLowerCase().split(/\s+/)
-  const textLower = text.toLowerCase()
-
-  let matches = 0
-  for (const word of queryWords) {
-    if (word.length > 2 && textLower.includes(word)) {
-      matches++
-    }
-  }
-
-  return matches / queryWords.length
-}
-
-async function hybridRetrieve(
-  query: string,
-  index: IndexedChunk[],
-  topK: number = 5,
-  semanticWeight: number = 0.7 // 70% semantic, 30% keyword
-): Promise<HybridResult[]> {
-  const { embedding: queryEmbedding } = await embed({
-    model: openai.embedding('text-embedding-3-small'),
-    value: query,
-  })
-
-  const results: HybridResult[] = index.map(chunk => {
-    const sem = cosineSimilarity(queryEmbedding, chunk.embedding)
-    const kw = keywordScore(query, chunk.text)
-
-    return {
-      chunk,
-      semanticScore: sem,
-      keywordScore: kw,
-      combinedScore: sem * semanticWeight + kw * (1 - semanticWeight),
-    }
-  })
-
-  return results.sort((a, b) => b.combinedScore - a.combinedScore).slice(0, topK)
-}
 ```
+
+Combine semantic search with a simple keyword scorer. The keyword scorer splits the query into words, checks which query words (length > 2) appear in the chunk text (case-insensitive), and returns `matches / totalQueryWords`. The combined score is `semanticScore * semanticWeight + keywordScore * (1 - semanticWeight)`, with `semanticWeight` defaulting to 0.7.
 
 > **Advanced Note:** Hybrid retrieval often outperforms pure semantic search because it catches cases where exact keyword matches matter (proper nouns, technical terms, error codes) while still handling paraphrases and synonyms through semantic search. The BM25 algorithm is the industry-standard keyword retrieval method — consider using a library like `minisearch` for production keyword search.
 
@@ -826,118 +344,43 @@ async function hybridRetrieve(
 
 ### The RAG Prompt Template
 
-How you inject retrieved context into the prompt significantly affects answer quality:
+How you inject retrieved context into the prompt significantly affects answer quality. The key decisions are: how to format sources, what instructions to give the model, and how to order chunks when many are retrieved.
+
+### What to Build
+
+Create `src/rag/context-injection.ts` with three functions.
+
+**Function 1: `generateRAGAnswer(question, chunks): Promise<string>`**
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface RetrievedChunk {
   text: string
   source: string
   score: number
 }
-
-async function generateRAGAnswer(question: string, chunks: RetrievedChunk[]): Promise<string> {
-  // Format the context with clear source attribution
-  const context = chunks
-    .map(
-      (chunk, i) =>
-        `<source id="${i + 1}" name="${chunk.source}" relevance="${chunk.score.toFixed(2)}">\n${chunk.text}\n</source>`
-    )
-    .join('\n\n')
-
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content: `You are a knowledgeable assistant that answers questions based on provided sources.
-
-Guidelines:
-1. Only use information from the provided sources
-2. Cite sources inline using [Source N] notation
-3. If multiple sources support a claim, cite all of them
-4. If the sources contradict each other, note the discrepancy
-5. If the sources do not contain enough information, clearly state what is missing
-6. Be concise but thorough
-7. Do not add information beyond what the sources provide`,
-      },
-      {
-        role: 'user',
-        content: `<context>\n${context}\n</context>\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  return text
-}
 ```
 
-### Context Window Management
-
-When you have many retrieved chunks, you may need to fit them within the context window:
+Format each chunk as an XML-style source tag:
 
 ```typescript
-function selectChunksWithinBudget(
-  chunks: RetrievedChunk[],
-  maxTokens: number,
-  reserveForPrompt: number = 2000 // Reserve tokens for system prompt + question + response
-): RetrievedChunk[] {
-  const available = maxTokens - reserveForPrompt
-  const selected: RetrievedChunk[] = []
-  let usedTokens = 0
-
-  // Chunks are assumed to be sorted by relevance (best first)
-  for (const chunk of chunks) {
-    const chunkTokens = Math.ceil(chunk.text.length / 4) // Rough estimate
-
-    if (usedTokens + chunkTokens > available) {
-      break
-    }
-
-    selected.push(chunk)
-    usedTokens += chunkTokens
-  }
-
-  console.log(`Selected ${selected.length}/${chunks.length} chunks (${usedTokens} tokens)`)
-
-  return selected
-}
+;`<source id="${i + 1}" name="${chunk.source}" relevance="${chunk.score.toFixed(2)}">\n${chunk.text}\n</source>`
 ```
 
-### Source Ordering Strategies
+Call `generateText` with a system message containing guidelines: only use provided sources, cite inline with `[Source N]`, cite multiple sources when they agree, note contradictions, state what is missing if sources are insufficient, do not add information beyond sources. The user message wraps the formatted context in `<context>` tags followed by the question.
 
-The order in which you present sources matters:
+**Function 2: `selectChunksWithinBudget(chunks, maxTokens, reserveForPrompt?): RetrievedChunk[]`**
 
-```typescript
-// Strategy 1: Most relevant first (default)
-function orderByRelevance(chunks: RetrievedChunk[]): RetrievedChunk[] {
-  return [...chunks].sort((a, b) => b.score - a.score)
-}
+Given chunks sorted by relevance (best first), greedily select chunks that fit within `maxTokens - reserveForPrompt` (default reserve: 2000). Estimate token count as `Math.ceil(chunk.text.length / 4)`. Stop adding chunks when the next one would exceed the budget.
 
-// Strategy 2: Document order (preserve original narrative flow)
-function orderByDocument(chunks: RetrievedChunk[]): RetrievedChunk[] {
-  return [...chunks].sort((a, b) => a.source.localeCompare(b.source))
-}
+**Function 3: Source ordering strategies**
 
-// Strategy 3: Sandwich — most relevant at start and end
-// Mitigates the "lost in the middle" effect for long context
-function orderSandwich(chunks: RetrievedChunk[]): RetrievedChunk[] {
-  const sorted = [...chunks].sort((a, b) => b.score - a.score)
-  const result: RetrievedChunk[] = []
+Implement three ordering functions that each take a `RetrievedChunk[]` and return a reordered copy:
 
-  for (let i = 0; i < sorted.length; i++) {
-    if (i % 2 === 0) {
-      result.push(sorted[i]) // Even indices at start
-    } else {
-      result.splice(Math.floor(result.length / 2), 0, sorted[i]) // Odd indices in middle
-    }
-  }
+- `orderByRelevance` -- sort descending by score (the default)
+- `orderByDocument` -- sort by source name alphabetically (preserves narrative flow)
+- `orderSandwich` -- place the most relevant chunks at the start and end, with lower-relevance chunks in the middle. This mitigates the "lost in the middle" effect where models pay less attention to middle context.
 
-  return result
-}
-```
+For the sandwich strategy: sort by relevance, then alternate placing items at the start (even indices) and in the middle (odd indices).
 
 > **Beginner Note:** Start with "most relevant first" ordering. This works well in most cases. Only switch to attention-optimized ordering if you notice the model ignoring important middle context in long retrieval sets.
 
@@ -949,11 +392,17 @@ function orderSandwich(chunks: RetrievedChunk[]): RetrievedChunk[] {
 
 ### Structured Citation Extraction
 
-Use `generateText` with `Output.object` to extract citations in a structured format:
+Use `generateText` with `Output.object` to extract citations in a structured format. This gives you machine-readable citations you can verify programmatically.
+
+### What to Build
+
+Create `src/rag/citations.ts` with two functions.
+
+**Function 1: `answerWithCitations(question, sources): Promise<CitedAnswer>`**
+
+Define a Zod schema for structured citation output:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
 const CitedAnswerSchema = z.object({
@@ -970,105 +419,22 @@ const CitedAnswerSchema = z.object({
 })
 
 type CitedAnswer = z.infer<typeof CitedAnswerSchema>
-
-async function answerWithCitations(
-  question: string,
-  sources: Array<{ text: string; name: string }>
-): Promise<CitedAnswer> {
-  const context = sources.map((s, i) => `[Source ${i + 1}: ${s.name}]\n${s.text}`).join('\n\n---\n\n')
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: CitedAnswerSchema }),
-    messages: [
-      {
-        role: 'system',
-        content: `Answer the question using only the provided sources. For each claim, provide an exact quote from the source.`,
-      },
-      {
-        role: 'user',
-        content: `Sources:\n${context}\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  return output
-}
-
-// Usage
-const result = await answerWithCitations('What are the system requirements?', [
-  {
-    name: 'docs/install.md',
-    text: 'System requires Node.js 18+ or Bun 1.0+. Minimum 4GB RAM recommended. Works on macOS, Linux, and Windows.',
-  },
-  {
-    name: 'docs/faq.md',
-    text: 'We recommend at least 8GB RAM for development. SSD storage improves build times significantly.',
-  },
-])
-
-console.log('Answer:', result.answer)
-console.log('\nCitations:')
-for (const citation of result.citations) {
-  console.log(`  [Source ${citation.sourceIndex}] "${citation.quote}"`)
-  console.log(`  Supports: ${citation.claim}\n`)
-}
-console.log('Confidence:', result.confidence)
-if (result.missingInfo) {
-  console.log('Missing:', result.missingInfo)
-}
 ```
 
-### Verifying Citations
+The function takes a `question` and an array of `{ text: string; name: string }` sources. Format sources as `[Source N: name]\ntext` separated by `---`. Use `Output.object({ schema: CitedAnswerSchema })` in the `generateText` call. The system prompt should instruct the model to answer using only the provided sources and provide exact quotes for each claim.
 
-```typescript
-/**
- * Verify that citations actually reference text that exists in the sources.
- * LLMs sometimes fabricate quotes even when instructed to cite.
- */
-function verifyCitations(
-  answer: CitedAnswer,
-  sources: Array<{ text: string; name: string }>
-): {
-  verified: boolean
-  details: Array<{
-    citation: CitedAnswer['citations'][0]
-    found: boolean
-    similarity?: number
-  }>
-} {
-  const details = answer.citations.map(citation => {
-    const sourceIndex = citation.sourceIndex - 1 // Convert to 0-based
-    if (sourceIndex < 0 || sourceIndex >= sources.length) {
-      return { citation, found: false }
-    }
+**Function 2: `verifyCitations(answer, sources): { verified: boolean; details: ... }`**
 
-    const sourceText = sources[sourceIndex].text.toLowerCase()
-    const quote = citation.quote.toLowerCase()
+This is a pure function (no LLM calls) that checks whether each citation's quote actually exists in the referenced source. For each citation:
 
-    // Exact match
-    if (sourceText.includes(quote)) {
-      return { citation, found: true, similarity: 1.0 }
-    }
+1. Look up the source by `sourceIndex` (convert from 1-based to 0-based)
+2. Check for an exact substring match (case-insensitive)
+3. If no exact match, do a fuzzy match: split the quote into words longer than 3 characters, count how many appear in the source text, and compute `matchedWords / totalWords`
+4. Consider the citation verified if the similarity exceeds 0.7
 
-    // Fuzzy match: check if most words are present
-    const quoteWords = quote.split(/\s+/).filter(w => w.length > 3)
-    const matchedWords = quoteWords.filter(w => sourceText.includes(w))
-    const similarity = quoteWords.length > 0 ? matchedWords.length / quoteWords.length : 0
+Return `{ verified: boolean, details: [...] }` where `verified` is true only if all citations passed.
 
-    return {
-      citation,
-      found: similarity > 0.7, // Consider it found if 70%+ words match
-      similarity,
-    }
-  })
-
-  return {
-    verified: details.every(d => d.found),
-    details,
-  }
-}
-```
+Why is verification important? LLMs sometimes fabricate quotes even when explicitly instructed to cite. Programmatic verification catches these hallucinated citations before they reach the user.
 
 ---
 
@@ -1076,21 +442,20 @@ function verifyCitations(
 
 ### Production-Ready RAG
 
-Here is a complete, production-oriented RAG pipeline that brings together all the concepts:
+Now bring all the pieces together into a complete, production-oriented RAG pipeline that ingests a directory of markdown files and answers questions with citations.
+
+### What to Build
+
+Create `src/rag/pipeline.ts` with a `RAGPipeline` class. This class composes the chunking, embedding, retrieval, and generation steps you built in earlier sections.
+
+Here are the types:
 
 ```typescript
-import { embed, embedMany, generateText } from 'ai'
+import { embed, embedMany, generateText, cosineSimilarity } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { mistral } from '@ai-sdk/mistral'
 import { readdir, readFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
-
-// --- Types ---
-interface Document {
-  id: string
-  filePath: string
-  content: string
-}
 
 interface DocChunk {
   id: string
@@ -1115,249 +480,46 @@ interface QueryResult {
   }>
   tokenUsage: {
     embeddingTokens: number
-    generationPromptTokens: number
-    generationCompletionTokens: number
+    generationInputTokens: number
+    generationOutputTokens: number
   }
 }
+```
 
-// --- Chunking ---
-function chunkMarkdown(content: string, docId: string, filePath: string, maxChunkSize: number = 800): DocChunk[] {
-  const chunks: DocChunk[] = []
-  let index = 0
+The class needs:
 
-  // Split by headings
-  const lines = content.split('\n')
-  let currentHeading = 'Document Start'
-  let currentContent = ''
-
-  for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)/)
-
-    if (headingMatch) {
-      // Save current chunk if non-empty
-      if (currentContent.trim()) {
-        const subChunks = splitLargeChunk(currentContent.trim(), maxChunkSize)
-        for (const sub of subChunks) {
-          chunks.push({
-            id: `${docId}-${index}`,
-            documentId: docId,
-            text: sub,
-            heading: currentHeading,
-            chunkIndex: index++,
-            filePath,
-          })
-        }
-      }
-      currentHeading = headingMatch[2]
-      currentContent = ''
-    } else {
-      currentContent += line + '\n'
-    }
-  }
-
-  // Last chunk
-  if (currentContent.trim()) {
-    const subChunks = splitLargeChunk(currentContent.trim(), maxChunkSize)
-    for (const sub of subChunks) {
-      chunks.push({
-        id: `${docId}-${index}`,
-        documentId: docId,
-        text: sub,
-        heading: currentHeading,
-        chunkIndex: index++,
-        filePath,
-      })
-    }
-  }
-
-  return chunks
-}
-
-function splitLargeChunk(text: string, maxSize: number): string[] {
-  if (text.length <= maxSize) return [text]
-
-  const paragraphs = text.split(/\n\n+/)
-  const result: string[] = []
-  let current = ''
-
-  for (const para of paragraphs) {
-    if (current && current.length + para.length > maxSize) {
-      result.push(current.trim())
-      current = ''
-    }
-    current += (current ? '\n\n' : '') + para
-  }
-
-  if (current.trim()) result.push(current.trim())
-  return result
-}
-
-// --- RAG Pipeline ---
+```typescript
 class RAGPipeline {
   private index: IndexedDocChunk[] = []
   private embeddingModel = openai.embedding('text-embedding-3-small')
   private chatModel = mistral('mistral-small-latest')
 
-  /** Ingest all markdown files from a directory */
-  async ingestDirectory(dirPath: string): Promise<{
-    documentsProcessed: number
-    chunksCreated: number
-    tokensEmbedded: number
-  }> {
-    const files = await readdir(dirPath)
-    const mdFiles = files.filter(f => extname(f) === '.md')
-
-    const allChunks: DocChunk[] = []
-
-    for (const file of mdFiles) {
-      const filePath = join(dirPath, file)
-      const content = await readFile(filePath, 'utf-8')
-      const docId = file.replace('.md', '')
-
-      const chunks = chunkMarkdown(content, docId, filePath)
-      allChunks.push(...chunks)
-
-      console.log(`  ${file}: ${chunks.length} chunks`)
-    }
-
-    // Embed all chunks in batches
-    const batchSize = 100
-    let totalTokens = 0
-
-    for (let i = 0; i < allChunks.length; i += batchSize) {
-      const batch = allChunks.slice(i, i + batchSize)
-      const { embeddings, usage } = await embedMany({
-        model: this.embeddingModel,
-        values: batch.map(c => `${c.heading}\n${c.text}`),
-      })
-
-      for (let j = 0; j < batch.length; j++) {
-        this.index.push({
-          ...batch[j],
-          embedding: embeddings[j] as number[],
-        })
-      }
-
-      totalTokens += usage?.tokens ?? 0
-    }
-
-    return {
-      documentsProcessed: mdFiles.length,
-      chunksCreated: allChunks.length,
-      tokensEmbedded: totalTokens,
-    }
-  }
-
-  /** Query the pipeline */
-  async query(question: string, options: { topK?: number; minScore?: number } = {}): Promise<QueryResult> {
-    const { topK = 5, minScore = 0.3 } = options
-
-    // Embed the question
-    const { embedding: queryEmbedding, usage: embedUsage } = await embed({
-      model: this.embeddingModel,
-      value: question,
-    })
-
-    // Retrieve
-    const scored = this.index.map(chunk => ({
-      chunk,
-      score: this.cosineSimilarity(queryEmbedding, chunk.embedding),
-    }))
-
-    const topChunks = scored
-      .filter(r => r.score >= minScore)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK)
-
-    // Generate answer
-    const context = topChunks
-      .map(
-        (item, i) =>
-          `<source id="${i + 1}" file="${item.chunk.filePath}" section="${item.chunk.heading}">\n${item.chunk.text}\n</source>`
-      )
-      .join('\n\n')
-
-    const { text, usage: genUsage } = await generateText({
-      model: this.chatModel,
-      messages: [
-        {
-          role: 'system',
-          content: `You are a documentation assistant. Answer questions based on the provided sources.
-
-Rules:
-- Only use information from the provided sources
-- Cite sources using [Source N] notation, where N matches the source id
-- If sources don't contain the answer, say so explicitly
-- Be accurate and concise`,
-        },
-        {
-          role: 'user',
-          content: `${context}\n\nQuestion: ${question}`,
-        },
-      ],
-    })
-
-    return {
-      answer: text,
-      sources: topChunks.map(item => ({
-        filePath: item.chunk.filePath,
-        heading: item.chunk.heading,
-        text: item.chunk.text.slice(0, 200),
-        score: item.score,
-      })),
-      tokenUsage: {
-        embeddingTokens: embedUsage?.tokens ?? 0,
-        generationInputTokens: genUsage?.inputTokens ?? 0,
-        generationOutputTokens: genUsage?.outputTokens ?? 0,
-      },
-    }
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    let dot = 0,
-      magA = 0,
-      magB = 0
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i]
-      magA += a[i] * a[i]
-      magB += b[i] * b[i]
-    }
-    return dot / (Math.sqrt(magA) * Math.sqrt(magB))
-  }
-
-  /** Get index statistics */
-  getStats(): { totalChunks: number; uniqueDocuments: number; avgChunkLength: number } {
-    const uniqueDocs = new Set(this.index.map(c => c.documentId))
-    const avgLength =
-      this.index.length > 0 ? this.index.reduce((sum, c) => sum + c.text.length, 0) / this.index.length : 0
-
-    return {
-      totalChunks: this.index.length,
-      uniqueDocuments: uniqueDocs.size,
-      avgChunkLength: Math.round(avgLength),
-    }
-  }
+  async ingestDirectory(
+    dirPath: string
+  ): Promise<{ documentsProcessed: number; chunksCreated: number; tokensEmbedded: number }>
+  async query(question: string, options?: { topK?: number; minScore?: number }): Promise<QueryResult>
+  getStats(): { totalChunks: number; uniqueDocuments: number; avgChunkLength: number }
 }
-
-// --- Usage ---
-const pipeline = new RAGPipeline()
-
-// Ingest documents
-console.log('Ingesting documents...')
-const ingestResult = await pipeline.ingestDirectory('./docs')
-console.log(`Processed: ${ingestResult.documentsProcessed} documents`)
-console.log(`Created: ${ingestResult.chunksCreated} chunks`)
-console.log(`Embedded: ${ingestResult.tokensEmbedded} tokens`)
-
-// Query
-const queryResult = await pipeline.query('How do I set up the project?')
-console.log('\nAnswer:', queryResult.answer)
-console.log('\nSources:')
-for (const s of queryResult.sources) {
-  console.log(`  [${s.score.toFixed(3)}] ${s.filePath} > ${s.heading}`)
-}
-console.log('\nToken usage:', queryResult.tokenUsage)
 ```
+
+**`ingestDirectory`** should:
+
+1. Read all `.md` files from the directory using `readdir` and filter by `extname`
+2. For each file, chunk using a markdown-aware chunker that splits by headings, then by paragraphs for oversized sections (max 800 chars per chunk)
+3. Embed all chunks in batches of 100 using `embedMany`, prepending the heading to the text for better embeddings (`${heading}\n${text}`)
+4. Store in `this.index` and track total token usage
+
+**`query`** should:
+
+1. Embed the question
+2. Score all indexed chunks by cosine similarity, filter by `minScore` (default 0.3), take top-K (default 5)
+3. Format chunks as XML `<source>` tags with file path and section heading
+4. Call `generateText` with a system prompt that requires source-only answers with `[Source N]` citations
+5. Return the answer, source metadata (truncated to 200 chars), and token usage from both embedding and generation
+
+**`getStats`** should return the total chunk count, unique document count (by `documentId`), and average chunk length.
+
+Questions to consider: Why prepend the heading when embedding? What batch size is appropriate for embeddings? How do you handle the `usage` object when it might be undefined?
 
 ---
 
@@ -1412,60 +574,13 @@ async function assessRAGResponse(
   sources: string[],
   groundTruth?: string
 ): Promise<z.infer<typeof AssessmentSchema>> {
-  const sourcesFormatted = sources.map((s, i) => `[Source ${i + 1}]: ${s}`).join('\n\n')
-
-  const groundTruthSection = groundTruth ? `\nGround truth answer: ${groundTruth}` : ''
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: AssessmentSchema }),
-    messages: [
-      {
-        role: 'system',
-        content: `You are a RAG quality assessor. Assess the quality of a RAG-generated answer.
-
-Assess these dimensions:
-1. Faithfulness: Is every claim in the answer supported by the sources? Score 0-1.
-2. Relevance: Are the retrieved sources relevant to the question? Score 0-1.
-3. Completeness: Does the answer fully address the question? Score 0-1.
-
-Be strict and objective.`,
-      },
-      {
-        role: 'user',
-        content: `Question: ${question}
-
-Sources:
-${sourcesFormatted}
-
-Generated answer: ${answer}
-${groundTruthSection}`,
-      },
-    ],
-  })
-
-  return output
-}
-
-// Usage
-const assessment = await assessRAGResponse(
-  'What are the system requirements?',
-  'The system requires Node.js 18+ and at least 4GB of RAM [Source 1]. An SSD is recommended for better performance [Source 2].',
-  [
-    'System requires Node.js 18+ or Bun 1.0+. Minimum 4GB RAM recommended.',
-    'SSD storage improves build times significantly.',
-  ]
-)
-
-console.log('Assessment:')
-console.log(`  Faithfulness: ${assessment.faithfulness.score}`)
-console.log(`  Relevance: ${assessment.relevance.score}`)
-console.log(`  Completeness: ${assessment.completeness.score}`)
-
-if (assessment.faithfulness.unsupportedClaims.length > 0) {
-  console.log('  Unsupported claims:', assessment.faithfulness.unsupportedClaims)
+  // Your implementation here
 }
 ```
+
+Build this function using `generateText` with `Output.object({ schema: AssessmentSchema })`. Format the sources with numbered labels (e.g., `[Source 1]: ...`). The system message should instruct the judge model to assess faithfulness, relevance, and completeness, each scored 0-1. The user message should include the question, formatted sources, generated answer, and optional ground truth. Return the parsed output.
+
+What makes a good system prompt for an LLM-as-judge? Why is it important to tell the judge to "be strict and objective"?
 
 ### Building a Test Dataset
 
@@ -1500,40 +615,11 @@ async function runTestSuite(
   averageScores: { faithfulness: number; relevance: number; completeness: number }
   results: Array<{ question: string; scores: z.infer<typeof AssessmentSchema> }>
 }> {
-  const results = []
-  let totalFaithfulness = 0
-  let totalRelevance = 0
-  let totalCompleteness = 0
-
-  for (const testCase of dataset) {
-    console.log(`Testing: "${testCase.question}"`)
-
-    const response = await pipeline.query(testCase.question)
-    const scores = await assessRAGResponse(
-      testCase.question,
-      response.answer,
-      response.sources.map(s => s.text),
-      testCase.expectedAnswer
-    )
-
-    results.push({ question: testCase.question, scores })
-
-    totalFaithfulness += scores.faithfulness.score
-    totalRelevance += scores.relevance.score
-    totalCompleteness += scores.completeness.score
-  }
-
-  const n = dataset.length
-  return {
-    averageScores: {
-      faithfulness: totalFaithfulness / n,
-      relevance: totalRelevance / n,
-      completeness: totalCompleteness / n,
-    },
-    results,
-  }
+  // Your implementation here
 }
 ```
+
+Build this function. Iterate over each test case, run the pipeline's `query` method, then call `assessRAGResponse` with the question, answer, source texts, and expected answer. Accumulate the scores for each dimension and collect per-question results. At the end, compute averages by dividing totals by the dataset length.
 
 ### Retrieval Quality Metrics
 
@@ -1549,21 +635,13 @@ function measureRetrievalQuality(
   recall: number // What fraction of relevant sources were retrieved?
   f1: number // Harmonic mean of precision and recall
 } {
-  const retrievedSet = new Set(retrievedSources)
-  const expectedSet = new Set(expectedSources)
-
-  let truePositives = 0
-  for (const source of retrievedSet) {
-    if (expectedSet.has(source)) truePositives++
-  }
-
-  const precision = retrievedSet.size > 0 ? truePositives / retrievedSet.size : 0
-  const recall = expectedSet.size > 0 ? truePositives / expectedSet.size : 0
-  const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0
-
-  return { precision, recall, f1 }
+  // Your implementation here
 }
 ```
+
+Build this function using set intersection. Convert both arrays to `Set`s, count true positives (sources in both sets), then compute precision (true positives / retrieved count), recall (true positives / expected count), and F1 (harmonic mean of precision and recall). Handle the edge case where either set is empty.
+
+Why is F1 more informative than precision or recall alone? If you retrieve 100 sources and only 1 is relevant, what do precision and recall look like?
 
 > **Beginner Note:** Start by manually reviewing 20-30 queries before investing in automated assessment. Manual review builds intuition about failure modes and helps you design better automated metrics.
 
@@ -1572,6 +650,69 @@ function measureRetrievalQuality(
 > **Provider Tip: Native Citations** — This module teaches citation attribution using structured output and manual source tracking. Several providers offer native citation features that can simplify this: **Mistral** supports citations via tool calls — you pass documents as tool responses and the model returns `ReferenceChunk` objects linking claims to specific sources. **Anthropic** offers a native Citations feature that returns precise character-range citations grounded to exact spans in provided documents. Both approaches can replace the manual citation extraction pattern taught here.
 
 > **Local Alternative (Ollama):** RAG pipelines work with any model. Use `ollama('qwen3.5')` for generation and `ollama.embedding('qwen3-embedding:0.6b')` for embeddings (see Module 8). The retrieval and chunking logic is entirely model-agnostic. Local RAG is especially appealing for privacy-sensitive documents that you don't want to send to external APIs.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 10: Context Priority Ordering
+
+When you retrieve more context than fits in the available window, you need a priority strategy. Production systems that assemble context from multiple sources use a consistent ordering:
+
+1. **System instructions** — always included, highest priority
+2. **Project-specific configuration** — usually included (e.g., coding standards, project rules)
+3. **Recent conversation** — sliding window of recent messages
+4. **Memory entries** — relevant facts from previous sessions
+5. **Retrieved chunks** — from vector search or other retrieval
+6. **Tool results** — truncated if needed, lowest priority
+
+This priority ordering applies directly to RAG. When your retrieval returns 20 relevant chunks but only 5 fit in the context window, you need to decide which chunks to include. The same principle applies: closer to the user's immediate question means higher priority.
+
+```typescript
+interface ContextSource {
+  content: string
+  priority: number // Lower number = higher priority
+  tokenCount: number
+}
+
+function assembleContext(sources: ContextSource[], maxTokens: number): string[] {
+  /* ... */
+}
+```
+
+The key design decision is where retrieved chunks sit in the priority order. In most RAG applications, system instructions and recent conversation take precedence, and retrieved chunks fill the remaining space. If your context budget is tight, you may need to truncate or summarize retrieved chunks rather than dropping conversation history.
+
+---
+
+## Section 11: Hierarchical Configuration as Retrieval
+
+Production coding agents use an interesting retrieval pattern: they search for project instructions by walking up the directory tree. Starting from the current file, the system checks for configuration files at each directory level up to the repository root, then to the user's global configuration. Each level can extend or override the previous one.
+
+This is file-based retrieval with hierarchical precedence. The "query" is "what instructions apply here?" and the retrieval strategy is directory traversal with merge semantics. Closer configuration takes priority over farther configuration, creating a specificity gradient — global rules apply everywhere, repo-level rules apply to the project, and directory-level rules apply to the current context.
+
+```typescript
+async function collectInstructions(filePath: string, rootDir: string): Promise<string[]> {
+  /* ... */
+}
+```
+
+Build this function. Starting from `dirname(filePath)`, walk up the directory tree while still within `rootDir`. At each level, check for an `INSTRUCTIONS.md` file. If found, prepend it to the array (using `unshift`) so the most specific instructions end up last (highest priority). Stop when you reach the root.
+
+This mirrors how retrieval systems should rank results by relevance. The "closer" a configuration file is to the current context, the more relevant it is — just as a chunk that closely matches the query should rank higher than a loosely related one.
+
+---
+
+## Section 12: Lazy-Loading Referenced Files
+
+Production systems often reference external files in their project instructions — "see coding-standards.md for style rules" or "refer to api-spec.yaml for endpoint details" — but they do not load those files preemptively. They only retrieve and inject the referenced content when the current task makes it relevant.
+
+This is lazy retrieval: deferring the cost of loading until the benefit is clear. If the user is asking about database queries, there is no reason to load the coding standards file. If they ask about code style, then you load it.
+
+The pattern is straightforward: instructions contain pointers (file paths or references), not content. When the user's request touches a relevant area, the system resolves the pointer and injects the content. This avoids consuming context window space with information that may never be needed.
+
+Eager retrieval — loading everything up front — wastes context. In a RAG pipeline, this translates to a practical design principle: do not retrieve all potentially relevant chunks at query time. Instead, retrieve a focused set, generate, and if the answer is insufficient, retrieve additional context in a follow-up step. This is analogous to the "iterative retrieval" pattern where the system retrieves, generates, evaluates, and retrieves again if needed.
+
+> **Key Insight:** Treat references as pointers, not as content to preload. Retrieve late, not early. This applies both to file-based configuration injection and to vector-based RAG pipeline design.
 
 ---
 
@@ -1586,6 +727,9 @@ In this module, you learned:
 5. **Retrieval techniques:** Top-K similarity search, reranking retrieved results, and hybrid keyword-plus-semantic retrieval improve the quality of retrieved context.
 6. **Context injection:** How to structure RAG prompts with retrieved chunks, source attribution, and instructions that guide the model to answer based on provided context.
 7. **RAG assessment:** Using faithfulness, relevance, and correctness metrics — including LLM-as-judge evaluation — to systematically measure pipeline quality.
+8. **Context priority ordering:** When retrieved chunks exceed available context, a priority strategy determines what gets included — system instructions first, then project config, conversation history, and finally retrieved chunks.
+9. **Hierarchical retrieval:** Walking up a directory tree to collect and merge configuration files demonstrates retrieval with precedence — a pattern used extensively in production coding agents.
+10. **Lazy retrieval:** Deferring the loading of referenced documents until they are actually needed saves context window space and improves relevance.
 
 In Module 10, you will tackle advanced RAG techniques including query transformation, HyDE, hybrid search, and self-RAG to handle the failure modes of naive retrieval.
 
@@ -1666,6 +810,34 @@ D) When you need the highest possible accuracy
 
 RAG is preferred when: (1) the document collection exceeds the context window, (2) you have many queries (amortize embedding cost), or (3) data changes frequently (re-embed changed chunks vs. re-send everything). For small, static documents with few queries, full context is usually simpler and more accurate.
 
+### Question 6 (Medium)
+
+In a context priority ordering strategy, why do system instructions and recent conversation typically rank higher than retrieved chunks?
+
+a) System instructions and conversation are cheaper to process
+b) They define the task constraints and immediate context — retrieved chunks are supplementary, and dropping them degrades quality less than losing the user's recent messages or behavioral instructions
+c) Retrieved chunks are always less accurate
+d) The model cannot process more than two context types at once
+
+**Answer: B**
+
+**Explanation:** System instructions define how the model should behave, and recent conversation captures the user's immediate intent. If you drop system instructions, the model may ignore constraints. If you drop recent conversation, the model loses track of what the user just said. Retrieved chunks supplement the answer with evidence but are lower priority because the model can still produce a useful response without them — it just may lack supporting detail. This priority ordering ensures the most critical context survives when the window is tight.
+
+---
+
+### Question 7 (Hard)
+
+You have a RAG system where project instructions reference five external files (coding standards, API spec, etc.), but loading all of them consumes 40% of the context window. How does lazy-loading referenced files improve this?
+
+a) It compresses the files to use fewer tokens
+b) It loads referenced files only when the current task is relevant to their content, avoiding context waste on information that may never be needed
+c) It caches all files in memory so they load faster
+d) It splits each file into chunks and embeds them
+
+**Answer: B**
+
+**Explanation:** Lazy-loading treats file references as pointers, not preloaded content. If the user asks about database queries, there is no reason to load the coding standards file. Only when the task touches a referenced area does the system resolve the pointer and inject the content. This keeps context available for retrieval results and conversation history instead of consuming it with potentially irrelevant configuration files.
+
 ---
 
 ## Exercises
@@ -1689,7 +861,7 @@ Build a RAG pipeline that indexes a directory of markdown files and answers ques
 **Starter code:**
 
 ```typescript
-import { embed, embedMany, generateText } from 'ai'
+import { embed, embedMany, generateText, cosineSimilarity } from 'ai'
 import { openai } from '@ai-sdk/openai'
 import { mistral } from '@ai-sdk/mistral'
 import { readdir, readFile } from 'node:fs/promises'
@@ -1803,3 +975,72 @@ async function assessPipeline(
 - Citations are verifiable (quotes exist in the source text)
 - Quality metrics are reasonable and well-calibrated
 - The report clearly identifies areas for improvement
+
+---
+
+### Exercise 3: Hierarchical Config Retrieval
+
+Build a configuration loader that walks up a directory tree, collecting and merging instructions with precedence rules — a retrieval pattern used by production coding agents.
+
+**Requirements:**
+
+1. Create `src/exercises/m09/ex03-hierarchical-retrieval.ts`
+2. Implement a `collectInstructions(filePath, rootDir)` function that:
+   - Starts at the directory containing `filePath`
+   - Walks up to `rootDir`, checking each directory for an `INSTRUCTIONS.md` file
+   - Collects all found instruction files
+   - Returns them ordered by specificity (closest directory = highest priority)
+3. Implement a `mergeInstructions(instructions)` function that:
+   - Concatenates instructions with clear section separators
+   - Gives higher priority to more specific (closer) instructions
+   - Respects a token budget — if total instructions exceed the budget, drops the least specific (farthest) ones first
+4. Create a test directory structure with instructions at three levels (root, project, subdirectory) and demonstrate the merge behavior
+
+```typescript
+interface InstructionFile {
+  path: string
+  content: string
+  depth: number // 0 = closest to file, higher = farther
+}
+
+async function collectInstructions(filePath: string, rootDir: string): Promise<InstructionFile[]> {
+  // TODO: Walk up from filePath to rootDir, collecting INSTRUCTIONS.md files
+  throw new Error('Not implemented')
+}
+
+function mergeInstructions(instructions: InstructionFile[], maxTokens: number): string {
+  // TODO: Merge with priority ordering, respecting token budget
+  throw new Error('Not implemented')
+}
+```
+
+**Expected behavior:**
+
+- Given a file at `project/src/utils/helper.ts` and root at `project/`, the loader checks `project/src/utils/`, `project/src/`, and `project/` for instruction files
+- Instructions from `project/src/utils/` override those from `project/` when they conflict
+- If total tokens exceed the budget, instructions from `project/` are dropped first
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m09/ex03-hierarchical-retrieval.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 9.3: Hierarchical Config Retrieval', () => {
+  it('should collect instructions from multiple directory levels', async () => {
+    const instructions = await collectInstructions('test-project/src/utils/helper.ts', 'test-project')
+    expect(instructions.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('should order instructions by specificity (closest first)', async () => {
+    const instructions = await collectInstructions('test-project/src/utils/helper.ts', 'test-project')
+    expect(instructions[0].depth).toBe(0) // Closest directory
+  })
+
+  it('should respect token budget by dropping least specific first', () => {
+    const merged = mergeInstructions(testInstructions, 500)
+    // Most specific instructions should be preserved
+    expect(merged).toContain('utils-level instruction')
+  })
+})
+```

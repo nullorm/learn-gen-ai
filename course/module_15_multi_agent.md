@@ -45,83 +45,29 @@ A single agent with many tools and a broad system prompt faces several problems:
 
 ### The Multi-Agent Solution
 
-Split a complex task into roles, give each role to a dedicated agent:
+Split a complex task into roles, give each role to a dedicated agent. Each agent gets its own `generateText` call with a focused system prompt and a curated set of tools.
+
+The contrast: a single do-everything agent with 10+ tools and a sprawling system prompt, versus three focused agents -- a researcher (with search tools, prompt focused on gathering facts), a writer (no tools, prompt focused on readability), and a reviewer (no tools, prompt focused on finding issues).
+
+Each agent is an async function that takes an input string and returns a string. The pipeline runs them sequentially -- the researcher's output feeds the writer, and the writer's output feeds the reviewer.
 
 ```typescript
-import { generateText } from 'ai'
+import { generateText, stepCountIs } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
-
-// Single agent trying to do everything — gets overwhelmed
-const doEverythingAgent = await generateText({
-  model: mistral('mistral-small-latest'),
-  maxSteps: 15,
-  system: `You are a research-writer-reviewer agent. You must:
-1. Research the topic using search tools
-2. Write a well-structured article
-3. Review the article for accuracy and style
-4. Fix any issues found in review
-This is a lot to handle in one prompt...`,
-  tools: {
-    /* 10+ tools */
-  },
-  prompt: 'Write a comprehensive article about renewable energy trends',
-})
-
-// Better: Three focused agents with clear responsibilities
-async function researchAgent(topic: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    maxSteps: 5,
-    system: `You are a research specialist. Your ONLY job is to gather facts,
-statistics, and key points about a topic. Return a structured research brief.
-Do NOT write articles. Do NOT review content. Just research.`,
-    tools: {
-      search: {
-        description: 'Search for information on a topic',
-        parameters: z.object({ query: z.string() }),
-        execute: async ({ query }) => `Results for "${query}": [simulated research data]`,
-      },
-    },
-    prompt: `Research this topic thoroughly: ${topic}`,
-  })
-  return result.text
-}
-
-async function writerAgent(researchBrief: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a professional writer. Given a research brief, write a clear,
-well-structured article. Focus on readability and flow.
-Do NOT do additional research. Use only the provided brief.`,
-    prompt: `Write an article based on this research brief:\n\n${researchBrief}`,
-  })
-  return result.text
-}
-
-async function reviewerAgent(article: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are an editor. Review the article for:
-- Factual accuracy (flag claims that seem unsupported)
-- Clarity and readability
-- Structure and flow
-- Grammar and style
-Return specific, actionable feedback.`,
-    prompt: `Review this article:\n\n${article}`,
-  })
-  return result.text
-}
-
-// Run the pipeline
-const research = await researchAgent('renewable energy trends 2025')
-const draft = await writerAgent(research)
-const feedback = await reviewerAgent(draft)
-
-console.log('Research:', research.slice(0, 200))
-console.log('\nDraft:', draft.slice(0, 200))
-console.log('\nFeedback:', feedback.slice(0, 200))
 ```
+
+Your task: build three agent functions and a pipeline that connects them.
+
+- `researchAgent(topic: string): Promise<string>` -- uses `generateText` with `stopWhen: stepCountIs(5)`, a search tool, and a system prompt that limits the agent to research only
+- `writerAgent(researchBrief: string): Promise<string>` -- uses `generateText` with no tools, system prompt focused on writing from a provided brief
+- `reviewerAgent(article: string): Promise<string>` -- uses `generateText` with no tools, system prompt focused on reviewing for accuracy, clarity, structure, and style
+
+Think about:
+
+- What makes a good system prompt boundary? How do you tell an agent what NOT to do?
+- Why does the researcher need `stopWhen` but the writer and reviewer do not?
+- What happens if you pass the research brief as part of the writer's `prompt` rather than the `system`?
 
 > **Beginner Note:** Think of multi-agent systems like a team of people. You would not ask one person to simultaneously research, write, edit, and fact-check. You assign roles because specialists do better work than generalists trying to do everything at once.
 
@@ -140,53 +86,12 @@ The orchestrator-worker pattern has one "orchestrator" agent that understands th
 3. Assigns each sub-task to the right worker
 4. Collects and synthesizes results
 
+You need worker agents and an orchestrator function that coordinates them. Start with the types:
+
 ```typescript
-import { generateText, Output } from 'ai'
+import { generateText, Output, stepCountIs } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
-
-// --- Worker agents ---
-
-async function researchWorker(query: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    maxSteps: 3,
-    system: `You are a research agent. Search for factual information and return
-a concise summary of findings. Include specific data points and sources where possible.`,
-    tools: {
-      search: {
-        description: 'Search the web for information',
-        parameters: z.object({ query: z.string() }),
-        execute: async ({ query }) => `Results for "${query}": [simulated search data with relevant facts]`,
-      },
-    },
-    prompt: query,
-  })
-  return result.text
-}
-
-async function analysisWorker(data: string, question: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a data analyst. Analyze the provided data and answer
-the specific question. Be precise, use numbers when available, and note
-any limitations in the data.`,
-    prompt: `Data:\n${data}\n\nQuestion: ${question}`,
-  })
-  return result.text
-}
-
-async function writingWorker(content: string, format: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a professional writer. Transform the provided content
-into the requested format. Maintain accuracy while improving readability.`,
-    prompt: `Transform this content into ${format}:\n\n${content}`,
-  })
-  return result.text
-}
-
-// --- Orchestrator ---
 
 interface SubTask {
   id: number
@@ -195,240 +100,70 @@ interface SubTask {
   input: string
   dependsOn: number[]
 }
-
-async function orchestrator(task: string): Promise<string> {
-  // Step 1: Plan sub-tasks
-  const { output: plan } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        subtasks: z.array(
-          z.object({
-            id: z.number(),
-            type: z.enum(['research', 'analysis', 'writing']),
-            description: z.string(),
-            input: z.string().describe('The input/query for this sub-task'),
-            dependsOn: z.array(z.number()),
-          })
-        ),
-      }),
-    }),
-    prompt: `Break this task into sub-tasks. Available worker types:
-- research: Searches for factual information
-- analysis: Analyzes data and answers questions
-- writing: Transforms content into a specific format
-
-Task: ${task}`,
-  })
-
-  console.log(
-    'Plan:',
-    plan.subtasks.map(s => `${s.id}: [${s.type}] ${s.description}`)
-  )
-
-  // Step 2: Execute sub-tasks in dependency order
-  const results = new Map<number, string>()
-
-  for (const subtask of plan.subtasks) {
-    // Wait for dependencies
-    const depsReady = subtask.dependsOn.every(id => results.has(id))
-    if (!depsReady) {
-      console.warn(`Skipping subtask ${subtask.id}: dependencies not ready`)
-      continue
-    }
-
-    // Build input with dependency results
-    let input = subtask.input
-    if (subtask.dependsOn.length > 0) {
-      const depContext = subtask.dependsOn.map(id => results.get(id)).join('\n\n')
-      input = `${depContext}\n\n${subtask.input}`
-    }
-
-    console.log(`Executing subtask ${subtask.id}: ${subtask.description}`)
-
-    // Dispatch to the right worker
-    let result: string
-    switch (subtask.type) {
-      case 'research':
-        result = await researchWorker(input)
-        break
-      case 'analysis':
-        result = await analysisWorker(input, subtask.description)
-        break
-      case 'writing':
-        result = await writingWorker(input, subtask.description)
-        break
-    }
-
-    results.set(subtask.id, result)
-  }
-
-  // Step 3: Synthesize final result
-  const allResults = Array.from(results.entries())
-    .map(([id, result]) => {
-      const subtask = plan.subtasks.find(s => s.id === id)
-      return `## Sub-task ${id}: ${subtask?.description}\n${result}`
-    })
-    .join('\n\n')
-
-  const finalResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: 'Synthesize these sub-task results into a coherent final answer.',
-    prompt: `Original task: ${task}\n\nSub-task results:\n${allResults}`,
-  })
-
-  return finalResult.text
-}
-
-// Usage
-const result = await orchestrator(
-  'Analyze the current state of electric vehicle adoption in Europe, including market share, key players, and infrastructure challenges. Present as an executive summary.'
-)
-console.log('\n=== Final Result ===\n', result)
 ```
 
-> **Beginner Note:** The orchestrator is like a project manager — it does not do the actual work, but it knows who should do what and in what order. Worker agents are the specialists who execute specific tasks.
+Build three worker functions:
+
+- `researchWorker(query: string): Promise<string>` -- uses `stopWhen: stepCountIs(3)` and a search tool
+- `analysisWorker(data: string, question: string): Promise<string>` -- no tools, system prompt focused on data analysis
+- `writingWorker(content: string, format: string): Promise<string>` -- no tools, system prompt focused on transforming content
+
+Then build the orchestrator: `async function orchestrator(task: string): Promise<string>`
+
+The orchestrator has three phases:
+
+1. **Plan** -- use `Output.object` with a schema of subtasks (each with id, type, description, input, dependsOn) to have the LLM decompose the task
+2. **Execute** -- iterate through subtasks in dependency order. For each subtask, check that dependencies are complete, build the input (prepending dependency results if any), then dispatch to the right worker via a switch on `subtask.type`
+3. **Synthesize** -- collect all results and use a final `generateText` call to combine them into a coherent answer
+
+Think about:
+
+- What happens if a subtask's dependencies are not ready? Should you skip it or throw?
+- How do you pass dependency results as context to a subsequent subtask?
+- What if the LLM's plan has circular dependencies?
+
+> **Beginner Note:** The orchestrator is like a project manager -- it does not do the actual work, but it knows who should do what and in what order. Worker agents are the specialists who execute specific tasks.
 
 ### Dynamic Worker Selection
 
-Instead of hardcoding worker types, let the orchestrator discover available workers at runtime:
+Instead of hardcoding worker types, let the orchestrator discover available workers at runtime through a registry pattern.
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface WorkerDefinition {
   name: string
   description: string
   capabilities: string[]
   execute: (input: string) => Promise<string>
 }
-
-class AgentRegistry {
-  private workers = new Map<string, WorkerDefinition>()
-
-  register(worker: WorkerDefinition): void {
-    this.workers.set(worker.name, worker)
-  }
-
-  getWorker(name: string): WorkerDefinition | undefined {
-    return this.workers.get(name)
-  }
-
-  listWorkers(): string {
-    return Array.from(this.workers.values())
-      .map(w => `- ${w.name}: ${w.description} (capabilities: ${w.capabilities.join(', ')})`)
-      .join('\n')
-  }
-
-  async dispatch(workerName: string, input: string): Promise<string> {
-    const worker = this.workers.get(workerName)
-    if (!worker) {
-      throw new Error(`Worker "${workerName}" not found`)
-    }
-    return worker.execute(input)
-  }
-}
-
-// Set up registry
-const registry = new AgentRegistry()
-
-registry.register({
-  name: 'researcher',
-  description: 'Searches the web for factual information',
-  capabilities: ['web search', 'fact finding', 'data gathering'],
-  execute: async input => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      maxSteps: 3,
-      system: 'You are a research specialist. Search and summarize findings.',
-      tools: {
-        search: {
-          description: 'Search for information',
-          parameters: z.object({ query: z.string() }),
-          execute: async ({ query }) => `Results for "${query}": [data]`,
-        },
-      },
-      prompt: input,
-    })
-    return result.text
-  },
-})
-
-registry.register({
-  name: 'writer',
-  description: 'Writes polished content from provided material',
-  capabilities: ['article writing', 'summarization', 'formatting'],
-  execute: async input => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'You are a professional writer. Create clear, engaging content.',
-      prompt: input,
-    })
-    return result.text
-  },
-})
-
-registry.register({
-  name: 'critic',
-  description: 'Reviews content for quality, accuracy, and improvements',
-  capabilities: ['editing', 'fact checking', 'quality review'],
-  execute: async input => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'You are a critical editor. Find issues and suggest improvements.',
-      prompt: input,
-    })
-    return result.text
-  },
-})
-
-// Orchestrator uses registry to delegate
-async function dynamicOrchestrator(task: string, registry: AgentRegistry): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    maxSteps: 8,
-    system: `You are an orchestrator. Break tasks into steps and delegate to workers.
-
-Available workers:
-${registry.listWorkers()}
-
-Use the delegate tool to assign work. Collect results and synthesize a final answer.`,
-    tools: {
-      delegate: {
-        description: 'Delegate a sub-task to a specific worker agent',
-        parameters: z.object({
-          worker: z.string().describe('Name of the worker to delegate to'),
-          task: z.string().describe('The sub-task description'),
-        }),
-        execute: async ({ worker, task }: { worker: string; task: string }) => {
-          try {
-            const result = await registry.dispatch(worker, task)
-            return JSON.stringify({
-              worker,
-              success: true,
-              result,
-            })
-          } catch (error) {
-            return JSON.stringify({
-              worker,
-              success: false,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            })
-          }
-        },
-      },
-    },
-    prompt: task,
-  })
-
-  return result.text
-}
-
-const output = await dynamicOrchestrator('Write a 500-word blog post about the future of AI in healthcare', registry)
-console.log(output)
 ```
+
+Build an `AgentRegistry` class with these methods:
+
+- `register(worker: WorkerDefinition): void` -- stores workers in a Map by name
+- `getWorker(name: string): WorkerDefinition | undefined`
+- `listWorkers(): string` -- returns a formatted string describing all workers and their capabilities, suitable for inclusion in a system prompt
+- `dispatch(workerName: string, input: string): Promise<string>` -- looks up and executes a worker, throwing if not found
+
+Then build a `dynamicOrchestrator(task: string, registry: AgentRegistry): Promise<string>` that uses a `delegate` tool:
+
+```typescript
+tools: {
+  delegate: {
+    description: 'Delegate a sub-task to a specific worker agent',
+    parameters: z.object({
+      worker: z.string().describe('Name of the worker to delegate to'),
+      task: z.string().describe('The sub-task description'),
+    }),
+    execute: async ({ worker, task }) => {
+      // dispatch to registry, return JSON with worker, success, and result (or error)
+    },
+  },
+},
+```
+
+The orchestrator's system prompt should include `registry.listWorkers()` so the LLM knows what workers are available.
+
+How would you handle the case where the LLM requests a worker that does not exist? Should the delegate tool throw, or return an error message the LLM can react to?
 
 ---
 
@@ -436,14 +171,11 @@ console.log(output)
 
 ### Passing Context Between Agents
 
-Agents communicate by passing data — the output of one agent becomes the input of another. The key design decision is what to pass and in what format.
+Agents communicate by passing data -- the output of one agent becomes the input of another. The key design decision is what to pass and in what format.
+
+Define a structured handoff schema using Zod:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-// Define a structured handoff format
 const handoffSchema = z.object({
   summary: z.string().describe('Brief summary of what was accomplished'),
   findings: z
@@ -460,66 +192,18 @@ const handoffSchema = z.object({
 })
 
 type Handoff = z.infer<typeof handoffSchema>
-
-// Research agent outputs a structured handoff
-async function researchWithHandoff(topic: string): Promise<Handoff> {
-  // First, do the research
-  const research = await generateText({
-    model: mistral('mistral-small-latest'),
-    maxSteps: 4,
-    system: 'You are a research specialist. Gather comprehensive information.',
-    tools: {
-      search: {
-        description: 'Search for information',
-        parameters: z.object({ query: z.string() }),
-        execute: async ({ query }) => `Results for "${query}": [simulated comprehensive results about ${topic}]`,
-      },
-    },
-    prompt: `Research this topic thoroughly: ${topic}`,
-  })
-
-  // Then, structure the handoff
-  const { output: handoff } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: handoffSchema }),
-    prompt: `Based on this research, create a structured handoff document:
-
-${research.text}
-
-Format it as a handoff for the next agent in the pipeline.`,
-  })
-
-  return handoff
-}
-
-// Writing agent receives structured handoff
-async function writeFromHandoff(handoff: Handoff, format: string): Promise<string> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a professional writer. You receive structured research handoffs
-and transform them into polished content. Use all high-confidence findings directly.
-For medium-confidence findings, include with caveats. Skip low-confidence findings.`,
-    prompt: `Create a ${format} from this research:
-
-Summary: ${handoff.summary}
-
-Key Findings:
-${handoff.findings.map(f => `- [${f.confidence}] ${f.topic}: ${f.content}`).join('\n')}
-
-Open Questions (mention these as areas for further investigation):
-${handoff.openQuestions.map(q => `- ${q}`).join('\n')}`,
-  })
-
-  return result.text
-}
-
-// Usage
-const handoff = await researchWithHandoff('sustainable agriculture technologies')
-console.log('Handoff:', JSON.stringify(handoff, null, 2))
-
-const article = await writeFromHandoff(handoff, 'blog post')
-console.log('\nArticle:', article)
 ```
+
+Build two functions:
+
+- `researchWithHandoff(topic: string): Promise<Handoff>` -- runs a research agent with search tools, then uses a second `generateText` call with `Output.object({ schema: handoffSchema })` to structure the raw research into the handoff format
+- `writeFromHandoff(handoff: Handoff, format: string): Promise<string>` -- takes the structured handoff and produces polished content. The system prompt should instruct the writer to use high-confidence findings directly, include medium-confidence findings with caveats, and skip low-confidence findings
+
+Think about:
+
+- Why use two LLM calls in `researchWithHandoff` (one for research, one for structuring) rather than one?
+- How does the confidence field help the downstream writer make better decisions?
+- What would happen if you passed the raw research text instead of the structured handoff?
 
 ### Message-Passing Protocol
 
@@ -534,66 +218,15 @@ interface AgentMessage {
   payload: unknown
   timestamp: number
 }
-
-class MessageBus {
-  private handlers = new Map<string, (msg: AgentMessage) => Promise<void>>()
-  private log: AgentMessage[] = []
-
-  register(agentName: string, handler: (msg: AgentMessage) => Promise<void>): void {
-    this.handlers.set(agentName, handler)
-  }
-
-  async send(message: AgentMessage): Promise<void> {
-    this.log.push(message)
-    console.log(`[MessageBus] ${message.from} -> ${message.to}: ${message.type}`)
-
-    const handler = this.handlers.get(message.to)
-    if (!handler) {
-      throw new Error(`No handler registered for agent "${message.to}"`)
-    }
-
-    await handler(message)
-  }
-
-  getLog(): AgentMessage[] {
-    return [...this.log]
-  }
-}
-
-// Usage
-const bus = new MessageBus()
-
-bus.register('researcher', async msg => {
-  if (msg.type === 'request') {
-    // Process research request and send response
-    const result = `Research results for: ${msg.payload}`
-    await bus.send({
-      from: 'researcher',
-      to: msg.from,
-      type: 'response',
-      correlationId: msg.correlationId,
-      payload: result,
-      timestamp: Date.now(),
-    })
-  }
-})
-
-bus.register('orchestrator', async msg => {
-  if (msg.type === 'response') {
-    console.log(`Orchestrator received: ${msg.payload}`)
-  }
-})
-
-// Orchestrator sends a request to researcher
-await bus.send({
-  from: 'orchestrator',
-  to: 'researcher',
-  type: 'request',
-  correlationId: crypto.randomUUID(),
-  payload: 'AI trends in 2025',
-  timestamp: Date.now(),
-})
 ```
+
+Build a `MessageBus` class with:
+
+- `register(agentName: string, handler: (msg: AgentMessage) => Promise<void>): void` -- registers a handler for messages sent to a given agent
+- `send(message: AgentMessage): Promise<void>` -- logs the message, looks up the handler for `message.to`, and invokes it. Throws if no handler is registered
+- `getLog(): AgentMessage[]` -- returns a copy of all messages sent
+
+The `correlationId` ties requests to responses. When a handler receives a request, it should send a response back with the same `correlationId`.
 
 > **Advanced Note:** Message buses add infrastructure complexity. Use direct function calls (agent A calls agent B directly) for simple systems. Introduce a message bus only when you need features like logging, replay, or decoupled agents.
 
@@ -613,12 +246,9 @@ In a multi-agent system, some information should be shared across agents and som
 | Error reports and blockers  | Working scratchpad           |
 | Final outputs               | Model-specific prompt tricks |
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Start with the shared state interface and factory:
 
-// Shared state accessible to all agents
+```typescript
 interface SharedState {
   task: string
   findings: Map<string, string>
@@ -628,16 +258,13 @@ interface SharedState {
 }
 
 function createSharedState(task: string): SharedState {
-  return {
-    task,
-    findings: new Map(),
-    status: new Map(),
-    errors: [],
-    finalOutputs: new Map(),
-  }
+  /* ... */
 }
+```
 
-// Each agent gets read/write access to shared state through controlled methods
+Build an `AgentContext` class that mediates access between an agent and the shared/private state:
+
+```typescript
 class AgentContext {
   constructor(
     private agentName: string,
@@ -646,87 +273,32 @@ class AgentContext {
   ) {}
 
   // Shared state methods
-  addFinding(key: string, value: string): void {
-    this.shared.findings.set(`${this.agentName}:${key}`, value)
-  }
-
-  getAllFindings(): Map<string, string> {
-    return new Map(this.shared.findings)
-  }
-
-  setStatus(status: 'pending' | 'in_progress' | 'completed' | 'failed'): void {
-    this.shared.status.set(this.agentName, status)
-  }
-
-  reportError(error: string): void {
-    this.shared.errors.push(`[${this.agentName}] ${error}`)
-  }
-
-  setOutput(key: string, value: string): void {
-    this.shared.finalOutputs.set(key, value)
-  }
-
-  getTask(): string {
-    return this.shared.task
-  }
+  addFinding(key: string, value: string): void
+  getAllFindings(): Map<string, string>
+  setStatus(status: 'pending' | 'in_progress' | 'completed' | 'failed'): void
+  reportError(error: string): void
+  setOutput(key: string, value: string): void
+  getTask(): string
 
   // Private state methods
-  setPrivate(key: string, value: unknown): void {
-    this.privateState.set(key, value)
-  }
-
-  getPrivate<T>(key: string): T | undefined {
-    return this.privateState.get(key) as T | undefined
-  }
+  setPrivate(key: string, value: unknown): void
+  getPrivate<T>(key: string): T | undefined
 }
-
-// Agent that uses shared and private state
-async function researchAgentWithState(ctx: AgentContext): Promise<void> {
-  ctx.setStatus('in_progress')
-
-  try {
-    // Private: track search queries (other agents do not need this)
-    const queriesUsed: string[] = []
-    ctx.setPrivate('queries', queriesUsed)
-
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      maxSteps: 4,
-      system: `You are a research agent. Research the topic and report findings.`,
-      tools: {
-        search: {
-          description: 'Search for information',
-          parameters: z.object({ query: z.string() }),
-          execute: async ({ query }) => {
-            queriesUsed.push(query)
-            return `Results for "${query}": [relevant findings]`
-          },
-        },
-      },
-      prompt: `Research: ${ctx.getTask()}`,
-    })
-
-    // Shared: add findings for other agents to use
-    ctx.addFinding('research_summary', result.text)
-    ctx.setOutput('research', result.text)
-    ctx.setStatus('completed')
-  } catch (error) {
-    ctx.reportError(error instanceof Error ? error.message : 'Unknown error')
-    ctx.setStatus('failed')
-  }
-}
-
-// Usage
-const shared = createSharedState('Analyze the impact of remote work on productivity')
-const researchCtx = new AgentContext('researcher', shared)
-const writerCtx = new AgentContext('writer', shared)
-
-await researchAgentWithState(researchCtx)
-
-console.log('Shared findings:', Object.fromEntries(shared.findings))
-console.log('Status:', Object.fromEntries(shared.status))
-console.log('Errors:', shared.errors)
 ```
+
+Key implementation details:
+
+- `addFinding` should namespace the key with the agent name (e.g., `${this.agentName}:${key}`) to avoid collisions
+- `getAllFindings` should return a copy of the findings map, not a reference
+- `reportError` should prefix the error with the agent name in brackets
+
+Then build `researchAgentWithState(ctx: AgentContext): Promise<void>` -- an agent that sets its status to `in_progress`, runs a search-based research loop, stores search queries in private state, adds findings and output to shared state, and sets status to `completed` or `failed`.
+
+Think about:
+
+- Why return a copy from `getAllFindings` instead of the original map?
+- What happens if two agents call `addFinding` with the same key but different agent names?
+- When should an agent read shared findings from other agents versus receiving them as direct input?
 
 > **Beginner Note:** Shared state is like a shared whiteboard that all team members can write on and read from. Private state is like each team member's personal notebook. Keep the shared whiteboard focused on what everyone needs to know.
 
@@ -736,187 +308,47 @@ console.log('Errors:', shared.errors)
 
 ### By Capability
 
-Route sub-tasks to agents based on what they can do:
+Route sub-tasks to agents based on what they can do. Define agent capabilities as structured data:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface AgentCapability {
   name: string
   skills: string[]
   model: string
   execute: (task: string) => Promise<string>
 }
-
-const agents: AgentCapability[] = [
-  {
-    name: 'data-analyst',
-    skills: ['data analysis', 'statistics', 'visualization', 'SQL'],
-    model: 'mistral-small-latest',
-    execute: async task => {
-      const result = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: 'You are a data analyst. Analyze data, compute statistics, and provide insights.',
-        prompt: task,
-      })
-      return result.text
-    },
-  },
-  {
-    name: 'code-writer',
-    skills: ['TypeScript', 'Python', 'code generation', 'debugging', 'algorithms'],
-    model: 'mistral-small-latest',
-    execute: async task => {
-      const result = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: 'You are a software engineer. Write clean, well-tested code.',
-        prompt: task,
-      })
-      return result.text
-    },
-  },
-  {
-    name: 'content-creator',
-    skills: ['writing', 'editing', 'blog posts', 'documentation', 'marketing copy'],
-    model: 'mistral-small-latest',
-    execute: async task => {
-      const result = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: 'You are a content creator. Write engaging, clear content.',
-        prompt: task,
-      })
-      return result.text
-    },
-  },
-]
-
-// Capability-based routing
-async function routeByCapability(task: string): Promise<string> {
-  // Ask the LLM to analyze the task and match it to an agent
-  const { output: routing } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        selectedAgent: z.string().describe('Name of the best agent for this task'),
-        reasoning: z.string().describe('Why this agent is the best fit'),
-        requiredSkills: z.array(z.string()).describe('Skills needed for this task'),
-      }),
-    }),
-    prompt: `Given these available agents:
-${agents.map(a => `- ${a.name}: ${a.skills.join(', ')}`).join('\n')}
-
-Which agent should handle this task?
-Task: ${task}`,
-  })
-
-  console.log(`Routing to: ${routing.selectedAgent} (${routing.reasoning})`)
-
-  const agent = agents.find(a => a.name === routing.selectedAgent)
-  if (!agent) {
-    throw new Error(`Agent "${routing.selectedAgent}" not found`)
-  }
-
-  return agent.execute(task)
-}
-
-const result = await routeByCapability(
-  'Write a TypeScript function that calculates the standard deviation of an array of numbers'
-)
-console.log(result)
 ```
+
+Create an array of agents with different skill profiles (e.g., a data-analyst with statistics/SQL skills, a code-writer with TypeScript/debugging skills, a content-creator with writing/editing skills). Each agent's `execute` function wraps a `generateText` call with a role-specific system prompt.
+
+Build `routeByCapability(task: string): Promise<string>`:
+
+1. Use `Output.object` to have the LLM analyze the task against the available agents' skills and select the best match (output schema: `selectedAgent`, `reasoning`, `requiredSkills`)
+2. Format the agent list into the prompt so the LLM can see each agent's name and skills
+3. Look up the selected agent by name and call its `execute` function
+4. Throw if the LLM selects an agent that does not exist
+
+What happens if the task requires skills from multiple agents? How would you modify this pattern to support multi-agent delegation?
 
 ### By Topic
 
-Route based on the domain or topic of the request:
+Route based on the domain or topic of the request. Build a `TopicRouter`:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface TopicRouter {
   topics: Map<string, (input: string) => Promise<string>>
 }
-
-function createTopicRouter(): TopicRouter {
-  const topics = new Map<string, (input: string) => Promise<string>>()
-
-  topics.set('billing', async input => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: `You are a billing specialist. You handle questions about invoices,
-payments, subscriptions, and pricing. Be precise with numbers and dates.`,
-      prompt: input,
-    })
-    return result.text
-  })
-
-  topics.set('technical', async input => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      maxSteps: 3,
-      system: `You are a technical support engineer. You help with API issues,
-configuration problems, and debugging. Ask clarifying questions when needed.`,
-      tools: {
-        lookupDocs: {
-          description: 'Search the documentation',
-          parameters: z.object({ query: z.string() }),
-          execute: async ({ query }) => `Documentation for "${query}": [relevant docs]`,
-        },
-      },
-      prompt: input,
-    })
-    return result.text
-  })
-
-  topics.set('general', async input => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: `You are a general customer support agent. Be helpful and friendly.
-If the question is about billing or technical issues, note that a specialist
-could provide better help.`,
-      prompt: input,
-    })
-    return result.text
-  })
-
-  return { topics }
-}
-
-async function routeByTopic(router: TopicRouter, userMessage: string): Promise<{ topic: string; response: string }> {
-  // Classify the topic
-  const { output: classification } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        topic: z.enum(['billing', 'technical', 'general']).describe('The topic category'),
-        confidence: z.number().min(0).max(1),
-        reasoning: z.string(),
-      }),
-    }),
-    prompt: `Classify this customer message into a topic:
-"${userMessage}"
-
-Categories: billing (invoices, payments, pricing), technical (API, bugs, configuration), general (everything else)`,
-  })
-
-  console.log(`Topic: ${classification.topic} (confidence: ${classification.confidence})`)
-
-  const handler = router.topics.get(classification.topic)
-  if (!handler) {
-    throw new Error(`No handler for topic: ${classification.topic}`)
-  }
-
-  const response = await handler(userMessage)
-  return { topic: classification.topic, response }
-}
-
-const router = createTopicRouter()
-const result = await routeByTopic(router, 'My API key stopped working after I regenerated it')
-console.log(`[${result.topic}] ${result.response}`)
 ```
+
+Create a `createTopicRouter()` factory that registers handlers for topics like `'billing'`, `'technical'`, and `'general'`. Each handler wraps a `generateText` call with a domain-specific system prompt and tools (e.g., the technical handler gets a `lookupDocs` tool).
+
+Build `routeByTopic(router: TopicRouter, userMessage: string): Promise<{ topic: string; response: string }>`:
+
+1. Use `Output.object` to classify the message into a topic with confidence and reasoning
+2. Look up the handler from the router's topics map
+3. Execute the handler and return the result
+
+Think about: what should happen when the classifier's confidence is below a threshold? Should you route to a general handler, ask for clarification, or try multiple handlers?
 
 ---
 
@@ -924,13 +356,9 @@ console.log(`[${result.topic}] ${result.response}`)
 
 ### Running Independent Agents Concurrently
 
-When sub-tasks are independent, run them in parallel to reduce total latency:
+When sub-tasks are independent, run them in parallel to reduce total latency. Define the types:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface ParallelTask {
   name: string
   execute: () => Promise<string>
@@ -943,158 +371,42 @@ interface ParallelResult {
   success: boolean
   error?: string
 }
-
-async function runParallel(tasks: ParallelTask[], maxConcurrency: number = 5): Promise<ParallelResult[]> {
-  const results: ParallelResult[] = []
-  const startTime = Date.now()
-
-  // Simple parallel execution with concurrency limit
-  const chunks: ParallelTask[][] = []
-  for (let i = 0; i < tasks.length; i += maxConcurrency) {
-    chunks.push(tasks.slice(i, i + maxConcurrency))
-  }
-
-  for (const chunk of chunks) {
-    const chunkResults = await Promise.allSettled(
-      chunk.map(async task => {
-        const taskStart = Date.now()
-        try {
-          const result = await task.execute()
-          return {
-            name: task.name,
-            result,
-            durationMs: Date.now() - taskStart,
-            success: true,
-          }
-        } catch (error) {
-          return {
-            name: task.name,
-            result: '',
-            durationMs: Date.now() - taskStart,
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          }
-        }
-      })
-    )
-
-    for (const result of chunkResults) {
-      if (result.status === 'fulfilled') {
-        results.push(result.value)
-      } else {
-        results.push({
-          name: 'unknown',
-          result: '',
-          durationMs: 0,
-          success: false,
-          error: result.reason?.message || 'Promise rejected',
-        })
-      }
-    }
-  }
-
-  const totalMs = Date.now() - startTime
-  console.log(
-    `Parallel execution: ${tasks.length} tasks in ${totalMs}ms (vs ~${results.reduce((sum, r) => sum + r.durationMs, 0)}ms sequential)`
-  )
-
-  return results
-}
-
-// Example: Research multiple topics in parallel
-const topics = ['AI in healthcare', 'AI in education', 'AI in finance', 'AI in transportation']
-
-const tasks: ParallelTask[] = topics.map(topic => ({
-  name: topic,
-  execute: async () => {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      maxSteps: 3,
-      system: 'You are a research specialist. Provide concise findings.',
-      tools: {
-        search: {
-          description: 'Search for information',
-          parameters: z.object({ query: z.string() }),
-          execute: async ({ query }) => `Results for "${query}": [relevant findings about ${topic}]`,
-        },
-      },
-      prompt: `Research the current state of ${topic}. Focus on key trends and challenges.`,
-    })
-    return result.text
-  },
-}))
-
-const results = await runParallel(tasks, 3)
-
-for (const result of results) {
-  console.log(`\n[${result.name}] (${result.durationMs}ms, ${result.success ? 'OK' : 'FAILED'}):`)
-  console.log(result.result.slice(0, 200))
-}
 ```
+
+Build `runParallel(tasks: ParallelTask[], maxConcurrency: number = 5): Promise<ParallelResult[]>`:
+
+- Split tasks into chunks of size `maxConcurrency`
+- Process each chunk with `Promise.allSettled` (not `Promise.all` -- why?)
+- For each task, record the name, result, duration, and success/failure status
+- Log the total wall-clock time versus the sum of individual durations to show the parallel speedup
+
+The key pattern: chunk the tasks array, iterate through chunks sequentially, but within each chunk use `Promise.allSettled` for concurrent execution. This creates a sliding window of concurrent tasks.
+
+Think about:
+
+- Why use `Promise.allSettled` instead of `Promise.all`?
+- What happens to timing if one task in a chunk takes 10x longer than the others?
+- How would you implement a true sliding window (start next task as each completes) instead of chunk-based batching?
 
 ### Map-Reduce with Agents
 
-A common parallel pattern: map a task across multiple agents, then reduce the results:
+A common parallel pattern: map a task across multiple agents, then reduce the results.
+
+Build `mapReduceAgents(items, mapPrompt, reducePrompt, concurrency): Promise<string>`:
+
+- **Map phase**: process each item in parallel (respecting concurrency) using the `mapPrompt` function to generate the prompt for each
+- **Reduce phase**: feed all map results into a single `generateText` call using the `reducePrompt` function
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 async function mapReduceAgents(
   items: string[],
   mapPrompt: (item: string) => string,
   reducePrompt: (results: string[]) => string,
   concurrency: number = 3
-): Promise<string> {
-  // MAP: Process each item in parallel
-  console.log(`Map phase: processing ${items.length} items...`)
-  const mapResults: string[] = []
-
-  const chunks: string[][] = []
-  for (let i = 0; i < items.length; i += concurrency) {
-    chunks.push(items.slice(i, i + concurrency))
-  }
-
-  for (const chunk of chunks) {
-    const results = await Promise.all(
-      chunk.map(async item => {
-        const result = await generateText({
-          model: mistral('mistral-small-latest'),
-          prompt: mapPrompt(item),
-        })
-        return result.text
-      })
-    )
-    mapResults.push(...results)
-  }
-
-  // REDUCE: Synthesize all results
-  console.log('Reduce phase: synthesizing results...')
-  const finalResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: reducePrompt(mapResults),
-  })
-
-  return finalResult.text
-}
-
-// Example: Analyze multiple companies
-const companies = ['Apple', 'Google', 'Microsoft', 'Amazon', 'Meta']
-
-const analysis = await mapReduceAgents(
-  companies,
-  company =>
-    `Analyze ${company}'s AI strategy in 2025. Focus on: key products, investments, and competitive advantages. Be concise (3-5 bullet points).`,
-  results =>
-    `Synthesize these individual company analyses into a comparative overview of Big Tech AI strategies:
-
-${results.map((r, i) => `### ${companies[i]}\n${r}`).join('\n\n')}
-
-Provide: 1) Common themes, 2) Key differentiators, 3) Overall industry direction.`
-)
-
-console.log(analysis)
+): Promise<string>
 ```
+
+The map phase chunks items and uses `Promise.all` within each chunk. The reduce phase takes all results and synthesizes them. This pattern works for any task that can be decomposed into independent parts and then combined: analyzing multiple companies, reviewing multiple documents, processing multiple data sources.
 
 > **Advanced Note:** Be mindful of API rate limits when running agents in parallel. Most providers have tokens-per-minute and requests-per-minute limits. Set `maxConcurrency` based on your provider's rate limits. Consider adding exponential backoff for 429 (rate limit) errors.
 
@@ -1106,10 +418,10 @@ console.log(analysis)
 
 Sometimes an agent needs to transfer a conversation to a different specialist. This is common in customer support: a general agent detects a billing question and hands off to the billing specialist.
 
+Define the types for the handoff system:
+
 ```typescript
-import { generateText, type ModelMessage } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+import { type ModelMessage } from 'ai'
 
 interface HandoffRequest {
   targetAgent: string
@@ -1125,144 +437,34 @@ interface AgentSpec {
   tools: Record<string, any>
   canHandoff: string[] // which agents this one can hand off to
 }
-
-class ConversationRouter {
-  private agents = new Map<string, AgentSpec>()
-
-  register(spec: AgentSpec): void {
-    this.agents.set(spec.name, spec)
-  }
-
-  async runWithHandoff(
-    startAgent: string,
-    userMessage: string,
-    maxHandoffs: number = 3
-  ): Promise<{ finalAgent: string; response: string; handoffs: string[] }> {
-    let currentAgent = startAgent
-    const handoffHistory: string[] = []
-    const messages: ModelMessage[] = [{ role: 'user', content: userMessage }]
-
-    for (let i = 0; i <= maxHandoffs; i++) {
-      const spec = this.agents.get(currentAgent)
-      if (!spec) {
-        throw new Error(`Agent "${currentAgent}" not found`)
-      }
-
-      console.log(`[Router] Current agent: ${currentAgent}`)
-
-      // Add handoff tool if this agent can hand off
-      const tools: Record<string, any> = { ...spec.tools }
-      if (spec.canHandoff.length > 0) {
-        tools.handoff = {
-          description: `Transfer this conversation to a specialist agent. Available: ${spec.canHandoff.join(', ')}. Use this when the user's request is outside your expertise.`,
-          parameters: z.object({
-            targetAgent: z.enum(spec.canHandoff as [string, ...string[]]).describe('The agent to transfer to'),
-            reason: z.string().describe('Why you are transferring'),
-            summary: z.string().describe('Summary of the conversation so far for the receiving agent'),
-          }),
-        }
-      }
-
-      const result = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: spec.system,
-        messages,
-        tools,
-        maxSteps: 3,
-      })
-
-      // Check for handoff
-      const handoffCall = result.steps.flatMap(s => s.toolCalls).find(tc => tc.toolName === 'handoff')
-
-      if (handoffCall) {
-        const args = handoffCall.args as {
-          targetAgent: string
-          reason: string
-          summary: string
-        }
-        console.log(`[Router] Handoff: ${currentAgent} -> ${args.targetAgent} (${args.reason})`)
-        handoffHistory.push(`${currentAgent} -> ${args.targetAgent}`)
-
-        // Prepare messages for the new agent
-        messages.length = 0
-        messages.push({
-          role: 'user',
-          content: `[Transferred from ${currentAgent}. Context: ${args.summary}]\n\nOriginal request: ${userMessage}`,
-        })
-
-        currentAgent = args.targetAgent
-        continue
-      }
-
-      // No handoff — this agent handled it
-      return {
-        finalAgent: currentAgent,
-        response: result.text,
-        handoffs: handoffHistory,
-      }
-    }
-
-    return {
-      finalAgent: currentAgent,
-      response: 'Maximum handoffs reached. Please try rephrasing your request.',
-      handoffs: handoffHistory,
-    }
-  }
-}
-
-// Set up agents
-const router = new ConversationRouter()
-
-router.register({
-  name: 'triage',
-  system: `You are a front-line support agent. Greet the user and understand their issue.
-If it is about billing, hand off to the billing agent.
-If it is about technical issues, hand off to the technical agent.
-For general questions, answer directly.`,
-  tools: {},
-  canHandoff: ['billing', 'technical'],
-})
-
-router.register({
-  name: 'billing',
-  system: `You are a billing specialist. Handle all billing-related questions:
-invoices, payments, subscriptions, refunds, pricing changes.
-You have access to the billing system.`,
-  tools: {
-    lookupAccount: {
-      description: "Look up a customer's billing account",
-      parameters: z.object({ customerId: z.string() }),
-      execute: async ({ customerId }: { customerId: string }) =>
-        `Account ${customerId}: Plan: Pro, Balance: $0.00, Next billing: March 15`,
-    },
-  },
-  canHandoff: ['technical'],
-})
-
-router.register({
-  name: 'technical',
-  system: `You are a technical support engineer. Handle API issues, configuration
-problems, and debugging questions. You have access to logs and documentation.`,
-  tools: {
-    checkLogs: {
-      description: 'Check system logs for a customer',
-      parameters: z.object({ customerId: z.string() }),
-      execute: async ({ customerId }: { customerId: string }) =>
-        `Logs for ${customerId}: No errors in the last 24 hours.`,
-    },
-  },
-  canHandoff: ['billing'],
-})
-
-// Test handoff
-const result = await router.runWithHandoff('triage', 'Hi, I was charged twice on my last invoice. Can you help?')
-
-console.log(`Final agent: ${result.finalAgent}`)
-console.log(`Handoffs: ${result.handoffs.join(' -> ')}`)
-console.log(`Response: ${result.response}`)
 ```
 
-> **Beginner Note:** Agent handoff is like being transferred to a different department when you call customer support. The key is passing enough context so you do not have to repeat yourself — the receiving agent should know what you already discussed.
+Build a `ConversationRouter` class with:
+
+- `register(spec: AgentSpec): void` -- stores agent specs by name
+- `runWithHandoff(startAgent, userMessage, maxHandoffs = 3): Promise<{ finalAgent: string; response: string; handoffs: string[] }>`
+
+The `runWithHandoff` method is the core logic. It loops up to `maxHandoffs` times:
+
+1. Look up the current agent's spec
+2. If the agent can hand off, inject a `handoff` tool into its tools. The tool's parameters are `targetAgent` (an enum of the agent's `canHandoff` list), `reason`, and `summary`
+3. Call `generateText` with the agent's system prompt, current messages, and tools
+4. Check if any step's tool calls include a `handoff` call. If so, extract the target agent, update the messages array to include the handoff context, switch to the new agent, and continue the loop
+5. If no handoff occurred, return the result
+
+Key design decisions:
+
+- The `handoff` tool should NOT have an `execute` function -- it is a signal to the router, not an action the agent performs
+- When constructing messages for the receiving agent, include a summary from the handing-off agent plus the original user message
+- The `canHandoff` list restricts which agents each specialist can transfer to
+
+Think about:
+
+- Why limit `maxHandoffs`? What happens without a limit?
+- Should the receiving agent see the full conversation history or just a summary?
+- How do you prevent ping-pong handoffs (A hands to B, B hands back to A)?
+
+> **Beginner Note:** Agent handoff is like being transferred to a different department when you call customer support. The key is passing enough context so you do not have to repeat yourself -- the receiving agent should know what you already discussed.
 
 ---
 
@@ -1270,13 +472,9 @@ console.log(`Response: ${result.response}`)
 
 ### Sub-Agent Failures
 
-In a multi-agent system, individual agents can fail. The system must handle these failures gracefully:
+In a multi-agent system, individual agents can fail. The system must handle these failures gracefully. Define the result type:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface AgentResult {
   agentName: string
   success: boolean
@@ -1284,152 +482,34 @@ interface AgentResult {
   error?: string
   retries: number
 }
-
-async function runWithRetry(
-  agentName: string,
-  execute: () => Promise<string>,
-  maxRetries: number = 2,
-  fallback?: () => Promise<string>
-): Promise<AgentResult> {
-  let lastError: string | undefined
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 0) {
-        console.log(`[${agentName}] Retry ${attempt}/${maxRetries}...`)
-      }
-
-      const result = await execute()
-      return {
-        agentName,
-        success: true,
-        result,
-        retries: attempt,
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Unknown error'
-      console.error(`[${agentName}] Attempt ${attempt + 1} failed: ${lastError}`)
-
-      // Wait before retrying (exponential backoff)
-      if (attempt < maxRetries) {
-        const delayMs = Math.pow(2, attempt) * 1000
-        await new Promise(resolve => setTimeout(resolve, delayMs))
-      }
-    }
-  }
-
-  // All retries exhausted — try fallback
-  if (fallback) {
-    console.log(`[${agentName}] Trying fallback...`)
-    try {
-      const fallbackResult = await fallback()
-      return {
-        agentName,
-        success: true,
-        result: fallbackResult,
-        retries: maxRetries + 1,
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : 'Unknown error'
-    }
-  }
-
-  return {
-    agentName,
-    success: false,
-    error: lastError,
-    retries: maxRetries,
-  }
-}
-
-// Orchestrator with error handling
-async function resilientOrchestrator(task: string): Promise<string> {
-  const subtasks = [
-    {
-      name: 'researcher',
-      execute: async () => {
-        const result = await generateText({
-          model: mistral('mistral-small-latest'),
-          maxSteps: 3,
-          system: 'You are a researcher. Gather key facts.',
-          tools: {
-            search: {
-              description: 'Search for information',
-              parameters: z.object({ query: z.string() }),
-              execute: async ({ query }: { query: string }) => `Results for "${query}": [research findings]`,
-            },
-          },
-          prompt: `Research: ${task}`,
-        })
-        return result.text
-      },
-      fallback: async () => {
-        // Fallback: use the model's training data instead of search
-        const result = await generateText({
-          model: mistral('mistral-small-latest'),
-          system: 'Provide what you know about this topic from your training data.',
-          prompt: `What do you know about: ${task}`,
-        })
-        return `[From training data - not real-time] ${result.text}`
-      },
-    },
-    {
-      name: 'writer',
-      execute: async () => {
-        const result = await generateText({
-          model: mistral('mistral-small-latest'),
-          system: 'You are a writer. Create clear, engaging content.',
-          prompt: `Write about: ${task}`,
-        })
-        return result.text
-      },
-      fallback: undefined,
-    },
-  ]
-
-  // Run all sub-tasks with error handling
-  const results: AgentResult[] = []
-  for (const subtask of subtasks) {
-    const result = await runWithRetry(subtask.name, subtask.execute, 2, subtask.fallback)
-    results.push(result)
-
-    if (!result.success) {
-      console.error(`[Orchestrator] ${subtask.name} failed permanently: ${result.error}`)
-    }
-  }
-
-  // Check overall status
-  const failures = results.filter(r => !r.success)
-  if (failures.length === results.length) {
-    return 'All agents failed. Unable to complete the task.'
-  }
-
-  if (failures.length > 0) {
-    console.warn(`[Orchestrator] Partial completion: ${failures.map(f => f.agentName).join(', ')} failed`)
-  }
-
-  // Synthesize from successful results
-  const successfulResults = results
-    .filter(r => r.success)
-    .map(r => `[${r.agentName}]: ${r.result}`)
-    .join('\n\n')
-
-  const finalResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: 'Synthesize the available results into a coherent answer. Note if any information is missing.',
-    prompt: `Task: ${task}\n\nAvailable results:\n${successfulResults}\n\nFailed agents: ${failures.map(f => f.agentName).join(', ') || 'none'}`,
-  })
-
-  return finalResult.text
-}
-
-const output = await resilientOrchestrator('Summarize the latest trends in quantum computing')
-console.log(output)
 ```
+
+Build `runWithRetry(agentName, execute, maxRetries = 2, fallback?): Promise<AgentResult>`:
+
+- Loop from 0 to `maxRetries`, calling `execute()` each time
+- On failure, log the error and wait with exponential backoff (`Math.pow(2, attempt) * 1000` ms)
+- After all retries are exhausted, try the optional `fallback` function if provided
+- Return an `AgentResult` with the agent name, success status, result or error, and retry count
+
+Then build `resilientOrchestrator(task: string): Promise<string>`:
+
+- Define an array of subtask objects, each with a name, execute function, and optional fallback
+- Run each subtask through `runWithRetry`
+- If ALL agents fail, return an error message
+- If some agents fail, log warnings but continue with available results
+- Use a final `generateText` call to synthesize successful results, noting which agents failed
+
+Think about:
+
+- Should the orchestrator run subtasks sequentially or in parallel? What are the trade-offs?
+- When is a fallback better than more retries?
+- How would you decide which errors are retryable (transient network issues) versus permanent (bad input)?
 
 ### Circuit Breaker Pattern
 
-Prevent cascading failures by stopping calls to a consistently failing agent:
+Prevent cascading failures by stopping calls to a consistently failing agent.
+
+Build a `CircuitBreaker` class with three states: `closed` (normal), `open` (rejecting calls), and `half-open` (testing recovery):
 
 ```typescript
 class CircuitBreaker {
@@ -1442,59 +522,207 @@ class CircuitBreaker {
     private resetTimeMs: number = 30000
   ) {}
 
-  async execute<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state === 'open') {
-      // Check if enough time has passed to try again
-      if (Date.now() - this.lastFailureTime > this.resetTimeMs) {
-        this.state = 'half-open'
-        console.log('[CircuitBreaker] Trying half-open...')
-      } else {
-        throw new Error('Circuit breaker is open — agent is unavailable')
-      }
-    }
-
-    try {
-      const result = await fn()
-      // Success — reset
-      this.failures = 0
-      this.state = 'closed'
-      return result
-    } catch (error) {
-      this.failures++
-      this.lastFailureTime = Date.now()
-
-      if (this.failures >= this.threshold) {
-        this.state = 'open'
-        console.log(`[CircuitBreaker] Opened after ${this.failures} failures`)
-      }
-
-      throw error
-    }
-  }
-
-  getState(): string {
-    return this.state
-  }
-}
-
-// Usage: wrap agent calls in a circuit breaker
-const researchBreaker = new CircuitBreaker(3, 30000)
-
-try {
-  const result = await researchBreaker.execute(async () => {
-    const response = await generateText({
-      model: mistral('mistral-small-latest'),
-      prompt: 'Research AI trends',
-    })
-    return response.text
-  })
-  console.log(result)
-} catch (error) {
-  console.log(`Research agent unavailable (circuit: ${researchBreaker.getState()})`)
+  async execute<T>(fn: () => Promise<T>): Promise<T>
+  getState(): string
 }
 ```
 
+The `execute` method:
+
+- If `open` and enough time has passed since the last failure, transition to `half-open` and try the call
+- If `open` and not enough time has passed, throw immediately without calling `fn`
+- On success, reset failures to 0 and set state to `closed`
+- On failure, increment failures. If failures reach the threshold, set state to `open`
+
+How does this pattern save tokens and reduce latency when a downstream service is down?
+
 > **Advanced Note:** In production multi-agent systems, combine retries, circuit breakers, and fallbacks. The circuit breaker prevents wasting tokens on a consistently failing agent, retries handle transient errors, and fallbacks provide degraded but functional responses when an agent is down.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: Agent Pool Coordinator
+
+### Managing Worker Pools
+
+The orchestrator-worker pattern from Section 2 dispatches agents one at a time. A coordinator goes further — it manages a **pool** of worker agents that execute in parallel, with concurrency limits, load balancing, and result aggregation.
+
+The coordinator's job:
+
+1. Receive a complex task
+2. Decompose it into independent sub-tasks
+3. Dispatch sub-tasks to available workers (up to a concurrency limit)
+4. Collect results as workers complete
+5. Handle worker failures with retry or fallback
+6. Aggregate all results into a final output
+
+```typescript
+interface CoordinatorConfig {
+  maxConcurrency: number
+  workerTimeout: number
+  retryLimit: number
+}
+
+interface SubTask {
+  id: string
+  description: string
+  toolSubset: string[]
+  priority: number
+}
+```
+
+The concurrency limit is critical. Running too many agents in parallel hits API rate limits. A coordinator with `maxConcurrency: 3` dispatches three workers initially, then dispatches the next worker as each one completes — a sliding window pattern.
+
+Result aggregation depends on the task. For research tasks, concatenate findings. For review tasks, merge feedback. For classification tasks, use majority voting. The coordinator's aggregation logic is what turns individual worker outputs into a coherent result.
+
+> **Beginner Note:** Start with sequential dispatch (concurrency 1) to get the pattern working, then increase concurrency once error handling is solid.
+
+---
+
+## Section 10: Agent Type Specialization
+
+### Defining Agent Roles
+
+Production systems define specialized agent types, each with a focused system prompt, a curated tool set, and behavioral constraints. Common specializations:
+
+| Agent Type          | Mode  | Tools              | Purpose                       |
+| ------------------- | ----- | ------------------ | ----------------------------- |
+| **General-purpose** | Build | All tools          | Full implementation tasks     |
+| **Explorer**        | Plan  | Read, search, glob | Fast codebase navigation      |
+| **Planner**         | Plan  | Read, search       | Architecture and design       |
+| **Reviewer**        | Plan  | Read, search, glob | Code review, no modifications |
+
+The specialization is structural, not just prompt-based. An explorer agent literally cannot write files — it does not have the write tool. This prevents accidental modifications during read-only tasks and makes the agent's capabilities explicit.
+
+```typescript
+interface AgentType {
+  name: string
+  systemPrompt: string
+  tools: Record<string, Tool>
+  maxSteps: number
+  model: string
+}
+
+function createAgent(type: AgentType, task: string) {
+  /* ... */
+}
+```
+
+When building a multi-agent system, define your agent types first. The types become the building blocks that the coordinator dispatches. A well-defined set of agent types makes the system predictable — you know exactly what each agent can and cannot do.
+
+---
+
+## Section 11: Workspace Isolation
+
+### Preventing Conflicts in Parallel Work
+
+When multiple agents work on related tasks simultaneously, they can conflict — two agents editing the same file, or one agent's changes breaking another's assumptions. Workspace isolation prevents this by giving each agent its own working directory.
+
+The simplest approach: create a temporary directory for each agent, copy the relevant files, let the agent work in isolation, then merge results back.
+
+```typescript
+import { mkdtemp, cp } from 'fs/promises'
+import { join } from 'path'
+import { tmpdir } from 'os'
+
+async function createAgentWorkspace(sourceDir: string): Promise<string> {
+  /* ... */
+}
+```
+
+Each agent receives its workspace path and operates only within that directory. When the agent completes, the coordinator collects the results and reconciles any conflicts. For file-based tasks, this means diffing the agent's workspace against the original to see what changed.
+
+The trade-off is overhead: copying files takes time, and merging results adds complexity. Use workspace isolation when agents might conflict (parallel code changes, concurrent file processing). Skip it when agents work on clearly independent resources (different APIs, different data sources).
+
+> **Advanced Note:** In production, git worktrees provide a more robust isolation mechanism than temporary directories. Each agent works in a separate worktree of the same repository — they share the git history but have independent working trees. Changes merge through standard git operations with conflict detection built in.
+
+---
+
+## Section 12: Primary and Subagent Architecture
+
+### Agent Lifecycle and Scope
+
+Production multi-agent systems distinguish between two categories of agents:
+
+- **Primary agents** — persistent, user-facing. They own the conversation, have full (or near-full) tool access, and run across the entire session. The user interacts with a primary agent directly
+- **Subagents** — task-scoped, invoked on demand. A primary agent (or the user) spawns a subagent for a specific task. The subagent runs its own conversation with its own tools, returns results to the caller, and terminates
+
+The distinction is about scope and lifecycle, not capability. A subagent can be as powerful as a primary agent — the difference is that it is invoked for a specific purpose and its results feed back into the parent context.
+
+```typescript
+async function invokeSubagent(agentType: AgentType, task: string, parentContext?: string): Promise<string> {
+  /* ... */
+}
+```
+
+**Context isolation** is critical. Subagents start with fresh context — they do not inherit the parent's full conversation history. The parent passes only the relevant context (a summary or the specific task description). This prevents context pollution: the subagent's token budget is spent on its task, not on irrelevant parent history.
+
+> **Beginner Note:** Think of subagents like function calls in regular programming. The parent agent "calls" a subagent with arguments (the task and context), waits for the return value (the result), and continues. The subagent's internal state is not visible to the parent.
+
+---
+
+## Section 13: Agent Configuration via Markdown
+
+### Declarative Agent Definitions
+
+Instead of hardcoding agent types in source code, define them declaratively in markdown files with YAML frontmatter. The filename becomes the agent ID, the frontmatter specifies configuration, and the body becomes the system prompt.
+
+```markdown
+---
+description: 'Code review specialist'
+mode: plan
+model: default
+tools: [read, grep, glob]
+temperature: 0.2
+maxSteps: 50
+---
+
+You are a code reviewer. Analyze code for bugs, style issues, and performance problems.
+Focus on correctness first, then readability, then performance.
+```
+
+An agent loader reads these files, parses the YAML frontmatter, and instantiates agents with the specified configuration. This is configuration-as-code for agents — definitions can be versioned in git, shared across projects, and customized per-project.
+
+```typescript
+interface AgentConfig {
+  description: string
+  mode: 'plan' | 'build'
+  model: string
+  tools: string[]
+  temperature?: number
+  maxSteps?: number
+}
+
+// Load agent from markdown file → AgentConfig + systemPrompt
+```
+
+The advantages are composability and transparency. A new agent type is just a new markdown file. Non-developers can understand and modify agent behavior by editing the system prompt. The configuration is visible and auditable, not buried in application code.
+
+---
+
+## Section 14: @Mention Invocation
+
+### Explicit Agent Targeting
+
+Production systems let users (or parent agents) invoke a specific subagent with `@agent_name` syntax. The mentioned agent runs with its own context, tools, and system prompt, and results return inline to the parent conversation.
+
+```typescript
+function parseMention(message: string): { agentName: string; task: string } | null {
+  /* ... */
+}
+```
+
+The routing flow:
+
+1. User (or parent agent) sends a message like `@reviewer check this function for edge cases`
+2. The system parses the @mention and looks up the `reviewer` agent configuration
+3. The reviewer agent runs with its own tools and system prompt
+4. Results return to the caller
+
+This is delegation with explicit targeting. Instead of the orchestrator deciding which agent to use, the caller names the specialist directly. Both patterns are useful — automatic routing for end users who do not know the available agents, explicit mentions for power users and parent agents that know exactly what they need.
+
+> **Advanced Note:** @mention invocation composes naturally with agent configuration via markdown. The agent name in the @mention maps to the markdown filename. Adding a new specialist is: create a markdown file, restart, and `@new_agent` is available.
 
 ---
 
@@ -1562,6 +790,36 @@ In a multi-agent system, why is a circuit breaker pattern useful?
 - D) It encrypts communication between agents
 
 **Answer: B** — A circuit breaker tracks consecutive failures for an agent. After a threshold is reached, it "opens" and immediately rejects further calls to that agent for a cooldown period. This prevents wasting tokens and time on an agent that is consistently failing (e.g., due to a downstream API outage). After the cooldown, it tries again ("half-open") to see if the issue resolved.
+
+---
+
+### Question 6 (Medium)
+
+Why should subagents start with fresh context rather than inheriting the parent agent's full conversation history?
+
+a) Subagents cannot process conversation history
+b) The parent's conversation history consumes tokens that the subagent should spend on its specific task — passing only relevant context (a summary or task description) prevents context pollution and keeps the subagent focused
+c) Fresh context makes subagents run faster
+d) Conversation history is not serializable
+
+**Answer: B**
+
+**Explanation:** A parent agent with 50 steps of conversation history might have 80,000 tokens of context. If a subagent inherits all of that, most of its token budget is consumed by irrelevant history. Instead, the parent passes only the specific task and any relevant context (a few hundred tokens). This lets the subagent spend its full budget on its task, just like a function call in regular programming passes arguments rather than the entire program state.
+
+---
+
+### Question 7 (Hard)
+
+Your multi-agent system defines agent types in markdown files with YAML frontmatter. A reviewer agent is configured with `mode: plan` and `tools: [read, grep, glob]`. A developer accidentally changes the config to `tools: [read, grep, glob, write]` without changing the mode. What architectural principle does this violate, and why is it dangerous?
+
+a) It violates the DRY principle because tools are duplicated
+b) It violates the principle that behavioral constraints should be structural — a plan-mode agent with write tools can modify files despite being designated as read-only, because the tool set is the actual constraint and the mode label is just metadata
+c) It violates the single responsibility principle
+d) It violates the principle of least privilege only if the agent actually writes files
+
+**Answer: B**
+
+**Explanation:** In a well-designed system, the `mode: plan` label should determine the tool set (plan = read-only tools). When the tool set is specified independently, the mode becomes a misleading label — the agent is called "plan" but has write capabilities. The system should either derive tools from mode or validate that the tool set matches the declared mode. This is a real risk in declarative configurations: labels and behavior can drift apart, and the behavior (available tools) is what actually matters.
 
 ---
 
@@ -1732,6 +990,275 @@ describe('Exercise 15: Support Router', () => {
 })
 ```
 
+---
+
+### Exercise 3: Agent Pool Coordinator
+
+**Objective:** Build a coordinator that decomposes tasks into sub-tasks, dispatches worker agents with appropriate tool subsets, and aggregates results — with concurrency control and failure handling.
+
+**Specification:**
+
+1. Create a file `src/exercises/m15/ex03-coordinator.ts`
+2. Export an async function `coordinateTask(task: string, options?: CoordinatorOptions): Promise<CoordinatorResult>`
+3. Define the types:
+
+```typescript
+interface CoordinatorOptions {
+  maxConcurrency?: number // default: 2
+  workerTimeout?: number // default: 30000
+  retryLimit?: number // default: 1
+  verbose?: boolean // default: false
+}
+
+interface SubTask {
+  id: string
+  description: string
+  agentType: string // maps to a registered agent type
+  status: 'pending' | 'running' | 'completed' | 'failed'
+}
+
+interface WorkerResult {
+  subTaskId: string
+  agentType: string
+  output: string
+  success: boolean
+  error?: string
+  durationMs: number
+}
+
+interface CoordinatorResult {
+  finalOutput: string
+  subTasks: SubTask[]
+  workerResults: WorkerResult[]
+  totalDurationMs: number
+  failedTasks: number
+}
+```
+
+4. Implement the coordinator:
+   - Use an LLM call to decompose the input task into 2-4 independent sub-tasks
+   - Dispatch sub-tasks to worker agents, respecting the concurrency limit (sliding window: start new workers as others complete)
+   - Each worker gets its own tool subset and system prompt based on its agent type
+   - Collect results, retry failed tasks up to `retryLimit`
+   - Use a final LLM call to aggregate worker results into a coherent output
+
+5. Register at least two worker agent types (e.g., researcher and analyzer) with different tool sets
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m15/ex03-coordinator.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 15: Agent Pool Coordinator', () => {
+  it('should decompose task into sub-tasks', async () => {
+    const result = await coordinateTask('Compare TypeScript and Rust for backend development')
+    expect(result.subTasks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('should respect concurrency limit', async () => {
+    const result = await coordinateTask('Research three programming languages', {
+      maxConcurrency: 1,
+    })
+    expect(result.workerResults.length).toBeGreaterThan(0)
+  })
+
+  it('should aggregate results into final output', async () => {
+    const result = await coordinateTask('Summarize pros and cons of microservices')
+    expect(result.finalOutput).toBeTruthy()
+    expect(result.finalOutput.length).toBeGreaterThan(100)
+  })
+
+  it('should handle worker failures gracefully', async () => {
+    const result = await coordinateTask('Research an obscure topic with limited data')
+    expect(result.finalOutput).toBeTruthy()
+  })
+})
+```
+
+---
+
+### Exercise 4: Specialized Agent Types
+
+**Objective:** Create a set of specialized agent types with different tool sets, system prompts, and behavioral constraints. Demonstrate that the same task produces different results when handled by different agent types.
+
+**Specification:**
+
+1. Create a file `src/exercises/m15/ex04-specialized-agents.ts`
+2. Export a function `createAgentType(config: AgentTypeConfig): AgentType` and a function `runSpecializedAgent(agentType: AgentType, task: string): Promise<AgentOutput>`
+3. Define the types:
+
+```typescript
+interface AgentTypeConfig {
+  name: string
+  mode: 'plan' | 'build'
+  systemPrompt: string
+  toolNames: string[] // References to registered tools
+  maxSteps: number
+}
+
+interface AgentType {
+  name: string
+  mode: 'plan' | 'build'
+  systemPrompt: string
+  tools: Record<string, Tool>
+  maxSteps: number
+}
+
+interface AgentOutput {
+  agentName: string
+  mode: string
+  response: string
+  toolsUsed: string[]
+  stepsCompleted: number
+  durationMs: number
+}
+```
+
+4. Create three specialized agents:
+   - **Researcher** — plan mode, has search and read tools, system prompt focuses on gathering facts
+   - **Implementer** — build mode, has write and edit tools, system prompt focuses on building code
+   - **Reviewer** — plan mode, has read and search tools, system prompt focuses on finding issues and suggesting improvements
+
+5. Run the same task through each agent and compare the outputs
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m15/ex04-specialized-agents.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 15: Specialized Agents', () => {
+  it('should create agents with different tool sets', () => {
+    const researcher = createAgentType({
+      name: 'researcher',
+      mode: 'plan',
+      systemPrompt: 'You research topics.',
+      toolNames: ['search', 'read'],
+      maxSteps: 10,
+    })
+    const implementer = createAgentType({
+      name: 'implementer',
+      mode: 'build',
+      systemPrompt: 'You write code.',
+      toolNames: ['search', 'read', 'write'],
+      maxSteps: 15,
+    })
+    expect(Object.keys(researcher.tools)).not.toContain('write')
+    expect(Object.keys(implementer.tools)).toContain('write')
+  })
+
+  it('should produce different outputs for different agent types', async () => {
+    const researcher = createAgentType({
+      name: 'researcher',
+      mode: 'plan',
+      systemPrompt: 'You research and report facts.',
+      toolNames: ['search'],
+      maxSteps: 5,
+    })
+    const reviewer = createAgentType({
+      name: 'reviewer',
+      mode: 'plan',
+      systemPrompt: 'You review and critique.',
+      toolNames: ['search'],
+      maxSteps: 5,
+    })
+    const researchOutput = await runSpecializedAgent(researcher, 'Evaluate TypeScript generics')
+    const reviewOutput = await runSpecializedAgent(reviewer, 'Evaluate TypeScript generics')
+    expect(researchOutput.agentName).toBe('researcher')
+    expect(reviewOutput.agentName).toBe('reviewer')
+  })
+})
+```
+
+---
+
+### Exercise 5: Workspace Isolation
+
+**Objective:** Implement workspace isolation for parallel agents so multiple agents can work on file-based tasks without conflicts.
+
+**Specification:**
+
+1. Create a file `src/exercises/m15/ex05-workspace-isolation.ts`
+2. Export an async function `runIsolatedAgents(tasks: IsolatedTask[], sourceDir: string): Promise<IsolationResult>`
+3. Define the types:
+
+```typescript
+interface IsolatedTask {
+  id: string
+  description: string
+  agentType: string
+}
+
+interface WorkspaceResult {
+  taskId: string
+  workspace: string // Path to the agent's temp directory
+  output: string
+  changedFiles: string[] // Files that differ from the source
+  success: boolean
+  durationMs: number
+}
+
+interface IsolationResult {
+  results: WorkspaceResult[]
+  conflicts: string[] // Files modified by more than one agent
+  totalDurationMs: number
+}
+```
+
+4. For each task:
+   - Create a temporary directory and copy `sourceDir` into it
+   - Run the assigned agent within that workspace
+   - After completion, diff the workspace against the source to find changed files
+
+5. After all agents complete, detect conflicts (files modified by multiple agents)
+
+6. Clean up temporary directories after collecting results
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m15/ex05-workspace-isolation.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 15: Workspace Isolation', () => {
+  it('should create separate workspaces for each agent', async () => {
+    const result = await runIsolatedAgents(
+      [
+        { id: '1', description: 'Add a README', agentType: 'writer' },
+        { id: '2', description: 'Add a LICENSE', agentType: 'writer' },
+      ],
+      '/tmp/test-project'
+    )
+    expect(result.results).toHaveLength(2)
+    expect(result.results[0].workspace).not.toBe(result.results[1].workspace)
+  })
+
+  it('should detect conflicts when agents modify the same file', async () => {
+    const result = await runIsolatedAgents(
+      [
+        { id: '1', description: 'Edit index.ts to add feature A', agentType: 'implementer' },
+        { id: '2', description: 'Edit index.ts to add feature B', agentType: 'implementer' },
+      ],
+      '/tmp/test-project'
+    )
+    // If both agents modified index.ts, it should appear in conflicts
+    if (result.results.every(r => r.changedFiles.includes('index.ts'))) {
+      expect(result.conflicts).toContain('index.ts')
+    }
+  })
+
+  it('should clean up temporary workspaces', async () => {
+    const result = await runIsolatedAgents(
+      [{ id: '1', description: 'Simple task', agentType: 'researcher' }],
+      '/tmp/test-project'
+    )
+    expect(result.results[0].workspace).toBeTruthy()
+    // Workspace should be cleaned up after results are collected
+  })
+})
+```
+
 > **Looking Ahead: Agent SDKs** — This module teaches multi-agent orchestration from scratch, which is valuable for understanding the patterns. In production, consider the official Agent SDKs: Anthropic's Claude Agent SDK, OpenAI's Agents SDK, and Mistral's Agents API all provide built-in primitives for structured handoffs between agents, built-in guardrails, tracing, and orchestration — handling many of the patterns you've implemented manually here. Mistral's Agents API additionally offers built-in connectors (web search, code execution, image generation), persistent memory across conversations, and native multi-agent orchestration.
 
 > **Local Alternative (Ollama):** Multi-agent orchestration works with `ollama('qwen3.5')`. The orchestrator-worker pattern, delegation, and shared state are all code-level patterns independent of the model provider. You can even mix providers — use a capable API model as the orchestrator and local models as cheaper workers.
@@ -1750,5 +1277,11 @@ In this module, you learned:
 6. **Parallel execution:** Run independent agents concurrently with concurrency limits and map-reduce patterns for throughput.
 7. **Agent handoff:** Transfer conversations between specialists with context summaries so users do not repeat themselves.
 8. **Error handling:** Retries with exponential backoff, fallback agents, and circuit breakers create resilient multi-agent systems.
+9. **Agent pool coordinator:** A coordinator manages a pool of workers with concurrency limits, dispatching sub-tasks in a sliding window pattern and aggregating results.
+10. **Agent type specialization:** Production systems define agent types with focused prompts, curated tool sets, and per-type step limits — making capabilities explicit and structural.
+11. **Workspace isolation:** Parallel agents that might conflict work in separate directories (or git worktrees), with results merged back by the coordinator.
+12. **Primary and subagent architecture:** Primary agents are persistent and user-facing; subagents are task-scoped, invoked on demand with fresh context, and return results to the caller.
+13. **Agent configuration via markdown:** Declarative agent definitions in markdown files with YAML frontmatter make agent types versionable, shareable, and editable by non-developers.
+14. **@Mention invocation:** Users or parent agents invoke specific subagents with `@agent_name` syntax, enabling explicit delegation alongside automatic routing.
 
 In Module 16, you will learn about workflows and chains — a more deterministic alternative to autonomous multi-agent systems for tasks with well-defined steps.

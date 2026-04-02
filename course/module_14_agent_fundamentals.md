@@ -45,75 +45,54 @@ An agent is built from three elements working together:
 
 A single `generateText` call with tools is not an agent. It is a one-shot tool call. An agent runs that call repeatedly, feeding results back in, until it decides the task is complete.
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Consider this single call with a tool:
 
-// This is NOT an agent — it is a single tool call
+```typescript
 const singleCall = await generateText({
   model: mistral('mistral-small-latest'),
   tools: {
     searchWeb: {
-      description: 'Search the web for information',
-      parameters: z.object({
-        query: z.string().describe('The search query'),
-      }),
-      execute: async ({ query }) => {
-        // Simulated search
-        return `Results for "${query}": Found 3 relevant articles.`
-      },
+      /* ... */
     },
   },
   prompt: 'What is the population of Tokyo?',
 })
-
 // singleCall.text might be empty if the model wants to use a tool
 // but there is no loop to process the tool result
 ```
+
+Without a loop, the model calls the tool once but never sees the result. The conversation ends.
 
 > **Beginner Note:** Think of the difference between asking someone a question (single call) versus hiring someone to complete a project (agent). The project requires multiple steps, checking intermediate results, and adjusting the approach.
 
 ### From Single Call to Agent
 
-The key insight is that `generateText` with `maxSteps` already provides an agent loop. The Vercel AI SDK will automatically re-call the model with tool results until the model either stops calling tools or hits the step limit:
+The key insight is that `generateText` with `stopWhen: stepCountIs()` already provides an agent loop. The Vercel AI SDK will automatically re-call the model with tool results until the model either stops calling tools or hits the step limit:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+import { generateText, stepCountIs } from 'ai'
 
-// This IS an agent — maxSteps creates the loop
 const agentResult = await generateText({
   model: mistral('mistral-small-latest'),
-  maxSteps: 10,
+  stopWhen: stepCountIs(10), // <-- this creates the loop
   tools: {
-    searchWeb: {
-      description: 'Search the web for information',
-      parameters: z.object({
-        query: z.string().describe('The search query'),
-      }),
-      execute: async ({ query }) => {
-        return `Results for "${query}": Tokyo population is approximately 14 million (city proper) or 37 million (greater metro area).`
-      },
-    },
+    /* ... */
   },
   prompt: 'What is the population of Tokyo? Use the search tool to find out.',
 })
+```
 
-console.log('Final answer:', agentResult.text)
-console.log('Steps taken:', agentResult.steps.length)
+After the call completes, `agentResult.steps` contains an array of every step the agent took. Each step has `toolCalls` (what the model decided to do) and `text` (any reasoning output). You can inspect them:
 
-// Each step contains the model's reasoning and any tool calls
+```typescript
 for (const step of agentResult.steps) {
-  console.log(`Step ${agentResult.steps.indexOf(step) + 1}:`, {
-    toolCalls: step.toolCalls.map(tc => tc.toolName),
-    hasText: !!step.text,
-  })
+  console.log({ toolCalls: step.toolCalls.map(tc => tc.toolName), hasText: !!step.text })
 }
 ```
 
-> **Advanced Note:** The `maxSteps` parameter is the simplest form of agent loop control in the Vercel AI SDK. For more complex agents that need custom logic between steps, you will build your own loop as shown in Section 3.
+Your task: create a file that defines a simple search tool (simulated — just return a hardcoded string for any query) and call `generateText` with `stopWhen: stepCountIs(10)`. Run it and inspect `steps.length` and `result.text`. How many steps does the model take before it answers?
+
+> **Advanced Note:** The `stopWhen: stepCountIs()` parameter is the simplest form of agent loop control in the Vercel AI SDK. For more complex agents that need custom logic between steps, you will build your own loop as shown in Section 3.
 
 ### What Makes a Good Agent
 
@@ -126,7 +105,7 @@ Not every task needs an agent. Use an agent when:
 
 Do not use an agent when:
 
-- A single `generateText` call (with or without `Output.object`) suffices
+- A single `generateText` call (with or without `Output.object()`) suffices
 - The steps are known in advance and do not depend on LLM decisions (use a workflow instead)
 - Latency is critical and you cannot afford multiple LLM calls
 
@@ -144,80 +123,21 @@ The ReAct pattern (Yao et al., 2022) is the most widely used agent pattern. It i
 
 This cycle repeats until the model has enough information to give a final answer.
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+The key to implementing ReAct with the Vercel AI SDK is a good system prompt that encourages explicit reasoning. The `stopWhen: stepCountIs()` parameter provides the loop. The system prompt provides the structure:
 
-// ReAct agent with explicit reasoning via system prompt
-const reactAgent = await generateText({
-  model: mistral('mistral-small-latest'),
-  maxSteps: 8,
-  system: `You are a research agent. For each step:
+```typescript
+system: `You are a research agent. For each step:
 1. THINK: Reason about what you know and what you still need to find out.
 2. ACT: Use a tool to gather information.
 3. OBSERVE: Analyze the result and decide if you need more information.
 
 When you have enough information, provide a comprehensive final answer.
-Always explain your reasoning before using a tool.`,
-  tools: {
-    searchWeb: {
-      description: 'Search the web for current information',
-      parameters: z.object({
-        query: z.string().describe('Search query'),
-      }),
-      execute: async ({ query }) => {
-        // Simulated search results
-        const results: Record<string, string> = {
-          'TypeScript market share 2025':
-            'TypeScript is used by 38.5% of developers according to Stack Overflow 2025 survey.',
-          'TypeScript vs JavaScript performance':
-            'TypeScript compiles to JavaScript so runtime performance is identical. Compilation adds a build step.',
-          'TypeScript adoption Fortune 500':
-            'Over 80% of Fortune 500 companies using JavaScript have adopted TypeScript for new projects.',
-        }
-        return results[query] || `No specific results found for "${query}". Try a different query.`
-      },
-    },
-    calculator: {
-      description: 'Perform mathematical calculations',
-      parameters: z.object({
-        expression: z.string().describe('Math expression to evaluate'),
-      }),
-      execute: async ({ expression }) => {
-        try {
-          if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-            return `Error: Invalid expression "${expression}"`
-          }
-          // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-          const result = Function(`"use strict"; return (${expression})`)()
-          return `${expression} = ${result}`
-        } catch {
-          return `Error evaluating: ${expression}`
-        }
-      },
-    },
-  },
-  prompt:
-    'Research the current state of TypeScript adoption. I want to know market share, performance implications, and enterprise adoption. Provide a summary with specific numbers.',
-})
-
-console.log('=== ReAct Agent Result ===')
-console.log('Final answer:', reactAgent.text)
-console.log('\n=== Reasoning Trace ===')
-for (const [i, step] of reactAgent.steps.entries()) {
-  console.log(`\nStep ${i + 1}:`)
-  if (step.text) {
-    console.log('  Thought:', step.text.slice(0, 200))
-  }
-  for (const tc of step.toolCalls) {
-    console.log(`  Action: ${tc.toolName}(${JSON.stringify(tc.args)})`)
-  }
-  for (const tr of step.toolResults) {
-    console.log(`  Observation: ${String(tr.result).slice(0, 150)}`)
-  }
-}
+Always explain your reasoning before using a tool.`
 ```
+
+Your task: create a ReAct agent with two tools — a simulated `searchWeb` tool (use a `Record<string, string>` as a lookup table of pre-defined results) and a `calculator` tool (validate the expression against `/^[\d\s+\-*/().]+$/` before evaluating). Give the agent a research task that requires using both tools.
+
+After the agent completes, print a reasoning trace by iterating over `agentResult.steps` and logging each step's `text` (thought), `toolCalls` (actions), and `toolResults` (observations).
 
 ### Why ReAct Works
 
@@ -236,7 +156,7 @@ With reasoning, the agent can:
 - Synthesize information from multiple sources
 - Recognize when it has enough information to answer
 
-> **Beginner Note:** You do not need to implement ReAct from scratch. The combination of a good system prompt and the Vercel AI SDK's `maxSteps` gives you ReAct behavior. The system prompt encourages the model to reason explicitly, and `maxSteps` provides the loop.
+> **Beginner Note:** You do not need to implement ReAct from scratch. The combination of a good system prompt and the Vercel AI SDK's `stopWhen: stepCountIs()` gives you ReAct behavior. The system prompt encourages the model to reason explicitly, and `stopWhen` provides the loop.
 
 > **Advanced Note:** Some models handle ReAct-style reasoning better than others. Claude models naturally tend to reason before acting. For models that rush to tool calls without thinking, you can use a "scratchpad" tool that the model calls to write down its thoughts before using action tools.
 
@@ -246,13 +166,13 @@ With reasoning, the agent can:
 
 ### The Basic Loop
 
-While `maxSteps` handles simple cases, building your own agent loop gives you full control over the process. Here is the fundamental pattern:
+While `stopWhen: stepCountIs()` handles simple cases, building your own agent loop gives you full control over the process — you can insert logging, approval gates, memory management, and other custom logic between each agent step.
+
+The fundamental pattern is a `for` loop that calls `generateText` with `stopWhen: stepCountIs(1)` (single step) on each iteration, appends `response.response.messages` to the conversation, and checks whether the model finished (no tool calls in the last step) or hit the max.
+
+Create a `runAgent` function with this signature:
 
 ```typescript
-import { generateText, type ModelMessage, type LanguageModel } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface AgentConfig {
   model: LanguageModel
   system: string
@@ -271,116 +191,26 @@ interface AgentResult {
   finished: boolean
 }
 
-async function runAgent(config: AgentConfig, task: string): Promise<AgentResult> {
-  const messages: ModelMessage[] = [{ role: 'user', content: task }]
-  const steps: AgentResult['steps'] = []
-  let finished = false
-
-  for (let step = 0; step < config.maxSteps; step++) {
-    // THINK + ACT: Call the model
-    const response = await generateText({
-      model: config.model,
-      system: config.system,
-      messages,
-      tools: config.tools,
-      maxSteps: 1, // Single step — we control the outer loop
-    })
-
-    // Record what happened in this step
-    const currentStep = {
-      thought: response.text || '',
-      toolCalls: response.steps.flatMap(s =>
-        s.toolCalls.map(tc => ({
-          name: tc.toolName,
-          args: tc.args as Record<string, unknown>,
-        }))
-      ),
-      observations: response.steps.flatMap(s => s.toolResults.map(tr => String(tr.result))),
-    }
-    steps.push(currentStep)
-
-    // Add assistant response to conversation
-    // The response.response.messages contains all messages from this step
-    for (const msg of response.response.messages) {
-      messages.push(msg)
-    }
-
-    // CHECK: Did the model finish without calling tools?
-    const lastStep = response.steps[response.steps.length - 1]
-    if (lastStep && lastStep.toolCalls.length === 0) {
-      finished = true
-      return {
-        answer: response.text,
-        steps,
-        totalSteps: step + 1,
-        finished,
-      }
-    }
-
-    console.log(`[Agent] Step ${step + 1}: Called ${currentStep.toolCalls.map(tc => tc.name).join(', ')}`)
-  }
-
-  // Hit max steps without finishing
-  return {
-    answer: steps[steps.length - 1]?.thought || 'Agent did not reach a conclusion.',
-    steps,
-    totalSteps: config.maxSteps,
-    finished: false,
-  }
-}
+async function runAgent(config: AgentConfig, task: string): Promise<AgentResult>
 ```
 
-### Using the Agent Loop
+Inside the function:
 
-```typescript
-const result = await runAgent(
-  {
-    model: mistral('mistral-small-latest'),
-    system: `You are a research assistant. Use the available tools to gather information,
-then provide a comprehensive answer. Think step by step.
-When you have enough information, respond with your final answer WITHOUT calling any tools.`,
-    tools: {
-      search: {
-        description: 'Search for information on a topic',
-        parameters: z.object({
-          query: z.string().describe('What to search for'),
-        }),
-        execute: async ({ query }: { query: string }) => {
-          return `Search results for "${query}": [Relevant information would appear here]`
-        },
-      },
-      getDetails: {
-        description: 'Get detailed information about a specific item',
-        parameters: z.object({
-          item: z.string().describe('The item to get details for'),
-        }),
-        execute: async ({ item }: { item: string }) => {
-          return `Details for "${item}": [Detailed information would appear here]`
-        },
-      },
-    },
-    maxSteps: 5,
-  },
-  'Compare the populations of the three largest cities in Japan.'
-)
+1. Initialize `messages: ModelMessage[]` with the user's task
+2. Loop up to `config.maxSteps` times
+3. Each iteration: call `generateText` with `stopWhen: stepCountIs(1)`, the config's model/system/tools, and current messages
+4. Record the step's thought (`response.text`), tool calls (from `response.steps`), and observations (from `response.steps[].toolResults`)
+5. Append `response.response.messages` to the conversation
+6. Check: if the last step has zero tool calls, the agent is done — return with `finished: true`
+7. If the loop ends without finishing, return with `finished: false`
 
-console.log('\n=== Agent Report ===')
-console.log(`Finished: ${result.finished}`)
-console.log(`Steps taken: ${result.totalSteps}`)
-console.log(`Answer: ${result.answer}`)
-```
-
-> **Beginner Note:** The custom loop pattern gives you a place to insert logging, approval gates, memory management, and other custom logic between each agent step. The `maxSteps` approach in the Vercel AI SDK is simpler but less flexible.
+How should you handle the case where `response.text` is empty but the model made tool calls? What about the case where the model neither produces text nor calls tools?
 
 ### Adding Step Callbacks
 
-A production agent needs visibility into what is happening at each step:
+Extend the pattern with a callback that fires after each step. Define:
 
 ```typescript
-import { generateText, type ModelMessage } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface StepEvent {
   stepNumber: number
   thought: string
@@ -390,81 +220,13 @@ interface StepEvent {
 }
 
 type StepCallback = (event: StepEvent) => void | Promise<void>
-
-async function runAgentWithCallbacks(
-  task: string,
-  tools: Record<string, any>,
-  onStep: StepCallback,
-  maxSteps = 10
-): Promise<string> {
-  const messages: ModelMessage[] = [{ role: 'user', content: task }]
-
-  for (let step = 0; step < maxSteps; step++) {
-    const startTime = Date.now()
-
-    const response = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'You are a helpful research agent. Use tools to gather information, then answer.',
-      messages,
-      tools,
-      maxSteps: 1,
-    })
-
-    const durationMs = Date.now() - startTime
-
-    const stepEvent: StepEvent = {
-      stepNumber: step + 1,
-      thought: response.text || '',
-      toolCalls: response.steps.flatMap(s =>
-        s.toolCalls.map(tc => ({
-          name: tc.toolName,
-          args: tc.args as Record<string, unknown>,
-        }))
-      ),
-      observations: response.steps.flatMap(s => s.toolResults.map(tr => String(tr.result))),
-      durationMs,
-    }
-
-    await onStep(stepEvent)
-
-    for (const msg of response.response.messages) {
-      messages.push(msg)
-    }
-
-    const lastStep = response.steps[response.steps.length - 1]
-    if (lastStep && lastStep.toolCalls.length === 0) {
-      return response.text
-    }
-  }
-
-  return 'Max steps reached without conclusion.'
-}
-
-// Usage with a logging callback
-const answer = await runAgentWithCallbacks(
-  'What are the top 3 programming languages by popularity?',
-  {
-    search: {
-      description: 'Search for information',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }: { query: string }) =>
-        `Results for "${query}": Python, JavaScript, TypeScript are the top 3 in 2025.`,
-    },
-  },
-  event => {
-    console.log(`\n--- Step ${event.stepNumber} (${event.durationMs}ms) ---`)
-    if (event.thought) console.log(`Thought: ${event.thought.slice(0, 100)}`)
-    for (const tc of event.toolCalls) {
-      console.log(`Action: ${tc.name}(${JSON.stringify(tc.args)})`)
-    }
-    for (const obs of event.observations) {
-      console.log(`Observation: ${obs.slice(0, 100)}`)
-    }
-  }
-)
-
-console.log('\nFinal answer:', answer)
 ```
+
+Create a `runAgentWithCallbacks` function that accepts a task, tools, an `onStep` callback, and a max steps limit. Wrap each `generateText` call with `Date.now()` timing. After processing each step, construct a `StepEvent` and call `await onStep(stepEvent)`.
+
+Test it by passing a logging callback that prints each step's number, duration, thought preview, actions, and observations.
+
+> **Beginner Note:** The custom loop pattern gives you a place to insert logging, approval gates, memory management, and other custom logic between each agent step. The `stopWhen: stepCountIs()` approach in the Vercel AI SDK is simpler but less flexible.
 
 ---
 
@@ -487,32 +249,7 @@ Reactive agents are simpler and work well when:
 - Each step's output heavily influences the next step
 - The task is short (fewer than 5 steps)
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-// Reactive agent — decides step by step
-const reactiveResult = await generateText({
-  model: mistral('mistral-small-latest'),
-  maxSteps: 6,
-  system: `You are a reactive research agent. At each step:
-1. Look at what you know so far
-2. Decide what single piece of information would be most useful next
-3. Use a tool to get that information
-4. Repeat until you can answer the question
-
-Do NOT plan ahead. Just take the best next step.`,
-  tools: {
-    search: {
-      description: 'Search for information',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }) => `Results for "${query}": [simulated result]`,
-    },
-  },
-  prompt: 'What caused the 2008 financial crisis?',
-})
-```
+A reactive agent is just the ReAct pattern from Section 2 — a system prompt that says "decide what to do next based on what you know so far" and `stopWhen: stepCountIs()`.
 
 ### Planning Agents
 
@@ -523,12 +260,11 @@ Planning agents create an explicit plan before executing. They work well when:
 - The task is complex (more than 5 steps)
 - Efficiency matters — a plan avoids redundant tool calls
 
-```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+A planning agent has three phases: **plan**, **execute**, **synthesize**.
 
-// Step 1: Generate a plan
+**Phase 1 — Plan:** Use `Output.object` with a plan schema to generate a structured plan before any tools run:
+
+```typescript
 const planSchema = z.object({
   goal: z.string().describe('The overall goal'),
   steps: z
@@ -543,94 +279,17 @@ const planSchema = z.object({
     )
     .describe('Ordered list of steps to execute'),
 })
-
-type Plan = z.infer<typeof planSchema>
-
-async function createPlan(task: string): Promise<Plan> {
-  const { output: plan } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: planSchema }),
-    prompt: `Create a research plan for the following task. Break it into concrete steps.
-Available tools: search (web search), getPage (fetch a URL), calculate (math).
-Task: ${task}`,
-  })
-  return plan
-}
-
-// Step 2: Execute the plan
-async function executePlan(plan: Plan): Promise<Map<number, string>> {
-  const results = new Map<number, string>()
-
-  for (const step of plan.steps) {
-    // Check dependencies are met
-    const depsReady = step.dependsOn.every(depId => results.has(depId))
-    if (!depsReady) {
-      console.warn(`Skipping step ${step.id}: dependencies not met`)
-      continue
-    }
-
-    console.log(`Executing step ${step.id}: ${step.description}`)
-
-    // Gather context from dependencies
-    const context = step.dependsOn.map(depId => `Step ${depId} result: ${results.get(depId)}`).join('\n')
-
-    // Execute with context
-    const response = await generateText({
-      model: mistral('mistral-small-latest'),
-      maxSteps: 2,
-      tools: {
-        search: {
-          description: 'Search the web',
-          parameters: z.object({ query: z.string() }),
-          execute: async ({ query }) => `Results for "${query}": [simulated search results]`,
-        },
-      },
-      prompt: `${context ? `Context from previous steps:\n${context}\n\n` : ''}Execute this step: ${step.description}\nQuery: ${step.query}`,
-    })
-
-    results.set(step.id, response.text)
-  }
-
-  return results
-}
-
-// Step 3: Synthesize final answer
-async function synthesize(task: string, plan: Plan, results: Map<number, string>): Promise<string> {
-  const stepResults = plan.steps
-    .map(s => `Step ${s.id} (${s.description}): ${results.get(s.id) || 'No result'}`)
-    .join('\n\n')
-
-  const response = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: `Original task: ${task}
-
-Research results:
-${stepResults}
-
-Synthesize these results into a comprehensive answer.`,
-  })
-
-  return response.text
-}
-
-// Run the planning agent
-async function planningAgent(task: string): Promise<string> {
-  console.log('=== Phase 1: Planning ===')
-  const plan = await createPlan(task)
-  console.log('Plan created:', JSON.stringify(plan, null, 2))
-
-  console.log('\n=== Phase 2: Execution ===')
-  const results = await executePlan(plan)
-
-  console.log('\n=== Phase 3: Synthesis ===')
-  const answer = await synthesize(task, plan, results)
-
-  return answer
-}
-
-const answer = await planningAgent('Compare the economic policies of the US and EU regarding AI regulation')
-console.log('\nFinal answer:', answer)
 ```
+
+Implement `createPlan(task: string): Promise<Plan>` that calls `generateText` with `Output.object({ schema: planSchema })` and a prompt listing the available tools.
+
+**Phase 2 — Execute:** Implement `executePlan(plan: Plan): Promise<Map<number, string>>` that iterates over plan steps in order. For each step, check that its dependencies are met (all `dependsOn` IDs have results). Gather context from dependency results. Call `generateText` with tools and `stopWhen: stepCountIs(2)` to execute the step. Store the result keyed by step ID.
+
+What should happen when a step's dependencies are not met? Should you skip it, error, or try to reorder?
+
+**Phase 3 — Synthesize:** Implement `synthesize(task: string, plan: Plan, results: Map<number, string>): Promise<string>` that formats all step results and asks the model to synthesize a comprehensive answer.
+
+Wire these together in a `planningAgent(task: string): Promise<string>` function.
 
 > **Advanced Note:** Hybrid approaches work well in practice. Start with a lightweight plan, execute reactively within each step, and revise the plan if new information invalidates it. This balances efficiency with flexibility.
 
@@ -649,116 +308,32 @@ When an agent has multiple tools available, the LLM must decide which one to use
 
 ### Writing Good Tool Descriptions
 
-Tool descriptions are prompts. They should be specific and include examples of when to use (and when not to use) the tool:
+Tool descriptions are prompts. They should be specific and include examples of when to use (and when not to use) the tool. Compare:
 
 ```typescript
-import { z } from 'zod'
+// BAD: Vague — "search for stuff" tells the model nothing about scope
+description: 'Search for stuff'
 
-// BAD: Vague descriptions lead to misuse
-const badTools = {
-  search: {
-    description: 'Search for stuff',
-    parameters: z.object({ q: z.string() }),
-    execute: async ({ q }: { q: string }) => `Results for ${q}`,
-  },
-}
-
-// GOOD: Specific descriptions with clear scope
-const goodTools = {
-  webSearch: {
-    description:
-      'Search the web for current information, news, or facts. Use this for questions about recent events, statistics, or when you need up-to-date data. Returns a list of relevant snippets. Do NOT use this for calculations or code execution.',
-    parameters: z.object({
-      query: z.string().describe('A specific search query. Be precise — use keywords rather than full sentences.'),
-      maxResults: z.number().optional().default(5).describe('Maximum number of results to return (1-10)'),
-    }),
-    execute: async ({ query, maxResults }: { query: string; maxResults?: number }) => {
-      return `Top ${maxResults ?? 5} results for "${query}": [results]`
-    },
-  },
-  calculator: {
-    description:
-      'Evaluate a mathematical expression. Use this for any arithmetic, percentages, unit conversions, or numerical comparisons. Input must be a valid JavaScript math expression. Do NOT use this for text processing.',
-    parameters: z.object({
-      expression: z
-        .string()
-        .describe('A valid JavaScript math expression, e.g., "1024 * 768", "Math.sqrt(144)", "(15/100) * 250"'),
-    }),
-    execute: async ({ expression }: { expression: string }) => {
-      if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-        return `Error: Invalid expression "${expression}"`
-      }
-      // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-      const result = Function(`"use strict"; return (${expression})`)()
-      return `${expression} = ${result}`
-    },
-  },
-  readFile: {
-    description:
-      'Read the contents of a file from the local filesystem. Use this when the user references a specific file or when you need to analyze file contents. Returns the full text content of the file.',
-    parameters: z.object({
-      path: z.string().describe("Absolute or relative file path, e.g., './data/report.csv'"),
-    }),
-    execute: async ({ path }: { path: string }) => {
-      return `Contents of ${path}: [file contents]`
-    },
-  },
-}
+// GOOD: Specific scope, clear boundaries, usage guidance
+description: 'Search the web for current information, news, or facts. Use this for questions about recent events, statistics, or when you need up-to-date data. Returns a list of relevant snippets. Do NOT use this for calculations or code execution.'
 ```
+
+Parameter descriptions matter too. Instead of `z.object({ q: z.string() })`, use:
+
+```typescript
+z.object({
+  query: z.string().describe('A specific search query. Be precise — use keywords rather than full sentences.'),
+  maxResults: z.number().optional().default(5).describe('Maximum number of results to return (1-10)'),
+})
+```
+
+Your task: define a tool set with three tools — `webSearch`, `calculator`, and `readFile`. For each, write a description that explains what the tool does, when to use it, what it returns, and when NOT to use it. Add descriptive parameter schemas with `.describe()` on every field.
 
 ### Tool Selection via System Prompt
 
-For complex tool sets, add explicit routing guidance in the system prompt:
+For complex tool sets, add explicit routing guidance in the system prompt. Create an agent that has `webSearch`, `database`, and `calculator` tools, with a system prompt containing a TOOL SELECTION GUIDE that maps question types to tools. Include rules like "try the most specific tool first" and "if a tool returns no results, try rephrasing before switching tools."
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-const toolRoutingAgent = await generateText({
-  model: mistral('mistral-small-latest'),
-  maxSteps: 5,
-  system: `You are an assistant with access to several tools. Choose the right tool for each task:
-
-TOOL SELECTION GUIDE:
-- webSearch: Use for factual questions, current events, statistics
-- database: Use for internal company data, user records, transaction history
-- calculator: Use for any math operations
-
-IMPORTANT:
-- Try the most specific tool first (database before webSearch for internal data)
-- If a tool returns no results, try rephrasing before switching tools
-- Never use untrusted input in calculations`,
-  tools: {
-    webSearch: {
-      description: 'Search the public web for information',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }) => `Web results for "${query}"`,
-    },
-    database: {
-      description: 'Query the internal database for company data',
-      parameters: z.object({
-        table: z.enum(['users', 'orders', 'products']),
-        filter: z.string().describe('SQL-like WHERE clause'),
-      }),
-      execute: async ({ table, filter }) => `Database results from ${table} where ${filter}`,
-    },
-    calculator: {
-      description: 'Evaluate a math expression',
-      parameters: z.object({ expression: z.string() }),
-      execute: async ({ expression }) => {
-        if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-          return `Error: Invalid expression "${expression}"`
-        }
-        // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-        const result = Function(`"use strict"; return (${expression})`)()
-        return `Result: ${result}`
-      },
-    },
-  },
-  prompt: 'How many orders did user 12345 place last month, and what was the average order value?',
-})
-```
+Test it with a question like "How many orders did user 12345 place last month, and what was the average order value?" — does the agent correctly choose `database` over `webSearch` for internal data?
 
 > **Beginner Note:** The model reads tool descriptions like a developer reads API documentation. The better your descriptions, the better the model's tool choices. Spend time on descriptions — they are the most important part of tool definitions.
 
@@ -780,11 +355,9 @@ This is fundamentally an agent behavior, not a retrieval technique — the agent
 
 ### Implementing Self-RAG
 
-```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a `shouldRetrieve` function that uses structured output to decide whether retrieval is needed:
 
+```typescript
 const RetrievalDecisionSchema = z.object({
   needsRetrieval: z.boolean().describe('Whether external knowledge is needed'),
   reason: z.string().describe('Why retrieval is or is not needed'),
@@ -794,26 +367,10 @@ const RetrievalDecisionSchema = z.object({
 async function shouldRetrieve(
   query: string,
   conversationContext: string
-): Promise<z.infer<typeof RetrievalDecisionSchema>> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: RetrievalDecisionSchema }),
-    system: `You are a retrieval decision maker. Given a user query and conversation context, decide whether external knowledge retrieval is needed.
-
-Retrieval is NOT needed for:
-- Simple math, logic, or common knowledge questions
-- Questions answerable from the conversation context
-- Greetings, clarifications, or meta-questions
-
-Retrieval IS needed for:
-- Domain-specific facts not in the conversation
-- Questions about specific documents, policies, or data
-- Anything requiring up-to-date or specialized information`,
-    prompt: `Context: ${conversationContext}\n\nQuery: ${query}`,
-  })
-  return output
-}
+): Promise<z.infer<typeof RetrievalDecisionSchema>>
 ```
+
+Use `Output.object({ schema: RetrievalDecisionSchema })` with a system prompt that distinguishes between queries that need retrieval (domain-specific facts, policies, specialized information) and those that do not (simple math, common knowledge, greetings, questions answerable from conversation context).
 
 ### Self-RAG in the Agent Loop
 
@@ -822,9 +379,9 @@ In practice, Self-RAG is a tool the agent can choose to invoke — the `search` 
 ```typescript
 // The agent has multiple tools including search
 const tools = {
-  search: { description: 'Search the knowledge base for relevant information', ... },
-  calculate: { description: 'Perform mathematical calculations', ... },
-  lookup_user: { description: 'Look up user account details', ... },
+  search: { description: 'Search the knowledge base for relevant information' /* ... */ },
+  calculate: { description: 'Perform mathematical calculations' /* ... */ },
+  lookup_user: { description: 'Look up user account details' /* ... */ },
 }
 
 // The ReAct loop handles tool selection — the agent decides whether
@@ -846,142 +403,37 @@ After a tool executes, its result becomes an "observation" that the agent uses f
 
 ### Structured Observations
 
-Return structured data from tools so the agent can easily extract what it needs:
+Tools should return structured JSON observations, not raw data dumps. A good observation includes the data itself, a count of results, and a human-readable note that helps the agent interpret what it received:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-const tools = {
-  searchProducts: {
-    description: 'Search for products in the catalog',
-    parameters: z.object({
-      query: z.string(),
-      category: z.string().optional(),
-      maxPrice: z.number().optional(),
-    }),
-    execute: async ({ query, category, maxPrice }: { query: string; category?: string; maxPrice?: number }) => {
-      // Simulated product search
-      const products = [
-        { name: 'Widget Pro', price: 29.99, rating: 4.5, inStock: true },
-        { name: 'Widget Basic', price: 14.99, rating: 4.0, inStock: true },
-        { name: 'Widget Ultra', price: 59.99, rating: 4.8, inStock: false },
-      ]
-
-      const filtered = products.filter(p => {
-        if (maxPrice && p.price > maxPrice) return false
-        return true
-      })
-
-      // Return structured observation — not just raw data
-      return JSON.stringify({
-        query,
-        totalResults: filtered.length,
-        results: filtered,
-        note:
-          filtered.length === 0
-            ? 'No products found. Try broadening your search.'
-            : `Found ${filtered.length} products matching "${query}".`,
-      })
-    },
-  },
-}
-
-const result = await generateText({
-  model: mistral('mistral-small-latest'),
-  maxSteps: 4,
-  system: `You are a shopping assistant. When you receive search results:
-1. Analyze the results for relevance to the user's needs
-2. Note any items that are out of stock
-3. Consider price-to-rating ratio when making recommendations
-4. If no results found, suggest alternative searches`,
-  tools,
-  prompt: 'I need a widget for under $40. What do you recommend?',
+return JSON.stringify({
+  query,
+  totalResults: filtered.length,
+  results: filtered,
+  note:
+    filtered.length === 0
+      ? 'No products found. Try broadening your search.'
+      : `Found ${filtered.length} products matching "${query}".`,
 })
-
-console.log(result.text)
 ```
+
+Build a `searchProducts` tool that accepts a query, optional category, and optional maxPrice. Filter a hardcoded product array and return a structured JSON observation with the fields shown above. Wire it into an agent with a system prompt that instructs the model to analyze results for relevance, note out-of-stock items, consider price-to-rating ratio, and suggest alternative searches if nothing is found.
 
 ### Observation Summarization
 
-When tool results are large, the agent may struggle with long context. Summarize observations before feeding them back:
+When tool results are large, the agent may struggle with long context. Summarize observations before feeding them back.
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a `fetchWebPage` tool whose `execute` function simulates fetching a large page, then calls `generateText` internally to summarize the content into 3-5 bullet points before returning the summary to the agent. Include the original content length and a note that full content was summarized.
 
-const toolsWithSummarization = {
-  fetchWebPage: {
-    description: 'Fetch and read a web page. Returns a summary of the content.',
-    parameters: z.object({
-      url: z.string().describe('URL to fetch'),
-    }),
-    execute: async ({ url }: { url: string }) => {
-      // Simulated large page content
-      const rawContent = `[Imagine 10,000 words of web page content from ${url}]`
-
-      // Summarize the content before returning to the agent
-      const summary = await generateText({
-        model: mistral('mistral-small-latest'),
-        prompt: `Summarize the following web page content in 3-5 bullet points.
-Focus on key facts and data points.
-
-Content: ${rawContent}`,
-      })
-
-      return JSON.stringify({
-        url,
-        summary: summary.text,
-        contentLength: rawContent.length,
-        note: 'Full content was summarized. Ask for specific details if needed.',
-      })
-    },
-  },
-}
-```
+What is the trade-off here? When would you lose important details by summarizing?
 
 > **Advanced Note:** Observation summarization introduces a trade-off: you use fewer tokens in the agent's context window, but you may lose details the agent needs later. A good strategy is to keep full observations for the most recent 2-3 steps and summarize older ones.
 
 ### Error Observations
 
-Tools fail. When they do, return useful error observations that help the agent recover:
+Tools fail. When they do, return useful error observations that help the agent recover. Instead of throwing an exception, catch errors inside the tool's `execute` function and return a JSON object with `success: false`, the error message, a `suggestion` field with recovery guidance, and the original parameters. This lets the agent decide whether to retry, use a different tool, or report the failure.
 
-```typescript
-import { z } from 'zod'
-
-const resilientTools = {
-  apiCall: {
-    description: 'Call an external API endpoint',
-    parameters: z.object({
-      endpoint: z.string(),
-      method: z.enum(['GET', 'POST']),
-    }),
-    execute: async ({ endpoint, method }: { endpoint: string; method: string }) => {
-      try {
-        // Simulated API call
-        if (endpoint.includes('broken')) {
-          throw new Error('Connection timeout after 5000ms')
-        }
-        return JSON.stringify({
-          success: true,
-          data: { result: 'API response data' },
-        })
-      } catch (error) {
-        // Return a helpful error observation instead of throwing
-        return JSON.stringify({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-          suggestion: 'The API may be down. Try again or use an alternative data source.',
-          endpoint,
-          method,
-        })
-      }
-    },
-  },
-}
-```
+Build an `apiCall` tool that demonstrates this pattern — simulate a failure when the endpoint contains the word "broken" and return a structured error observation.
 
 ---
 
@@ -999,11 +451,11 @@ An agent without proper termination conditions can run forever, wasting tokens a
 
 ### Implementing Termination Conditions
 
-```typescript
-import { generateText, type ModelMessage } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a `shouldTerminate` function and an agent loop that uses it.
 
+Define the state and config types:
+
+```typescript
 interface TerminationConfig {
   maxSteps: number
   maxConsecutiveErrors: number
@@ -1019,143 +471,31 @@ interface AgentState {
   messages: ModelMessage[]
 }
 
-function shouldTerminate(state: AgentState, config: TerminationConfig): { terminate: boolean; reason: string } {
-  // 1. Max steps
-  if (state.step >= config.maxSteps) {
-    return {
-      terminate: true,
-      reason: `Max steps reached (${config.maxSteps})`,
-    }
-  }
-
-  // 2. Too many consecutive errors
-  if (state.consecutiveErrors >= config.maxConsecutiveErrors) {
-    return {
-      terminate: true,
-      reason: `Too many consecutive errors (${state.consecutiveErrors})`,
-    }
-  }
-
-  // 3. Stuck detection — same action repeated
-  if (state.actionHistory.length >= config.maxRepeatedActions) {
-    const recent = state.actionHistory.slice(-config.maxRepeatedActions)
-    const allSame = recent.every(a => a === recent[0])
-    if (allSame) {
-      return {
-        terminate: true,
-        reason: `Agent stuck: repeated "${recent[0]}" ${config.maxRepeatedActions} times`,
-      }
-    }
-  }
-
-  // 4. Token budget
-  if (state.totalTokens >= config.maxTokens) {
-    return {
-      terminate: true,
-      reason: `Token budget exhausted (${state.totalTokens}/${config.maxTokens})`,
-    }
-  }
-
-  return { terminate: false, reason: '' }
-}
-
-async function runAgentWithTermination(
-  task: string,
-  tools: Record<string, any>,
-  config: TerminationConfig
-): Promise<{ answer: string; reason: string; steps: number }> {
-  const state: AgentState = {
-    step: 0,
-    consecutiveErrors: 0,
-    actionHistory: [],
-    totalTokens: 0,
-    messages: [{ role: 'user', content: task }],
-  }
-
-  while (true) {
-    // Check termination before each step
-    const check = shouldTerminate(state, config)
-    if (check.terminate) {
-      return {
-        answer: 'Agent terminated early: ' + check.reason,
-        reason: check.reason,
-        steps: state.step,
-      }
-    }
-
-    const response = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'You are a helpful research agent. Use tools to gather information.',
-      messages: state.messages,
-      tools,
-      maxSteps: 1,
-    })
-
-    state.step++
-
-    // Track tokens
-    state.totalTokens += (response.usage?.inputTokens ?? 0) + (response.usage?.outputTokens ?? 0)
-
-    // Track actions for stuck detection
-    const toolNames = response.steps.flatMap(s => s.toolCalls.map(tc => `${tc.toolName}(${JSON.stringify(tc.args)})`))
-
-    if (toolNames.length > 0) {
-      state.actionHistory.push(...toolNames)
-    }
-
-    // Track errors
-    const hasError = response.steps.some(s => s.toolResults.some(tr => String(tr.result).includes('"success":false')))
-    if (hasError) {
-      state.consecutiveErrors++
-    } else {
-      state.consecutiveErrors = 0
-    }
-
-    // Add messages to conversation
-    for (const msg of response.response.messages) {
-      state.messages.push(msg)
-    }
-
-    // Check if agent finished naturally (no tool calls)
-    const lastStep = response.steps[response.steps.length - 1]
-    if (lastStep && lastStep.toolCalls.length === 0) {
-      return {
-        answer: response.text,
-        reason: 'Goal achieved',
-        steps: state.step,
-      }
-    }
-  }
-}
-
-// Usage
-const result = await runAgentWithTermination(
-  'What is the GDP of France?',
-  {
-    search: {
-      description: 'Search for information',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }: { query: string }) =>
-        JSON.stringify({
-          success: true,
-          data: `GDP of France: $3.05 trillion (2024)`,
-        }),
-    },
-  },
-  {
-    maxSteps: 10,
-    maxConsecutiveErrors: 3,
-    maxRepeatedActions: 3,
-    maxTokens: 50000,
-  }
-)
-
-console.log(`Answer: ${result.answer}`)
-console.log(`Terminated because: ${result.reason}`)
-console.log(`Steps taken: ${result.steps.length}`)
+function shouldTerminate(state: AgentState, config: TerminationConfig): { terminate: boolean; reason: string }
 ```
 
-> **Beginner Note:** Always set a `maxSteps` limit, even during development. An agent without a step limit can run up a significant API bill very quickly. Start with 5-10 steps and increase only if needed.
+Implement four checks inside `shouldTerminate`:
+
+1. **Max steps** — if `state.step >= config.maxSteps`, terminate
+2. **Consecutive errors** — if `state.consecutiveErrors >= config.maxConsecutiveErrors`, terminate
+3. **Stuck detection** — take the last `config.maxRepeatedActions` entries from `state.actionHistory`. If they are all identical, the agent is stuck
+4. **Token budget** — if `state.totalTokens >= config.maxTokens`, terminate
+
+Return `{ terminate: false, reason: '' }` if none triggered.
+
+Then build `runAgentWithTermination` that uses this function. It should be a `while (true)` loop that:
+
+1. Calls `shouldTerminate` before each step
+2. Calls `generateText` with `stopWhen: stepCountIs(1)`
+3. Tracks tokens via `response.usage.inputTokens + response.usage.outputTokens`
+4. Tracks actions by stringifying tool calls (name + args) and pushing to `actionHistory`
+5. Tracks errors by checking if any tool result contains `'"success":false'`
+6. Resets `consecutiveErrors` to 0 on successful steps
+7. Checks if the agent finished naturally (last step has no tool calls)
+
+How would you detect that an agent is alternating between two different tool calls without making progress, rather than repeating the exact same call?
+
+> **Beginner Note:** Always set a step limit via `stopWhen: stepCountIs()`, even during development. An agent without a step limit can run up a significant API bill very quickly. Start with 5-10 steps and increase only if needed.
 
 > **Advanced Note:** Stuck detection is more nuanced than checking for identical actions. A sophisticated agent might call the same tool with different parameters (which is fine) or alternate between two tools without making progress (which is not). Consider tracking the information gained at each step, not just the tools called.
 
@@ -1179,75 +519,40 @@ import { z } from 'zod'
 interface MemoryManager {
   messages: ModelMessage[]
   maxMessages: number
-  summaryInterval: number
 }
 
-function createMemoryManager(maxMessages: number = 50, summaryInterval: number = 10): MemoryManager {
-  return {
-    messages: [],
-    maxMessages,
-    summaryInterval,
-  }
+function createMemoryManager(maxMessages: number = 50): MemoryManager {
+  /* ... */
 }
 
 async function addToMemory(memory: MemoryManager, newMessages: ModelMessage[]): Promise<void> {
-  memory.messages.push(...newMessages)
-
-  // If we have too many messages, summarize older ones
-  if (memory.messages.length > memory.maxMessages) {
-    await compactMemory(memory)
-  }
+  /* ... */
 }
 
 async function compactMemory(memory: MemoryManager): Promise<void> {
-  // Keep the first message (original task) and recent messages
-  const keepRecent = Math.floor(memory.maxMessages / 2)
-  const originalTask = memory.messages[0]
-  const oldMessages = memory.messages.slice(1, -keepRecent)
-  const recentMessages = memory.messages.slice(-keepRecent)
-
-  // Summarize old messages
-  const oldContent = oldMessages
-    .map(m => {
-      if (typeof m.content === 'string') return `${m.role}: ${m.content}`
-      return `${m.role}: [complex content]`
-    })
-    .join('\n')
-
-  const summaryResponse = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: `Summarize the following agent conversation history. Focus on:
-- Key findings and facts discovered
-- Tools used and their results
-- Decisions made and their reasoning
-Keep it concise but preserve all important information.
-
-Conversation:
-${oldContent}`,
-  })
-
-  // Replace old messages with summary
-  memory.messages = [
-    originalTask,
-    {
-      role: 'user' as const,
-      content: `[Summary of previous steps: ${summaryResponse.text}]`,
-    },
-    ...recentMessages,
-  ]
+  /* ... */
 }
 
 function getMessages(memory: MemoryManager): ModelMessage[] {
-  return [...memory.messages]
+  /* ... */
 }
 ```
+
+Build these four functions:
+
+- `createMemoryManager` — returns a new `MemoryManager` with an empty messages array and the given `maxMessages` limit.
+- `addToMemory` — pushes new messages onto the array and calls `compactMemory` if the length exceeds `maxMessages`.
+- `compactMemory` — keeps the first message (original task) and the most recent half of messages. Summarizes the older messages using `generateText` with a prompt that focuses on key findings, tool results, and decisions. Replaces the old messages with a single summary message.
+- `getMessages` — returns a copy of the messages array.
+
+Why keep the first message (original task) during compaction? What would happen if you summarized it away?
 
 ### Working Memory: Key-Value Store
 
 For agents that need to track specific facts across many steps, use a structured working memory:
 
 ```typescript
-import { generateText } from 'ai'
+import { generateText, stepCountIs } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
@@ -1260,108 +565,25 @@ interface WorkingMemory {
 }
 
 function createWorkingMemory(goal: string): WorkingMemory {
-  return {
-    facts: new Map(),
-    scratchpad: [],
-    currentGoal: goal,
-    subGoals: [],
-    completedGoals: [],
-  }
+  /* ... */
 }
 
 function memoryToPrompt(memory: WorkingMemory): string {
-  const factsStr =
-    memory.facts.size > 0
-      ? Array.from(memory.facts.entries())
-          .map(([k, v]) => `  - ${k}: ${v}`)
-          .join('\n')
-      : '  (none yet)'
-
-  const scratchpadStr =
-    memory.scratchpad.length > 0 ? memory.scratchpad.map(note => `  - ${note}`).join('\n') : '  (empty)'
-
-  return `## Working Memory
-
-### Current Goal
-${memory.currentGoal}
-
-### Known Facts
-${factsStr}
-
-### Scratchpad (notes to self)
-${scratchpadStr}
-
-### Completed Sub-goals
-${memory.completedGoals.map(g => `  - [x] ${g}`).join('\n') || '  (none)'}
-
-### Remaining Sub-goals
-${memory.subGoals.map(g => `  - [ ] ${g}`).join('\n') || '  (none)'}`
+  /* ... */
 }
 
-// Agent with working memory
 async function agentWithMemory(task: string): Promise<string> {
-  const memory = createWorkingMemory(task)
-
-  const tools = {
-    search: {
-      description: 'Search for information',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }: { query: string }) => `Results for "${query}": [simulated results]`,
-    },
-    addFact: {
-      description: 'Store a key fact in working memory for later reference',
-      parameters: z.object({
-        key: z.string().describe('Short label for the fact'),
-        value: z.string().describe('The fact itself'),
-      }),
-      execute: async ({ key, value }: { key: string; value: string }) => {
-        memory.facts.set(key, value)
-        return `Fact stored: ${key} = ${value}`
-      },
-    },
-    addNote: {
-      description: 'Add a note to the scratchpad for planning',
-      parameters: z.object({
-        note: z.string().describe('A note about your reasoning or plan'),
-      }),
-      execute: async ({ note }: { note: string }) => {
-        memory.scratchpad.push(note)
-        return `Note added: ${note}`
-      },
-    },
-    completeGoal: {
-      description: 'Mark a sub-goal as completed',
-      parameters: z.object({
-        goal: z.string().describe('The sub-goal that was completed'),
-      }),
-      execute: async ({ goal }: { goal: string }) => {
-        memory.completedGoals.push(goal)
-        memory.subGoals = memory.subGoals.filter(g => g !== goal)
-        return `Goal completed: ${goal}`
-      },
-    },
-  }
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    maxSteps: 10,
-    system: `You are a research agent with working memory. Your working memory is shown below.
-Use the memory tools (addFact, addNote, completeGoal) to organize your knowledge.
-Use the search tool to find information.
-
-${memoryToPrompt(memory)}
-
-Work methodically: search, store facts, track progress, then synthesize your final answer.`,
-    tools,
-    prompt: task,
-  })
-
-  return result.text
+  /* ... */
 }
-
-const answer = await agentWithMemory('Compare the populations and GDP of Germany, France, and Italy')
-console.log(answer)
 ```
+
+Build these three functions:
+
+- `createWorkingMemory` — initializes the `WorkingMemory` with empty maps/arrays and the given goal.
+- `memoryToPrompt` — converts the memory state into a formatted markdown string showing the current goal, known facts (from the `Map`), scratchpad notes, completed sub-goals, and remaining sub-goals. Use checkbox formatting (`[x]` and `[ ]`) for goals.
+- `agentWithMemory` — creates working memory, defines four tools (`search`, `addFact`, `addNote`, `completeGoal`) that read and modify the memory state, then calls `generateText` with `stopWhen: stepCountIs(10)`. The system prompt should include the formatted working memory via `memoryToPrompt`. Each memory tool's `execute` function should mutate the memory and return a confirmation string.
+
+Why does injecting the working memory into the system prompt (rather than just keeping it in tool results) help the agent stay organized?
 
 > **Beginner Note:** Working memory tools (addFact, addNote) are a way to help the agent organize information across many steps. Without them, the agent must rely on the full conversation history which can be noisy and hard to parse.
 
@@ -1382,7 +604,7 @@ Agents are non-deterministic and multi-step. A bug might be:
 ### Building a Debug Tracer
 
 ```typescript
-import { generateText, type ModelMessage } from 'ai'
+import { generateText, stepCountIs, type ModelMessage } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
@@ -1396,133 +618,34 @@ interface TraceEntry {
 
 class AgentTracer {
   private traces: TraceEntry[] = []
-  private startTime: number
-
-  constructor() {
-    this.startTime = Date.now()
-  }
+  private startTime: number = Date.now()
 
   log(stepNumber: number, type: TraceEntry['type'], content: string, metadata?: Record<string, unknown>): void {
-    const entry: TraceEntry = {
-      timestamp: Date.now() - this.startTime,
-      stepNumber,
-      type,
-      content,
-      metadata,
-    }
-    this.traces.push(entry)
-
-    // Real-time console output
-    const icon =
-      type === 'thought'
-        ? '[THINK]'
-        : type === 'action'
-          ? '[ACT]  '
-          : type === 'observation'
-            ? '[OBS]  '
-            : type === 'error'
-              ? '[ERR]  '
-              : '[END]  '
-    console.log(`${icon} Step ${stepNumber} (+${entry.timestamp}ms): ${content.slice(0, 200)}`)
+    /* ... */
   }
 
   getTraces(): TraceEntry[] {
-    return [...this.traces]
+    /* ... */
   }
 
   printSummary(): void {
-    console.log('\n========== Agent Trace Summary ==========')
-    console.log(`Total steps: ${new Set(this.traces.map(t => t.stepNumber)).size}`)
-    console.log(`Total time: ${this.traces[this.traces.length - 1]?.timestamp ?? 0}ms`)
-    console.log(`Actions taken: ${this.traces.filter(t => t.type === 'action').length}`)
-    console.log(`Errors: ${this.traces.filter(t => t.type === 'error').length}`)
-
-    // Tool usage breakdown
-    const toolCounts = new Map<string, number>()
-    for (const trace of this.traces.filter(t => t.type === 'action')) {
-      const tool = (trace.metadata?.toolName as string) || 'unknown'
-      toolCounts.set(tool, (toolCounts.get(tool) || 0) + 1)
-    }
-    console.log('\nTool usage:')
-    for (const [tool, count] of toolCounts) {
-      console.log(`  ${tool}: ${count} calls`)
-    }
-    console.log('==========================================')
+    /* ... */
   }
 }
 
-// Agent with tracing
 async function tracedAgent(task: string): Promise<string> {
-  const tracer = new AgentTracer()
-  const messages: ModelMessage[] = [{ role: 'user', content: task }]
-  const maxSteps = 8
-
-  const tools = {
-    search: {
-      description: 'Search for information',
-      parameters: z.object({ query: z.string() }),
-      execute: async ({ query }: { query: string }) => {
-        // Simulate occasional failures for demonstration
-        if (query.includes('fail')) {
-          throw new Error('Search service unavailable')
-        }
-        return `Results for "${query}": [simulated results]`
-      },
-    },
-  }
-
-  for (let step = 0; step < maxSteps; step++) {
-    try {
-      const response = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: 'You are a research agent. Search for information, then answer.',
-        messages,
-        tools,
-        maxSteps: 1,
-      })
-
-      // Log thoughts
-      if (response.text) {
-        tracer.log(step + 1, 'thought', response.text)
-      }
-
-      // Log actions and observations
-      for (const s of response.steps) {
-        for (const tc of s.toolCalls) {
-          tracer.log(step + 1, 'action', `${tc.toolName}(${JSON.stringify(tc.args)})`, {
-            toolName: tc.toolName,
-            args: tc.args,
-          })
-        }
-        for (const tr of s.toolResults) {
-          tracer.log(step + 1, 'observation', String(tr.result).slice(0, 500))
-        }
-      }
-
-      // Add messages
-      for (const msg of response.response.messages) {
-        messages.push(msg)
-      }
-
-      // Check if done
-      const lastStep = response.steps[response.steps.length - 1]
-      if (lastStep && lastStep.toolCalls.length === 0) {
-        tracer.log(step + 1, 'termination', 'Agent finished naturally')
-        tracer.printSummary()
-        return response.text
-      }
-    } catch (error) {
-      tracer.log(step + 1, 'error', error instanceof Error ? error.message : 'Unknown error')
-    }
-  }
-
-  tracer.log(maxSteps, 'termination', 'Max steps reached')
-  tracer.printSummary()
-  return 'Agent did not finish within step limit.'
+  /* ... */
 }
-
-await tracedAgent('Research the history of TypeScript')
 ```
+
+Build the `AgentTracer` class and `tracedAgent` function:
+
+- `AgentTracer.log` — creates a `TraceEntry` with a relative timestamp (`Date.now() - startTime`), pushes it to the traces array, and prints a real-time console line with a type-specific prefix (`[THINK]`, `[ACT]`, `[OBS]`, `[ERR]`, `[END]`).
+- `AgentTracer.getTraces` — returns a copy of the traces array.
+- `AgentTracer.printSummary` — prints a summary showing total steps (unique step numbers), total elapsed time, action count, error count, and a tool usage breakdown (count per tool name from action entries' metadata).
+- `tracedAgent` — creates a tracer, runs a manual agent loop (up to N steps), calling `generateText` with `stopWhen: stepCountIs(1)` per iteration. After each response, log thoughts (from `response.text`), actions (from `toolCalls`), and observations (from `toolResults`). Append response messages to the conversation. If the last step has no tool calls, the agent is done. Handle errors with `try/catch` and log them.
+
+What information does the trace summary give you that raw logs do not? How would you use tool usage counts to diagnose a stuck agent?
 
 ### Common Agent Failures and Fixes
 
@@ -1532,10 +655,185 @@ await tracedAgent('Research the history of TypeScript')
 | Agent never uses tools                          | Tool descriptions do not match the task      | Rewrite descriptions to match the agent's goal                                         |
 | Agent uses wrong tool                           | Descriptions are ambiguous                   | Add "Use this when..." and "Do NOT use this for..." to descriptions                    |
 | Agent runs all steps without answering          | No clear termination signal in system prompt | Add "When you have enough information, respond with your answer without calling tools" |
-| Agent gives shallow answers                     | Not enough steps allowed                     | Increase `maxSteps` and encourage thorough research                                    |
+| Agent gives shallow answers                     | Not enough steps allowed                     | Increase step count in `stepCountIs()` and encourage thorough research                 |
 | Agent hallucinates despite having tools         | Model not using tools for factual claims     | Add "Always verify claims using tools" to system prompt                                |
 
 > **Advanced Note:** For production agents, ship traces to an observability platform (Langfuse, LangSmith, or a custom solution). Console logging is fine for development but you need persistent, searchable traces for production debugging.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 11: Production Termination Conditions
+
+### Beyond Max Steps
+
+Section 8 introduced basic termination conditions: max steps and goal detection. Production agents need additional safeguards to handle real-world failure modes.
+
+A production `shouldTerminate` function checks multiple conditions on every iteration:
+
+1. **Token budget exhaustion** — track cumulative input + output tokens across steps. When the running total approaches the model's context window (or your cost budget), stop gracefully
+2. **Abort signal** — respect an `AbortController` signal so users (or parent systems) can cancel a running agent
+3. **Error threshold** — if the agent encounters N consecutive errors (tool failures, parse errors, API errors), stop rather than burning through remaining steps
+4. **Stuck detection** — if the agent makes the same tool call with the same arguments K times in a row, it is looping. Force termination
+
+```typescript
+interface TerminationState {
+  step: number
+  maxSteps: number
+  totalTokens: number
+  tokenBudget: number
+  consecutiveErrors: number
+  errorThreshold: number
+  recentToolCalls: string[] // JSON-stringified tool calls for duplicate detection
+  abortSignal?: AbortSignal
+}
+
+function shouldTerminate(state: TerminationState): { terminate: boolean; reason: string } {
+  // Check each condition and return the first that triggers
+}
+```
+
+The function returns both a boolean and a reason string so the agent can include the termination reason in its final response. "I stopped because I used 90% of the token budget" is more useful than silently cutting off.
+
+> **Beginner Note:** Start with max steps and stuck detection — these catch the most common runaway scenarios. Add budget and abort signal when you move to production.
+
+> **Advanced Note:** Different termination conditions warrant different behaviors. Budget exhaustion should trigger a summary of progress so far. Abort signals should clean up immediately. Error thresholds should log diagnostics. Stuck detection should try a different approach before giving up.
+
+---
+
+## Section 12: Tool Orchestration
+
+### Parallel and Sequential Execution
+
+When the model returns multiple tool calls in a single response, the orchestrator decides how to execute them. The two strategies are:
+
+- **Sequential** — execute one at a time, in order. Simpler, easier to debug, and necessary when tools have side effects that depend on each other
+- **Parallel** — execute all at once with `Promise.all`. Faster when tools are independent (e.g., searching three different sources simultaneously)
+
+The model decides _which_ tools to call. The orchestrator decides _how_ to run them.
+
+```typescript
+// Parallel execution with per-tool error handling
+const results = await Promise.allSettled(toolCalls.map(call => executeTool(call.name, call.args)))
+```
+
+Per-tool error handling is critical. If the agent calls three tools and one fails, you do not want to abort the entire turn. Use `Promise.allSettled` instead of `Promise.all` — it returns results for all calls, marking failures individually. Feed both successes and failures back to the model so it can decide how to proceed.
+
+Format tool results consistently. Each result should include the tool name, whether it succeeded, and either the result or the error message. This gives the model enough information to retry a failed tool or work around it.
+
+> **Advanced Note:** Some production systems implement a dependency graph for tool calls. If tool B depends on tool A's output, run A first, then B. Independent tools run in parallel. This requires analyzing the tool call arguments to detect dependencies — a useful optimization for agents that make many tool calls per turn.
+
+---
+
+## Section 13: Extended Thinking
+
+### Making the Think Phase Explicit
+
+The ReAct pattern's "think" phase is typically implicit — the model reasons in its output text before deciding on an action. Modern models support **extended thinking**, where the model explicitly allocates tokens to internal reasoning before producing its response.
+
+Extended thinking is the literal implementation of ReAct's think phase. The model spends thinking tokens on:
+
+- Analyzing the current state and available information
+- Evaluating which tool to call and why
+- Planning multi-step strategies
+- Reconsidering previous assumptions
+
+```typescript
+const result = await generateText({
+  model: anthropic('claude-sonnet-4'),
+  stopWhen: stepCountIs(10),
+  tools: agentTools,
+  providerOptions: {
+    anthropic: { thinking: { type: 'enabled', budgetTokens: 5000 } },
+  },
+  prompt: taskPrompt,
+})
+```
+
+Thinking tokens are separate from output tokens and are not visible in the final response (unless you stream them for transparency). The trade-off is cost: thinking tokens count toward your bill. Enable extended thinking for complex tasks where decision quality matters (multi-step planning, ambiguous tool selection) and disable it for simple tasks where the overhead is not justified.
+
+> **Beginner Note:** Not all providers support extended thinking. Anthropic's Claude models support it via `providerOptions`. For Ollama models like Qwen3, thinking mode is the default — disable it via the model constructor: `ollama('qwen3.5', { think: false })` when you want faster, cheaper responses.
+
+---
+
+## Section 14: Plan and Build Agent Modes
+
+### Same Agent, Different Constraints
+
+Production agents often support multiple behavioral modes using the same underlying architecture. The two most common modes are:
+
+- **Plan mode** — read-only. The agent can read files, search code, and analyze, but cannot modify anything. Used for exploration, architecture decisions, and impact analysis
+- **Build mode** — full access. The agent can create, edit, and delete files. Used for implementation
+
+The implementation is straightforward: same model, same conversation history, but the available tool set changes based on the current mode.
+
+```typescript
+const planTools = { read: readFileTool, search: searchTool, glob: globTool }
+const buildTools = { ...planTools, write: writeFileTool, edit: editFileTool, delete: deleteTool }
+
+const tools = mode === 'plan' ? planTools : buildTools
+```
+
+This demonstrates an important principle: **behavioral constraints come from tool selection, not model changes**. The agent's "personality" changes because it literally cannot perform write operations in plan mode. No prompt engineering needed — the constraint is structural.
+
+The user toggles between modes explicitly. The system prompt can also vary by mode — plan mode might emphasize thorough analysis while build mode emphasizes incremental, testable changes.
+
+---
+
+## Section 15: Max Steps Configuration and Hidden System Agents
+
+### Per-Agent-Type Step Limits
+
+Different agent types need different step limits based on expected task complexity. A primary agent handling an open-ended task might need 200 steps, while a focused subagent performing a single search should finish in 20.
+
+```typescript
+const AGENT_STEP_LIMITS: Record<string, number> = {
+  primary: 200,
+  researcher: 50,
+  reviewer: 20,
+  compactor: 10,
+}
+```
+
+Configure step limits per agent type rather than using a single global value. This prevents lightweight agents from running too long and expensive agents from being cut short.
+
+### Hidden System Agents
+
+Not all agents serve the user directly. Some agents run invisibly to maintain the system itself:
+
+- **Compaction agent** — triggers when the context window is 80% full, summarizes the conversation to free space
+- **Titling agent** — generates a descriptive title for the conversation after the first few exchanges
+- **Summarization agent** — extracts key decisions and action items periodically
+
+These agents run with their own context and tools, and their results are silently integrated. The user never sees them, but the system relies on them. The key architectural insight: agent infrastructure includes agents that maintain the infrastructure.
+
+> **Advanced Note:** Hidden agents are a form of "system housekeeping." They should be lightweight (low max steps, small models), run asynchronously when possible, and fail silently — a titling agent failure should never block the main conversation.
+
+---
+
+## Section 16: Enhanced Debugging with Trace Logging
+
+### Production Trace Logging
+
+Production agents log every step of the agent loop as structured trace events. A trace logger captures the full reasoning chain — tool calls, arguments, results, decisions, timing, and token usage — in a format that can be searched, filtered, and replayed.
+
+```typescript
+interface TraceEvent {
+  step: number
+  timestamp: number
+  type: 'tool_call' | 'tool_result' | 'thinking' | 'response' | 'error' | 'termination'
+  data: Record<string, unknown>
+  durationMs: number
+  tokenUsage?: { input: number; output: number }
+}
+```
+
+The trace logger wraps the agent loop. Before each tool call, it records the call details. After each result, it records the outcome and duration. On errors, it captures the full error context. On termination, it records the reason.
+
+The trace output enables post-hoc debugging: "The agent failed at step 7 because the search tool returned an empty result, and the agent did not retry with a different query." Without traces, you would only see the final failure with no insight into why.
+
+Store traces alongside the conversation. In development, print them to console. In production, ship them to an observability platform where you can query across conversations: "Show me all agent runs where stuck detection triggered in the last 24 hours."
 
 ---
 
@@ -1573,7 +871,7 @@ An agent keeps calling the `searchWeb` tool with the same query "TypeScript hist
 
 - A) The model's temperature is too high
 - B) The tool results are not being correctly added back to the conversation messages
-- C) The `maxSteps` value is too low
+- C) The step limit is too low
 - D) The model does not support tool use
 
 **Answer: B** — When tool results are not fed back into the conversation, the model has no memory of having already called the tool. It sees the same context every time and makes the same decision. This is the most common agent bug. The fix is to ensure `response.response.messages` are appended to the messages array after each step.
@@ -1603,6 +901,36 @@ What is the primary risk of using conversation history as the agent's only form 
 - D) The conversation history uses too much disk space
 
 **Answer: B** — As an agent takes more steps, the conversation history grows. Once it exceeds the context window, earlier messages are truncated, and the agent loses access to information from early steps. This is why memory management strategies like summarization and working memory are important for long-running agents. Cross-session persistence (A) is a separate concern. Multi-agent access (C) is addressed in Module 15.
+
+---
+
+### Question 6 (Medium)
+
+An agent has a token budget of 100,000 tokens. After 5 steps, it has consumed 85,000 tokens. The `shouldTerminate` function detects this. Why is it better to terminate gracefully with a progress summary than to let the agent continue until it hits an API error?
+
+a) API errors are always unrecoverable
+b) Graceful termination lets the agent summarize what it accomplished so far, giving the user actionable partial results instead of a cryptic error message with no context about progress made
+c) Token budgets are always exactly correct
+d) The agent cannot make any more tool calls after 85,000 tokens
+
+**Answer: B**
+
+**Explanation:** When an agent hits the context window limit mid-step, the API returns an error and the user gets no useful output — just a failure. Graceful termination at 85% budget usage gives the agent one final step to summarize its findings, report what is still incomplete, and suggest next steps. The user gets partial but useful results instead of nothing. This is especially important for long-running research or analysis tasks where significant work has already been done.
+
+---
+
+### Question 7 (Hard)
+
+A production agent system uses plan mode (read-only tools) and build mode (full tool access). Why is restricting capabilities through tool selection more reliable than restricting through prompt instructions alone?
+
+a) Prompts are ignored by all models
+b) Tool selection is a structural constraint — the agent literally cannot call a tool that is not in its tool set, regardless of what the prompt says. Prompt-based restrictions depend on the model following instructions, which is probabilistic and can fail under adversarial or edge-case inputs
+c) Tool selection uses fewer tokens than prompt instructions
+d) Plan mode agents do not need system prompts
+
+**Answer: B**
+
+**Explanation:** A prompt saying "do not modify files" is a suggestion the model usually follows but occasionally ignores, especially under complex reasoning chains or adversarial inputs. Removing the write tool from the tool set is a hard constraint — the model cannot write files because the tool does not exist in its context. Structural constraints are deterministic and cannot be bypassed. This is a general principle: use structural constraints for safety-critical behavior and prompt instructions for behavioral preferences.
 
 ---
 
@@ -1803,7 +1131,251 @@ describe('Exercise 14: Memory Agent', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** ReAct agents work with `ollama('qwen3.5')`, which supports tool calling. The agent loop, observation-action cycles, and `maxSteps` are provider-agnostic. Local agents are slower but fully private. For complex reasoning tasks, consider `ollama('qwen3.5:cloud')` or `ollama('deepseek-r1')` for better planning capabilities.
+---
+
+### Exercise 3: Production Termination Conditions
+
+**Objective:** Build a `shouldTerminate` function that checks multiple termination conditions and a wrapper that integrates it into an agent loop.
+
+**Specification:**
+
+1. Create a file `src/exercises/m14/ex03-termination.ts`
+2. Export a function `shouldTerminate(state: TerminationState): TerminationResult`
+3. Define the types:
+
+```typescript
+interface TerminationState {
+  step: number
+  maxSteps: number
+  totalTokens: number
+  tokenBudget: number
+  consecutiveErrors: number
+  errorThreshold: number
+  recentToolCalls: string[] // JSON-stringified recent tool calls for duplicate detection
+  stuckThreshold: number // How many identical calls in a row means "stuck"
+  abortSignal?: AbortSignal
+}
+
+interface TerminationResult {
+  terminate: boolean
+  reason: string // e.g., "max_steps", "token_budget", "error_threshold", "stuck", "aborted", "none"
+}
+```
+
+4. Implement checks in this priority order:
+   - **Abort signal** — if `abortSignal?.aborted` is true, terminate immediately
+   - **Max steps** — if `step >= maxSteps`
+   - **Token budget** — if `totalTokens >= tokenBudget * 0.9` (90% threshold to leave room for a final response)
+   - **Error threshold** — if `consecutiveErrors >= errorThreshold`
+   - **Stuck detection** — if the last `stuckThreshold` entries in `recentToolCalls` are identical
+
+5. Export an `agentWithTermination` function that runs an agent loop using `shouldTerminate` at each step
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m14/ex03-termination.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 14: Production Termination', () => {
+  it('should not terminate when all conditions are healthy', () => {
+    const result = shouldTerminate({
+      step: 3,
+      maxSteps: 10,
+      totalTokens: 1000,
+      tokenBudget: 50000,
+      consecutiveErrors: 0,
+      errorThreshold: 3,
+      recentToolCalls: [],
+      stuckThreshold: 3,
+    })
+    expect(result.terminate).toBe(false)
+  })
+
+  it('should terminate on max steps', () => {
+    const result = shouldTerminate({
+      step: 10,
+      maxSteps: 10,
+      totalTokens: 1000,
+      tokenBudget: 50000,
+      consecutiveErrors: 0,
+      errorThreshold: 3,
+      recentToolCalls: [],
+      stuckThreshold: 3,
+    })
+    expect(result.terminate).toBe(true)
+    expect(result.reason).toBe('max_steps')
+  })
+
+  it('should terminate on token budget exhaustion', () => {
+    const result = shouldTerminate({
+      step: 3,
+      maxSteps: 10,
+      totalTokens: 46000,
+      tokenBudget: 50000,
+      consecutiveErrors: 0,
+      errorThreshold: 3,
+      recentToolCalls: [],
+      stuckThreshold: 3,
+    })
+    expect(result.terminate).toBe(true)
+    expect(result.reason).toBe('token_budget')
+  })
+
+  it('should terminate on consecutive errors', () => {
+    const result = shouldTerminate({
+      step: 3,
+      maxSteps: 10,
+      totalTokens: 1000,
+      tokenBudget: 50000,
+      consecutiveErrors: 3,
+      errorThreshold: 3,
+      recentToolCalls: [],
+      stuckThreshold: 3,
+    })
+    expect(result.terminate).toBe(true)
+    expect(result.reason).toBe('error_threshold')
+  })
+
+  it('should detect stuck agent', () => {
+    const sameCall = JSON.stringify({ tool: 'search', args: { query: 'test' } })
+    const result = shouldTerminate({
+      step: 5,
+      maxSteps: 10,
+      totalTokens: 1000,
+      tokenBudget: 50000,
+      consecutiveErrors: 0,
+      errorThreshold: 3,
+      recentToolCalls: [sameCall, sameCall, sameCall],
+      stuckThreshold: 3,
+    })
+    expect(result.terminate).toBe(true)
+    expect(result.reason).toBe('stuck')
+  })
+
+  it('should terminate on abort signal', () => {
+    const controller = new AbortController()
+    controller.abort()
+    const result = shouldTerminate({
+      step: 1,
+      maxSteps: 10,
+      totalTokens: 100,
+      tokenBudget: 50000,
+      consecutiveErrors: 0,
+      errorThreshold: 3,
+      recentToolCalls: [],
+      stuckThreshold: 3,
+      abortSignal: controller.signal,
+    })
+    expect(result.terminate).toBe(true)
+    expect(result.reason).toBe('aborted')
+  })
+})
+```
+
+---
+
+### Exercise 4: Tool Orchestration
+
+**Objective:** Build a tool executor that handles multiple tool calls per turn with configurable execution strategy and per-tool error handling.
+
+**Specification:**
+
+1. Create a file `src/exercises/m14/ex04-tool-orchestration.ts`
+2. Export an async function `executeToolCalls(calls: ToolCall[], options?: ExecutionOptions): Promise<ToolResults>`
+3. Define the types:
+
+```typescript
+interface ToolCall {
+  id: string
+  name: string
+  args: Record<string, unknown>
+}
+
+interface ToolResult {
+  id: string
+  name: string
+  success: boolean
+  result?: unknown
+  error?: string
+  durationMs: number
+}
+
+interface ExecutionOptions {
+  strategy: 'sequential' | 'parallel'
+  continueOnError: boolean // default: true — do not abort all calls if one fails
+  timeoutMs?: number // per-tool timeout
+}
+
+type ToolResults = ToolResult[]
+```
+
+4. Implement two execution strategies:
+   - **Sequential** — execute tools one at a time, in order. If `continueOnError` is false, stop on first failure
+   - **Parallel** — execute all tools with `Promise.allSettled`. Always returns results for all tools
+
+5. Each tool call should be wrapped with timing and error handling. Failed tools return `{ success: false, error: "message" }` rather than throwing
+
+6. Register tools via a `registerTool(name: string, handler: Function)` pattern
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m14/ex04-tool-orchestration.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 14: Tool Orchestration', () => {
+  it('should execute tools sequentially', async () => {
+    const results = await executeToolCalls(
+      [
+        { id: '1', name: 'search', args: { query: 'test' } },
+        { id: '2', name: 'read', args: { url: 'https://example.com' } },
+      ],
+      { strategy: 'sequential', continueOnError: true }
+    )
+    expect(results).toHaveLength(2)
+    expect(results.every(r => r.durationMs > 0)).toBe(true)
+  })
+
+  it('should execute tools in parallel', async () => {
+    const results = await executeToolCalls(
+      [
+        { id: '1', name: 'search', args: { query: 'a' } },
+        { id: '2', name: 'search', args: { query: 'b' } },
+      ],
+      { strategy: 'parallel', continueOnError: true }
+    )
+    expect(results).toHaveLength(2)
+  })
+
+  it('should handle per-tool errors without aborting', async () => {
+    const results = await executeToolCalls(
+      [
+        { id: '1', name: 'failing_tool', args: {} },
+        { id: '2', name: 'search', args: { query: 'test' } },
+      ],
+      { strategy: 'sequential', continueOnError: true }
+    )
+    expect(results[0].success).toBe(false)
+    expect(results[0].error).toBeTruthy()
+    expect(results[1].success).toBe(true)
+  })
+
+  it('should stop on first error when continueOnError is false', async () => {
+    const results = await executeToolCalls(
+      [
+        { id: '1', name: 'failing_tool', args: {} },
+        { id: '2', name: 'search', args: { query: 'test' } },
+      ],
+      { strategy: 'sequential', continueOnError: false }
+    )
+    expect(results).toHaveLength(1)
+    expect(results[0].success).toBe(false)
+  })
+})
+```
+
+> **Local Alternative (Ollama):** ReAct agents work with `ollama('qwen3.5')`, which supports tool calling. The agent loop, observation-action cycles, and `stopWhen: stepCountIs()` are provider-agnostic. Local agents are slower but fully private. For complex reasoning tasks, consider `ollama('qwen3.5:cloud')` or `ollama('deepseek-r1')` for better planning capabilities.
 
 ---
 
@@ -1811,7 +1383,7 @@ describe('Exercise 14: Memory Agent', () => {
 
 In this module, you learned:
 
-1. **What an agent is:** An LLM plus tools plus a loop. The Vercel AI SDK's `maxSteps` provides the simplest agent loop, but custom loops give you more control.
+1. **What an agent is:** An LLM plus tools plus a loop. The Vercel AI SDK's `stopWhen: stepCountIs()` provides the simplest agent loop, but custom loops give you more control.
 2. **The ReAct pattern:** Think, act, observe — the fundamental cycle that makes agents effective. System prompts encourage explicit reasoning before tool use.
 3. **Agent loop implementation:** How to build a custom loop with step tracking, message management, and callbacks for observability.
 4. **Planning vs reacting:** Reactive agents work step by step; planning agents create a plan first. Choose based on task complexity and structure.
@@ -1820,5 +1392,12 @@ In this module, you learned:
 7. **Termination conditions:** Max steps, stuck detection, error thresholds, and token budgets prevent runaway agents.
 8. **Agent memory:** Conversation history management, context window compaction, and structured working memory keep agents effective across many steps.
 9. **Debugging agents:** Trace logging, step-by-step inspection, and common failure patterns help you diagnose and fix agent issues.
+10. **Production termination:** Beyond max steps, production agents check token budgets, abort signals, error thresholds, and stuck detection (repeated identical tool calls) on every iteration.
+11. **Tool orchestration:** When the model returns multiple tool calls, the orchestrator decides whether to run them sequentially or in parallel, using `Promise.allSettled` for per-tool error handling.
+12. **Extended thinking:** Modern models support explicit thinking tokens that improve decision quality for complex tasks, at the cost of additional token usage.
+13. **Plan and build modes:** Behavioral constraints come from tool selection, not prompts — a plan-mode agent literally cannot write files because the write tool is not available.
+14. **Per-agent step limits:** Different agent types need different max step values based on expected task complexity, from 10 steps for lightweight subagents to 200 for primary agents.
+15. **Hidden system agents:** Compaction, titling, and summarization agents run invisibly to maintain the system, using their own context and tools.
+16. **Production trace logging:** Structured trace events (tool calls, results, timing, token usage) enable post-hoc debugging and observability across agent runs.
 
 In Module 15, you will extend these patterns to build systems with multiple agents that coordinate, delegate, and communicate to solve complex tasks.

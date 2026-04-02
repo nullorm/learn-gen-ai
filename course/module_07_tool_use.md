@@ -5,7 +5,7 @@
 - Understand what tools are and how LLMs use them to interact with the external world
 - Define tools with Zod schemas including names, descriptions, and typed parameters
 - Execute single and multi-step tool calls with proper result handling
-- Use the Vercel AI SDK's `maxSteps` for automatic tool execution loops
+- Use the Vercel AI SDK's `stopWhen` with `stepCountIs()` for automatic tool execution loops
 - Implement robust error handling and validation for tool inputs and outputs
 - Apply tool design patterns for granularity, naming, and composability
 - Address security considerations including input validation, sandboxing, and allowlists
@@ -28,7 +28,7 @@ The Vercel AI SDK makes tool use straightforward with Zod-based tool definitions
 - **Module 3 (Structured Output)** introduced Zod schemas. Tools use the same schema system for parameter definitions.
 - **Module 4 (Conversations)** built multi-turn conversations. Tool calls add a new message type to the conversation flow.
 - **Module 6 (Streaming)** showed `streamText`. Streaming with tools involves pausing the stream during tool execution.
-- **Modules 10-12 (Agents)** build heavily on tool use. Tools are the actions that agents take.
+- **Modules 14-15 (Agents)** build heavily on tool use. Tools are the actions that agents take.
 
 ---
 
@@ -81,176 +81,68 @@ You might think: "Can I just tell the model to output structured commands and pa
 
 ### Basic Tool Definition
 
-The Vercel AI SDK uses Zod schemas to define tool parameters. Each tool has a name, description, parameter schema, and an optional execute function:
+The Vercel AI SDK uses Zod schemas to define tool parameters. Each tool has a name, description, parameter schema, and an optional execute function. The key imports are:
 
 ```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+import { generateText, tool, stepCountIs } from 'ai'
 import { z } from 'zod'
+```
 
-const weatherTool = tool({
+A tool definition has three parts:
+
+- **`description`**: A string that tells the model when and why to use this tool. This is critical — a bad description means the model will not call the tool correctly.
+- **`parameters`**: A Zod schema defining what arguments the tool accepts. Use `.describe()` on each field to help the model understand what to provide.
+- **`execute`**: An async function that runs when the model calls this tool. This is optional — you can handle execution manually instead.
+
+Here is the minimal shape:
+
+```typescript
+const myTool = tool({
   description: 'Get the current weather for a location',
   parameters: z.object({
     location: z.string().describe('City name or coordinates'),
-    units: z.enum(['celsius', 'fahrenheit']).optional().default('celsius').describe('Temperature units'),
   }),
-  execute: async ({ location, units }) => {
-    // In production, this would call a weather API
-    console.log(`[Tool] Getting weather for ${location} in ${units}`)
-
-    // Simulated response
-    return {
-      location,
-      temperature: 22,
-      units,
-      condition: 'Partly cloudy',
-      humidity: 65,
-      windSpeed: 12,
-    }
+  execute: async ({ location }) => {
+    return { location, temperature: 22 }
   },
 })
-
-const { text } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is the weather like in Tokyo right now?',
-  tools: { getWeather: weatherTool },
-  maxSteps: 2, // Allow model to call tool and then respond
-})
-
-console.log(text)
 ```
+
+To use tools with `generateText`, pass them in the `tools` object and set `stopWhen: stepCountIs(N)` to allow the model to call tools and then respond:
+
+```typescript
+const { text } = await generateText({
+  model: yourModel,
+  prompt: 'What is the weather like in Tokyo?',
+  tools: { getWeather: myTool },
+  stopWhen: stepCountIs(2),
+})
+```
+
+Build a weather tool that accepts a `location` (string) and optional `units` parameter (enum of `'celsius'` or `'fahrenheit'`, defaulting to `'celsius'`). The execute function should return a simulated weather object with `location`, `temperature`, `units`, `condition`, `humidity`, and `windSpeed`. Then wire it up with `generateText` and `stopWhen: stepCountIs(2)`.
 
 ### The Anatomy of a Tool Definition
 
-```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
+A more complete tool definition uses rich Zod schemas with optional fields, enums, numeric ranges, and descriptions on every parameter. Think about what a product search tool would need: a query string, an optional category enum, optional min/max price numbers, and a result limit with `z.int().min(1).max(50)`.
 
-const myTool = tool({
-  // Description: tells the model WHEN and WHY to use this tool
-  // This is critical — a bad description means the model won't call the tool correctly
-  description: 'Search for products in the catalog by name, category, or price range',
+What makes a good `description`? It should tell the model _when_ to use the tool, _what_ it does, and ideally _what it does not do_. Compare these:
 
-  // Parameters: Zod schema defining what arguments the tool accepts
-  // The .describe() on each field helps the model understand what to provide
-  parameters: z.object({
-    query: z.string().describe('Search query string'),
-    category: z.enum(['electronics', 'clothing', 'food', 'books']).optional().describe('Filter by product category'),
-    minPrice: z.number().optional().describe('Minimum price in USD'),
-    maxPrice: z.number().optional().describe('Maximum price in USD'),
-    limit: z.int().min(1).max(50).optional().default(10).describe('Maximum number of results to return'),
-  }),
-
-  // Execute: the function that runs when the model calls this tool
-  // This is optional — you can handle execution yourself
-  execute: async ({ query, category, minPrice, maxPrice, limit }) => {
-    // Your implementation here
-    return { results: [], total: 0 }
-  },
-})
-```
+- Bad: `'Search for stuff'`
+- Good: `'Search the product catalog by keyword, category, or price range. Returns up to 20 matching products. Does NOT check inventory.'`
 
 ### Multiple Tools
 
-Define multiple tools and let the model choose which to call:
+You can define multiple tools in a single `tools` object and let the model choose which to call. Build a toolkit with three tools:
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+1. **`calculator`**: Accepts a math `expression` string. The execute function should validate that the expression contains only safe math characters (`/^[\d\s+\-*/().]+$/`), then evaluate it. What should happen if the expression contains non-math characters? Return a structured error, not a thrown exception.
 
-const tools = {
-  calculator: tool({
-    description: 'Perform mathematical calculations. Use this for any arithmetic, algebra, or mathematical operations.',
-    parameters: z.object({
-      expression: z.string().describe('Mathematical expression to evaluate, e.g., "2 + 3 * 4"'),
-    }),
-    execute: async ({ expression }) => {
-      try {
-        // Validate expression contains only safe math characters
-        if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-          return { expression, result: null, error: `Error: Invalid expression "${expression}"` }
-        }
-        // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-        // Simple evaluation for basic math
-        const result = Function(`"use strict"; return (${expression})`)()
-        return { expression, result, error: null }
-      } catch (error) {
-        return {
-          expression,
-          result: null,
-          error: `Failed to evaluate: ${expression}`,
-        }
-      }
-    },
-  }),
+   > **WARNING:** `Function()` is `eval()` in disguise. In production, use a math parser library like `mathjs`.
 
-  unitConverter: tool({
-    description: 'Convert between units of measurement (length, weight, temperature)',
-    parameters: z.object({
-      value: z.number().describe('The value to convert'),
-      fromUnit: z.string().describe('Source unit (e.g., "km", "lb", "celsius")'),
-      toUnit: z.string().describe('Target unit (e.g., "miles", "kg", "fahrenheit")'),
-    }),
-    execute: async ({ value, fromUnit, toUnit }) => {
-      // Simplified conversion table
-      const conversions: Record<string, Record<string, number>> = {
-        km: { miles: 0.621371 },
-        miles: { km: 1.60934 },
-        kg: { lb: 2.20462 },
-        lb: { kg: 0.453592 },
-      }
+2. **`unitConverter`**: Accepts a `value` (number), `fromUnit` (string), and `toUnit` (string). Use a conversion lookup table. What should the tool return when a conversion is not found?
 
-      const factor = conversions[fromUnit]?.[toUnit]
-      if (!factor) {
-        return { error: `Cannot convert ${fromUnit} to ${toUnit}` }
-      }
+3. **`dateCalculator`**: Accepts an `operation` enum (`'daysBetween'` or `'addDays'`), a `date1` string, and a `date2OrDays` string. For `daysBetween`, calculate the difference in days between two dates. For `addDays`, add N days to a date and return the result.
 
-      return {
-        input: `${value} ${fromUnit}`,
-        output: `${(value * factor).toFixed(4)} ${toUnit}`,
-      }
-    },
-  }),
-
-  dateCalculator: tool({
-    description: 'Calculate dates: days between dates, add/subtract days from a date',
-    parameters: z.object({
-      operation: z.enum(['daysBetween', 'addDays']),
-      date1: z.string().describe('First date in ISO format (YYYY-MM-DD)'),
-      date2OrDays: z.string().describe('Second date (for daysBetween) or number of days to add (for addDays)'),
-    }),
-    execute: async ({ operation, date1, date2OrDays }) => {
-      const d1 = new Date(date1)
-
-      if (operation === 'daysBetween') {
-        const d2 = new Date(date2OrDays)
-        const diffMs = Math.abs(d2.getTime() - d1.getTime())
-        const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
-        return { days: diffDays, from: date1, to: date2OrDays }
-      } else {
-        const days = parseInt(date2OrDays)
-        const result = new Date(d1.getTime() + days * 24 * 60 * 60 * 1000)
-        return {
-          originalDate: date1,
-          daysAdded: days,
-          resultDate: result.toISOString().split('T')[0],
-        }
-      }
-    },
-  }),
-}
-
-const { text } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt:
-    'I ran a 10km race. How many miles is that? Also, if the race was on 2025-03-15 and I want to run another one 90 days later, what date would that be?',
-  tools,
-  maxSteps: 5,
-})
-
-console.log(text)
-```
+Pass all three tools to `generateText` with `stopWhen: stepCountIs(5)` and a prompt that requires multiple tool calls.
 
 > **Advanced Note:** The descriptions you write for tools are essentially prompts. The model reads them to decide when and how to use each tool. Invest time in writing clear, specific descriptions with examples of when the tool should and should not be used. This is one of the highest-leverage improvements you can make.
 
@@ -262,103 +154,22 @@ console.log(text)
 
 The simplest tool use pattern: the model calls one tool, gets the result, and responds.
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a dictionary lookup tool. It should accept a `word` parameter (string) and look up the definition from a hardcoded `Record<string, string>` map. Include at least three words. When the word is found, return `{ word, definition, found: true }`. When it is not found, return `{ word, definition: null, found: false }`.
 
-// A simple lookup tool
-const dictionaryTool = tool({
-  description: 'Look up the definition of a word',
-  parameters: z.object({
-    word: z.string().describe('The word to look up'),
-  }),
-  execute: async ({ word }) => {
-    // Simulated dictionary lookup
-    const definitions: Record<string, string> = {
-      serendipity: 'The occurrence of events by chance in a happy way',
-      ephemeral: 'Lasting for a very short time',
-      ubiquitous: 'Present, appearing, or found everywhere',
-    }
-
-    const definition = definitions[word.toLowerCase()]
-    if (definition) {
-      return { word, definition, found: true }
-    }
-    return { word, definition: null, found: false }
-  },
-})
-
-const { text, toolCalls, toolResults } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What does "serendipity" mean?',
-  tools: { dictionary: dictionaryTool },
-  maxSteps: 2,
-})
-
-console.log('Response:', text)
-console.log('Tool calls made:', toolCalls?.length ?? 0)
-```
+Wire it up with `generateText` and `stopWhen: stepCountIs(2)`. The result object contains `text`, `toolCalls`, and `toolResults` — log all three to see the full lifecycle.
 
 ### Inspecting Tool Call Details
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a stock price lookup tool that accepts a `symbol` parameter. Use a hardcoded map of ticker symbols to prices. The `generateText` result includes a `steps` array that reveals every step of the execution.
 
-const stockTool = tool({
-  description: 'Get the current stock price for a ticker symbol',
-  parameters: z.object({
-    symbol: z.string().describe('Stock ticker symbol (e.g., AAPL, GOOGL)'),
-  }),
-  execute: async ({ symbol }) => {
-    // Simulated stock data
-    const prices: Record<string, number> = {
-      AAPL: 178.5,
-      GOOGL: 142.3,
-      MSFT: 415.2,
-      AMZN: 185.6,
-    }
+Iterate over `result.steps` and for each step log:
 
-    const price = prices[symbol.toUpperCase()]
-    if (price) {
-      return { symbol: symbol.toUpperCase(), price, currency: 'USD', timestamp: new Date().toISOString() }
-    }
-    return { symbol, error: 'Symbol not found' }
-  },
-})
+- `step.finishReason` — was it `'tool-calls'` or `'stop'`?
+- `step.toolCalls` — what tool was called and with what args? Each call has `toolName`, `toolCallId`, and `args`.
+- `step.toolResults` — what did the tool return? Each has a `result` property.
+- `step.text` — any text the model generated in this step.
 
-const result = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is the current price of Apple stock?',
-  tools: { getStockPrice: stockTool },
-  maxSteps: 2,
-})
-
-// Inspect all steps
-for (const step of result.steps) {
-  console.log(`Step ${result.steps.indexOf(step) + 1}:`)
-  console.log(`  Finish reason: ${step.finishReason}`)
-
-  if (step.toolCalls && step.toolCalls.length > 0) {
-    for (const call of step.toolCalls) {
-      console.log(`  Tool call: ${call.toolName}`)
-      console.log(`  Arguments: ${JSON.stringify(call.args)}`)
-    }
-  }
-
-  if (step.toolResults && step.toolResults.length > 0) {
-    for (const toolResult of step.toolResults) {
-      console.log(`  Tool result: ${JSON.stringify(toolResult.result)}`)
-    }
-  }
-
-  if (step.text) {
-    console.log(`  Text: ${step.text.slice(0, 100)}`)
-  }
-}
-```
+This step inspection pattern is how you debug tool use in practice. What do you expect the `finishReason` to be for the first step (when the model calls a tool) versus the last step (when it generates text)?
 
 ---
 
@@ -366,124 +177,38 @@ for (const step of result.steps) {
 
 ### Manual Tool Execution (Without execute Function)
 
-Sometimes you want to handle tool execution yourself instead of providing an `execute` function:
+Sometimes you want to handle tool execution yourself instead of providing an `execute` function. Define a tool with only `description` and `parameters` — no `execute`.
+
+When you call `generateText` without an `execute` function and without `stopWhen`, the model returns `finishReason: 'tool-calls'` and you must handle the loop manually. The workflow is:
+
+1. Call `generateText` — check `step1.finishReason === 'tool-calls'`
+2. Read `step1.toolCalls[0]` to get `toolName`, `toolCallId`, and `args`
+3. Execute the tool yourself (e.g., read a file, call an API)
+4. Call `generateText` again, passing the conversation history as `messages` — the original user message, the assistant's tool call (as a `'tool-call'` content block), and the tool result (as a `'tool-result'` content block)
+
+Build a file reader tool (no `execute` function) that the model can request. When you handle execution manually, validate the path before reading — what should happen if the path points outside your allowed directory? Build the two-step flow: first call gets the tool request, your code executes it, second call sends the result back.
+
+The message format for sending tool results back uses these content block types:
 
 ```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+// Assistant message content: array of tool-call blocks
+{
+  type: ('tool-call' as const, toolCallId, toolName, args)
+}
 
-// Define tool WITHOUT execute function
-const fileReadTool = tool({
-  description: 'Read the contents of a file',
-  parameters: z.object({
-    path: z.string().describe('Path to the file to read'),
-  }),
-  // No execute function — we handle it manually
-})
-
-// First call: model decides to call the tool
-const step1 = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Read the file at ./config.json and tell me what port the server runs on.',
-  tools: { readFile: fileReadTool },
-})
-
-// Check if the model wants to call a tool
-if (step1.finishReason === 'tool-calls' && step1.toolCalls.length > 0) {
-  const toolCall = step1.toolCalls[0]
-  console.log(`Model wants to call: ${toolCall.toolName}`)
-  console.log(`With args: ${JSON.stringify(toolCall.args)}`)
-
-  // Execute the tool ourselves
-  let toolResult: unknown
-  try {
-    const filePath = toolCall.args.path
-    // Validate the path before reading (security!)
-    if (!filePath.startsWith('./') && !filePath.startsWith('/tmp/')) {
-      toolResult = { error: 'Access denied: path outside allowed directories' }
-    } else {
-      const content = await Bun.file(filePath).text()
-      toolResult = { content, size: content.length }
-    }
-  } catch (error) {
-    toolResult = { error: `Failed to read file: ${error}` }
-  }
-
-  // Second call: send the tool result back
-  const step2 = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      { role: 'user', content: 'Read the file at ./config.json and tell me what port the server runs on.' },
-      {
-        role: 'assistant',
-        content: step1.toolCalls.map(tc => ({
-          type: 'tool-call' as const,
-          toolCallId: tc.toolCallId,
-          toolName: tc.toolName,
-          args: tc.args,
-        })),
-      },
-      {
-        role: 'tool',
-        content: step1.toolCalls.map(tc => ({
-          type: 'tool-result' as const,
-          toolCallId: tc.toolCallId,
-          result: toolResult,
-        })),
-      },
-    ],
-    tools: { readFile: fileReadTool },
-  })
-
-  console.log('Response:', step2.text)
+// Tool message content: array of tool-result blocks
+{
+  type: ('tool-result' as const, toolCallId, result)
 }
 ```
 
 ### Async Tool Execution
 
-Tools often involve async operations — API calls, database queries, file operations:
+Tools often involve async operations — API calls, database queries, file operations. The `execute` function is always async, so you can `await` any operation inside it.
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a geocoding tool that converts place names to latitude/longitude coordinates. Use a simulated lookup (a `Record<string, { lat: number; lon: number }>` map). Add a small `setTimeout` delay to simulate network latency. What should the tool return when a place name is not found?
 
-// Tool that calls an external API
-const geocodeTool = tool({
-  description: 'Convert a place name to latitude/longitude coordinates',
-  parameters: z.object({
-    placeName: z.string().describe('Name of a place (city, landmark, etc.)'),
-  }),
-  execute: async ({ placeName }) => {
-    // Simulate an API call with async delay
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    // In production, call a geocoding API like Nominatim or Google Maps
-    const coordinates: Record<string, { lat: number; lon: number }> = {
-      tokyo: { lat: 35.6762, lon: 139.6503 },
-      paris: { lat: 48.8566, lon: 2.3522 },
-      'new york': { lat: 40.7128, lon: -74.006 },
-      sydney: { lat: -33.8688, lon: 151.2093 },
-    }
-
-    const result = coordinates[placeName.toLowerCase()]
-    if (result) {
-      return { placeName, ...result, found: true }
-    }
-    return { placeName, found: false, error: 'Location not found' }
-  },
-})
-
-const { text } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What are the coordinates of Tokyo and Paris?',
-  tools: { geocode: geocodeTool },
-  maxSteps: 5,
-})
-
-console.log(text)
-```
+Use `stopWhen: stepCountIs(5)` and ask the model about coordinates for multiple cities to see how it handles multiple tool calls.
 
 > **Beginner Note:** Tool execution happens on your server, not in the model. The model only generates the request (function name + arguments). Your `execute` function runs the actual logic. This means you can do anything a normal function can do: call APIs, query databases, read files, run computations.
 
@@ -495,303 +220,70 @@ console.log(text)
 
 Some questions require multiple tool calls in sequence. The model calls one tool, examines the result, decides it needs more information, calls another tool, and so on until it has enough information to answer.
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build an employee directory system with three tools:
 
-// Simulated database of employees
-const employees: Record<string, { name: string; department: string; managerId: string | null; salary: number }> = {
-  E001: { name: 'Alice', department: 'Engineering', managerId: null, salary: 150000 },
-  E002: { name: 'Bob', department: 'Engineering', managerId: 'E001', salary: 120000 },
-  E003: { name: 'Charlie', department: 'Marketing', managerId: 'E001', salary: 110000 },
-  E004: { name: 'Diana', department: 'Engineering', managerId: 'E002', salary: 100000 },
-  E005: { name: 'Eve', department: 'Marketing', managerId: 'E003', salary: 95000 },
-}
+1. **`getEmployee`**: Accepts an `employeeId` string, returns employee details from a hardcoded `Record` (name, department, managerId, salary). Return an error object if not found.
+2. **`searchEmployees`**: Accepts a `query` string, filters employees by name or department (case-insensitive), returns matching entries with id, name, and department.
+3. **`getDirectReports`**: Accepts a `managerId` string, finds all employees whose `managerId` matches, returns the list.
 
-const tools = {
-  getEmployee: tool({
-    description: 'Get employee details by their ID',
-    parameters: z.object({
-      employeeId: z.string().describe('Employee ID (e.g., E001)'),
-    }),
-    execute: async ({ employeeId }) => {
-      const emp = employees[employeeId]
-      if (emp) return { id: employeeId, ...emp }
-      return { error: `Employee ${employeeId} not found` }
-    },
-  }),
+Use a dataset of at least 5 employees with a management hierarchy (some employees report to others).
 
-  searchEmployees: tool({
-    description: 'Search for employees by name or department',
-    parameters: z.object({
-      query: z.string().describe('Search query (name or department)'),
-    }),
-    execute: async ({ query }) => {
-      const results = Object.entries(employees)
-        .filter(
-          ([_, emp]) =>
-            emp.name.toLowerCase().includes(query.toLowerCase()) ||
-            emp.department.toLowerCase().includes(query.toLowerCase())
-        )
-        .map(([id, emp]) => ({ id, name: emp.name, department: emp.department }))
+Then ask the model: "Who reports to Alice? What is the total salary budget for her direct reports?" This question requires multiple tool calls in sequence — the model must search for Alice, get her direct reports, then look up each report's salary. Use `stopWhen: stepCountIs(10)`.
 
-      return { results, count: results.length }
-    },
-  }),
-
-  getDirectReports: tool({
-    description: 'Get all direct reports for a manager',
-    parameters: z.object({
-      managerId: z.string().describe('Manager employee ID'),
-    }),
-    execute: async ({ managerId }) => {
-      const reports = Object.entries(employees)
-        .filter(([_, emp]) => emp.managerId === managerId)
-        .map(([id, emp]) => ({ id, name: emp.name, department: emp.department }))
-
-      return { managerId, reports, count: reports.length }
-    },
-  }),
-}
-
-// This question requires multiple tool calls:
-// 1. Search for Alice to get her ID
-// 2. Get Alice's direct reports to find their IDs
-// 3. Get details of each direct report for salary info
-const { text, steps } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Who reports to Alice? What is the total salary budget for her direct reports?',
-  tools,
-  maxSteps: 10,
-})
-
-console.log('Final answer:', text)
-console.log(`\nSteps taken: ${steps.length}`)
-
-for (const [i, step] of steps.entries()) {
-  console.log(`\nStep ${i + 1}: ${step.finishReason}`)
-  if (step.toolCalls) {
-    for (const tc of step.toolCalls) {
-      console.log(`  Called: ${tc.toolName}(${JSON.stringify(tc.args)})`)
-    }
-  }
-}
-```
+After getting the result, iterate over `result.steps` to trace what the model did at each step. How many steps did it take? Did the model chain calls in the order you expected?
 
 ### Parallel Tool Calls
 
-Some models can call multiple tools simultaneously when the calls are independent:
+Some models can call multiple tools simultaneously when the calls are independent. Build two tools — `getWeather` (returns simulated weather for a city) and `getTime` (returns simulated local time for a city). Ask the model to compare the weather and time in three cities.
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-const tools = {
-  getWeather: tool({
-    description: 'Get current weather for a city',
-    parameters: z.object({ city: z.string() }),
-    execute: async ({ city }) => {
-      await new Promise(r => setTimeout(r, 300)) // Simulate API delay
-      const data: Record<string, { temp: number; condition: string }> = {
-        tokyo: { temp: 22, condition: 'Sunny' },
-        london: { temp: 12, condition: 'Rainy' },
-        'new york': { temp: 18, condition: 'Cloudy' },
-      }
-      return data[city.toLowerCase()] ?? { error: 'City not found' }
-    },
-  }),
-
-  getTime: tool({
-    description: 'Get the current local time in a city',
-    parameters: z.object({ city: z.string() }),
-    execute: async ({ city }) => {
-      const timezones: Record<string, number> = {
-        tokyo: 9,
-        london: 0,
-        'new york': -5,
-      }
-      const offset = timezones[city.toLowerCase()]
-      if (offset === undefined) return { error: 'City not found' }
-
-      const utc = new Date()
-      const local = new Date(utc.getTime() + offset * 3600000)
-      return { city, localTime: local.toISOString(), utcOffset: offset }
-    },
-  }),
-}
-
-// The model might call getWeather and getTime in parallel for each city
-const { text, steps } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Compare the weather and current time in Tokyo, London, and New York.',
-  tools,
-  maxSteps: 10,
-})
-
-console.log(text)
-
-// Check if parallel calls were made
-for (const step of steps) {
-  if (step.toolCalls && step.toolCalls.length > 1) {
-    console.log(`\nParallel calls in step: ${step.toolCalls.map(tc => tc.toolName).join(', ')}`)
-  }
-}
-```
+After execution, check the steps: if `step.toolCalls.length > 1` in any step, the model issued parallel calls. Did the model call both tools for the same city in parallel, or did it serialize them?
 
 ---
 
-## Section 6: maxSteps and Automatic Loops
+## Section 6: stopWhen and Automatic Loops
 
-### How maxSteps Works
+### How stopWhen with stepCountIs Works
 
-The `maxSteps` parameter controls the maximum number of LLM call iterations. Each "step" is one call to the model. Without `maxSteps`, the model makes a single call and if it wants to use a tool, it stops with `finishReason: 'tool-calls'` and you must handle the loop yourself.
+The `stopWhen` parameter with `stepCountIs(N)` controls the maximum number of LLM call iterations. Each "step" is one call to the model. Without `stopWhen`, the model makes a single call and if it wants to use a tool, it stops with `finishReason: 'tool-calls'` and you must handle the loop yourself.
 
-With `maxSteps`, the SDK automatically:
+With `stopWhen: stepCountIs(N)`, the SDK automatically:
 
 1. Calls the model
 2. If the model makes tool calls, executes the tools
 3. Sends the results back to the model
-4. Repeats until the model produces a text response or `maxSteps` is reached
+4. Repeats until the model produces a text response or the step count is reached
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a calculator tool and try calling `generateText` twice with the same prompt ("What is 15 \* 23?"): once **without** `stopWhen`, and once **with** `stopWhen: stepCountIs(3)`. Compare the `finishReason` of each result. Without `stopWhen`, what is the `finishReason`? With `stopWhen`, what changes?
 
-// Without maxSteps: single call, manual handling
-const result1 = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is 15 * 23?',
-  tools: {
-    calculator: tool({
-      description: 'Calculate a math expression',
-      parameters: z.object({ expression: z.string() }),
-      execute: async ({ expression }) => {
-        // Validate expression contains only safe math characters
-        if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-          return { result: null, error: `Error: Invalid expression "${expression}"` }
-        }
-        // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-        // Simple math evaluation using Function constructor
-        const result = Function(`"use strict"; return (${expression})`)()
-        return { result }
-      },
-    }),
-  },
-  // No maxSteps: model returns tool_call, you must handle it yourself
-})
+### Choosing Step Count
 
-console.log('Finish reason:', result1.finishReason)
-// 'tool-calls' — model wants to call calculator but cannot proceed
+Guidelines for `stepCountIs()`:
 
-// With maxSteps: automatic loop
-const result2 = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is 15 * 23?',
-  tools: {
-    calculator: tool({
-      description: 'Calculate a math expression',
-      parameters: z.object({ expression: z.string() }),
-      execute: async ({ expression }) => {
-        // Validate expression contains only safe math characters
-        if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-          return { result: null, error: `Error: Invalid expression "${expression}"` }
-        }
-        // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-        const result = Function(`"use strict"; return (${expression})`)()
-        return { result }
-      },
-    }),
-  },
-  maxSteps: 3, // Allow up to 3 model calls
-})
+| Value               | Use Case                                                  | Example                                 |
+| ------------------- | --------------------------------------------------------- | --------------------------------------- |
+| `stepCountIs(1)`    | No tool use (tools shown but model cannot act on results) | Preview which tool the model would pick |
+| `stepCountIs(2)`    | Single tool call + response (most common)                 | Dictionary lookup, weather check        |
+| `stepCountIs(3-5)`  | Multi-step reasoning                                      | Search, read, then analyze              |
+| `stepCountIs(5-10)` | Complex workflows                                         | Iterative refinement                    |
+| `stepCountIs(10+)`  | Agent-like behavior (careful: cost and latency add up)    | Open-ended research                     |
 
-console.log('Finish reason:', result2.finishReason)
-// 'stop' — model got the result and formulated a text response
-console.log('Response:', result2.text)
-// "15 * 23 = 345"
-```
-
-### Choosing maxSteps
-
-```typescript
-// Guidelines for maxSteps:
-//
-// maxSteps: 1 — No tool use (tools are shown but model cannot act on results)
-// maxSteps: 2 — Single tool call + response (most common)
-// maxSteps: 3-5 — Multi-step reasoning (search → read → analyze)
-// maxSteps: 5-10 — Complex workflows (iterative refinement)
-// maxSteps: 10+ — Agent-like behavior (careful: cost and latency add up)
-
-// Each step is a full model call, so:
-// - Cost scales linearly with steps
-// - Latency scales linearly with steps
-// - Each step includes the full conversation history
-```
+Each step is a full model call, so cost and latency scale linearly with steps. Each step includes the full conversation history.
 
 ### Monitoring Step Execution
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a calculator tool with `stopWhen: stepCountIs(5)` and prompt it with a two-part math question (e.g., "What is the square root of 144, and then multiply that by 3?"). The model may call the tool multiple times.
 
-const { text, steps } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is the square root of 144, and then multiply that by 3?',
-  tools: {
-    calculator: tool({
-      description: 'Evaluate a mathematical expression',
-      parameters: z.object({
-        expression: z.string().describe('Math expression to evaluate'),
-      }),
-      execute: async ({ expression }) => {
-        // Validate expression contains only safe math characters
-        if (!/^[\d\s+\-*/().]+$/.test(expression)) {
-          return { expression, result: null, error: `Error: Invalid expression "${expression}"` }
-        }
-        // WARNING: Function() is eval() in disguise. In production, use a math parser library like mathjs.
-        const result = Function(`"use strict"; return (${expression})`)()
-        return { expression, result }
-      },
-    }),
-  },
-  maxSteps: 5,
-})
+After execution, iterate over `result.steps` and for each step log:
 
-// Analyze the steps
-for (const [i, step] of steps.entries()) {
-  console.log(`\n--- Step ${i + 1} ---`)
-  console.log(`Finish reason: ${step.finishReason}`)
+- The step number and `finishReason`
+- Any `toolCalls` with their tool name and args
+- Any `toolResults` with their result
+- Any `text` generated
+- Token usage from `step.usage` (`inputTokens` and `outputTokens`)
 
-  if (step.toolCalls?.length) {
-    for (const tc of step.toolCalls) {
-      console.log(`Tool: ${tc.toolName}(${JSON.stringify(tc.args)})`)
-    }
-  }
+How does the token count change between step 1 and the final step? This demonstrates why each step includes cumulative context.
 
-  if (step.toolResults?.length) {
-    for (const tr of step.toolResults) {
-      console.log(`Result: ${JSON.stringify(tr.result)}`)
-    }
-  }
-
-  if (step.text) {
-    console.log(`Text: ${step.text.slice(0, 200)}`)
-  }
-
-  if (step.usage) {
-    console.log(`Tokens: ${step.usage.inputTokens} in, ${step.usage.outputTokens} out`)
-  }
-}
-
-console.log(`\nFinal answer: ${text}`)
-console.log(`Total steps: ${steps.length}`)
-```
-
-> **Advanced Note:** Be careful with high `maxSteps` values. Each step sends the entire conversation history (including all previous tool calls and results) to the model, so token usage grows quadratically. A 10-step tool loop where each tool returns 500 tokens means the last step sends ~5000 tokens of tool results alone, on top of the original prompt and all intermediate model outputs.
+> **Advanced Note:** Be careful with high step count values. Each step sends the entire conversation history (including all previous tool calls and results) to the model, so token usage grows quadratically. A 10-step tool loop where each tool returns 500 tokens means the last step sends ~5000 tokens of tool results alone, on top of the original prompt and all intermediate model outputs.
 
 ---
 
@@ -801,155 +293,42 @@ console.log(`Total steps: ${steps.length}`)
 
 Tools can fail for many reasons: network errors, invalid input, permission denied, rate limits. How you handle these errors determines the user experience.
 
-```typescript
-import { generateText, tool } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a `fetchUrl` tool that accepts a `url` parameter (use `z.url()`). Your execute function should handle these concerns:
 
-const robustTools = {
-  fetchUrl: tool({
-    description: 'Fetch the content of a web page',
-    parameters: z.object({
-      url: z.url().describe('The URL to fetch'),
-    }),
-    execute: async ({ url }) => {
-      try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 10_000)
-
-        const response = await fetch(url, { signal: controller.signal })
-        clearTimeout(timeout)
-
-        if (!response.ok) {
-          return {
-            error: `HTTP ${response.status}: ${response.statusText}`,
-            url,
-            success: false,
-          }
-        }
-
-        const text = await response.text()
-        // Limit response size to avoid token explosion
-        const truncated = text.slice(0, 5000)
-
-        return {
-          url,
-          content: truncated,
-          contentLength: text.length,
-          truncated: text.length > 5000,
-          success: true,
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          if (error.name === 'AbortError') {
-            return { error: 'Request timed out after 10 seconds', url, success: false }
-          }
-          return { error: error.message, url, success: false }
-        }
-        return { error: 'Unknown error', url, success: false }
-      }
-    },
-  }),
-}
-
-const { text } = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'What is on the homepage of example.com?',
-  tools: robustTools,
-  maxSteps: 3,
-})
-
-console.log(text)
-```
+- Use `fetch` with an `AbortController` timeout (e.g., 10 seconds). What should happen when the request times out?
+- Check `response.ok` and return a structured error if the HTTP status indicates failure.
+- Truncate the response body to a maximum length (e.g., 5000 characters) to avoid token explosion. Include `truncated: true` in the result if you cut it short.
+- Wrap everything in a try/catch. What should the error return shape look like so the model can understand what went wrong?
 
 ### Error Reporting Patterns
 
+There are two patterns for handling errors in tools:
+
+**Pattern 1: Return errors as structured data (recommended).** Wrap the execute body in try/catch and return `{ success: false, error: String(error) }` on failure. The model reads the error and can try a different approach.
+
+**Pattern 2: Throw errors (stops the tool loop).** Use `throw new Error(...)` only for truly unrecoverable situations. When you throw, the entire tool loop stops and the user gets a generic error.
+
 ```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
-
-// Pattern 1: Return errors as structured data (recommended)
-// The model can read the error and respond intelligently
-const safeTool = tool({
-  description: 'Example tool with safe error handling',
-  parameters: z.object({ input: z.string() }),
-  execute: async ({ input }) => {
-    try {
-      const result = await processInput(input)
-      return { success: true, data: result }
-    } catch (error) {
-      return { success: false, error: String(error) }
-    }
-  },
-})
-
-// Pattern 2: Throw errors (stops the tool loop)
-// Use only for unrecoverable errors
-const strictTool = tool({
-  description: 'Example tool that throws on invalid input',
-  parameters: z.object({ input: z.string() }),
-  execute: async ({ input }) => {
-    if (!isValid(input)) {
-      throw new Error('Invalid arguments — this tool cannot process this request')
-    }
-    return await processInput(input)
-  },
-})
-
-// Helper stubs for the example
-async function processInput(input: string) {
-  return { processed: input }
-}
-function isValid(input: string) {
-  return input.length > 0
-}
+// Pattern 1 shape:
+return { success: true, data: result }
+// or
+return { success: false, error: 'what went wrong' }
 ```
+
+Which pattern should you use by default, and why? Think about what happens to the conversation when a tool throws versus when it returns an error object.
 
 > **Beginner Note:** Always prefer returning errors as data (Pattern 1) over throwing exceptions (Pattern 2). When you return an error as data, the model reads it and can try a different approach, rephrase, or explain the failure to the user. When you throw an exception, the entire tool loop stops and the user gets a generic error message.
 
 ### Validation Before Execution
 
-```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
+Build a `databaseQuery` tool that accepts a SQL `query` string. Before executing any query, validate it:
 
-const databaseQueryTool = tool({
-  description: 'Run a read-only SQL query against the database',
-  parameters: z.object({
-    query: z.string().describe('SQL SELECT query'),
-  }),
-  execute: async ({ query }) => {
-    // Validate the query before running it
-    const normalizedQuery = query.trim().toLowerCase()
+1. Normalize the query (trim, lowercase)
+2. Check for dangerous keywords (`drop`, `delete`, `update`, `insert`, `alter`, `truncate`) — if found, return a structured error explaining which keyword was blocked
+3. Verify the query starts with `select` — if not, return an error
+4. Only after validation passes, execute the query (simulated) and return results
 
-    // Block dangerous operations
-    const dangerousKeywords = ['drop', 'delete', 'update', 'insert', 'alter', 'truncate']
-    for (const keyword of dangerousKeywords) {
-      if (normalizedQuery.includes(keyword)) {
-        return {
-          error: `Query rejected: contains forbidden keyword '${keyword}'. Only SELECT queries are allowed.`,
-        }
-      }
-    }
-
-    // Verify it starts with SELECT
-    if (!normalizedQuery.startsWith('select')) {
-      return {
-        error: 'Query rejected: must start with SELECT. Only read operations are allowed.',
-      }
-    }
-
-    // Execute the validated query
-    try {
-      // const results = await database.query(query);
-      const results = [{ id: 1, name: 'Example' }] // Simulated
-      return { query, results, rowCount: results.length }
-    } catch (error) {
-      return { error: `Query execution failed: ${error}` }
-    }
-  },
-})
-```
+What is the right return shape for a rejected query versus a successful one? Should you include the original query in both cases?
 
 ---
 
@@ -957,215 +336,58 @@ const databaseQueryTool = tool({
 
 ### Granularity: Fine vs Coarse Tools
 
-```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
+Tool granularity is about finding the right level of abstraction. Consider three approaches to file operations:
 
-// Too fine-grained: model needs multiple calls for simple tasks
-const tooFineGrained = {
-  openFile: tool({
-    description: 'Open a file handle',
-    parameters: z.object({ path: z.string() }),
-    execute: async () => ({ handle: 'file_1' }),
-  }),
-  readLine: tool({
-    description: 'Read one line from an open file',
-    parameters: z.object({ handle: z.string() }),
-    execute: async () => ({ line: 'data' }),
-  }),
-  closeFile: tool({
-    description: 'Close a file handle',
-    parameters: z.object({ handle: z.string() }),
-    execute: async () => ({ closed: true }),
-  }),
-}
+**Too fine-grained** — separate tools for `openFile`, `readLine`, and `closeFile`. The model needs three calls just to read one file. Each call adds latency and cost.
 
-// Too coarse-grained: model cannot do specific tasks
-const tooCoarseGrained = {
-  doEverything: tool({
-    description: 'Perform any file operation',
-    parameters: z.object({
-      action: z.string(),
-      path: z.string(),
-      data: z.string().optional(),
-    }),
-    execute: async () => ({ result: 'done' }),
-  }),
-}
+**Too coarse-grained** — a single `doEverything` tool that accepts an `action` string parameter. The model has no structured choices and the parameter space is ambiguous.
 
-// Just right: task-level granularity
-const justRight = {
-  readFile: tool({
-    description: 'Read the entire contents of a file',
-    parameters: z.object({
-      path: z.string().describe('Path to the file'),
-    }),
-    execute: async ({ path }) => {
-      const content = await Bun.file(path).text()
-      return { path, content, size: content.length }
-    },
-  }),
-  writeFile: tool({
-    description: 'Write content to a file (creates or overwrites)',
-    parameters: z.object({
-      path: z.string().describe('Path to the file'),
-      content: z.string().describe('Content to write'),
-    }),
-    execute: async ({ path, content }) => {
-      await Bun.write(path, content)
-      return { path, bytesWritten: content.length }
-    },
-  }),
-  listDirectory: tool({
-    description: 'List files and directories in a path',
-    parameters: z.object({
-      path: z.string().describe('Directory path'),
-    }),
-    execute: async ({ path }) => {
-      const { readdir } = await import('node:fs/promises')
-      const entries = await readdir(path, { withFileTypes: true })
-      return {
-        path,
-        entries: entries.map(e => ({
-          name: e.name,
-          type: e.isDirectory() ? 'directory' : 'file',
-        })),
-      }
-    },
-  }),
-}
-```
+**Just right** — task-level tools like `readFile`, `writeFile`, and `listDirectory`. Each tool does one complete, meaningful operation.
+
+Build a set of file operation tools at the "just right" level. Define `readFile` (accepts `path`, returns content and size), `writeFile` (accepts `path` and `content`, writes the file, returns bytes written), and `listDirectory` (accepts `path`, returns entries with name and type). What makes this the right granularity? Think about how many tool calls the model needs for common file tasks.
 
 ### Naming Conventions
 
-```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
+Good tool names follow the pattern **verb + noun**: `searchProducts`, `getOrderStatus`, `createTicket`, `sendEmail`, `calculateTax`. Each name immediately communicates what the tool does.
 
-// Good tool names: verb + noun, clear and specific
-const goodNames = {
-  searchProducts: tool({
-    description: 'Search the product catalog',
-    parameters: z.object({ query: z.string() }),
-    execute: async () => ({ results: [] }),
-  }),
-  getOrderStatus: tool({
-    description: 'Get the status of an order by ID',
-    parameters: z.object({ orderId: z.string() }),
-    execute: async () => ({ status: 'shipped' }),
-  }),
-  createTicket: tool({
-    description: 'Create a support ticket',
-    parameters: z.object({ title: z.string(), body: z.string() }),
-    execute: async () => ({ ticketId: '123' }),
-  }),
-  sendEmail: tool({
-    description: 'Send an email',
-    parameters: z.object({ to: z.string(), subject: z.string(), body: z.string() }),
-    execute: async () => ({ sent: true }),
-  }),
-  calculateTax: tool({
-    description: 'Calculate tax for an amount',
-    parameters: z.object({ amount: z.number(), region: z.string() }),
-    execute: async () => ({ tax: 0 }),
-  }),
-}
-```
+Bad names: `search`, `process`, `handle`, `doThing`. These force the model to rely entirely on the description.
 
 ### Description Best Practices
 
-```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
+Compare these two descriptions:
 
-// Good: specific about what, when, and limitations
-const goodTool = tool({
-  description: `Search the product catalog by keyword, category, or price range.
-Returns up to 20 matching products with name, price, and rating.
-Use this when the user asks about products, availability, or pricing.
-Does NOT check inventory — use checkInventory for stock availability.`,
-  parameters: z.object({
-    query: z.string().describe('Search keywords'),
-  }),
-  execute: async ({ query }) => ({ results: [] }),
-})
+- **Good**: "Search the product catalog by keyword, category, or price range. Returns up to 20 matching products with name, price, and rating. Use this when the user asks about products, availability, or pricing. Does NOT check inventory — use checkInventory for stock availability."
+- **Bad**: "Search for stuff"
 
-// Bad: vague, no guidance on when to use
-const badTool = tool({
-  description: 'Search for stuff',
-  parameters: z.object({
-    q: z.string(), // No description, unclear name
-  }),
-  execute: async ({ q }) => ({ results: [] }),
-})
-```
+A good description answers three questions: _what_ does the tool do, _when_ should the model use it, and _what are its limitations_?
 
 ### Composable Tool Sets
 
+Build a generic `createCRUDTools` function:
+
 ```typescript
-import { tool } from 'ai'
-import { z } from 'zod'
+function createCRUDTools<T extends z.ZodType>(
+  entityName: string,
+  schema: T,
+  store: Map<string, z.infer<T>>
+): Record<string, ReturnType<typeof tool>>
+```
 
-// Create tool sets that work together as a coherent unit
-function createCRUDTools<T extends z.ZodType>(entityName: string, schema: T, store: Map<string, z.infer<T>>) {
-  return {
-    [`list${entityName}s`]: tool({
-      description: `List all ${entityName.toLowerCase()}s. Returns an array of all entries.`,
-      parameters: z.object({}),
-      execute: async () => {
-        const entries = Array.from(store.entries()).map(([id, data]) => ({
-          id,
-          ...data,
-        }))
-        return { entries, count: entries.length }
-      },
-    }),
+This function should generate four tools using the entity name: `list{Entity}s`, `get{Entity}`, `create{Entity}`, and `delete{Entity}`. Each tool gets an appropriate description, parameter schema, and execute function that operates on the provided `Map` store.
 
-    [`get${entityName}`]: tool({
-      description: `Get a specific ${entityName.toLowerCase()} by ID.`,
-      parameters: z.object({
-        id: z.string().describe(`${entityName} ID`),
-      }),
-      execute: async ({ id }) => {
-        const data = store.get(id)
-        if (!data) return { error: `${entityName} not found: ${id}` }
-        return { id, ...data }
-      },
-    }),
+Then use it to create a todo management toolkit:
 
-    [`create${entityName}`]: tool({
-      description: `Create a new ${entityName.toLowerCase()}.`,
-      parameters: schema as any,
-      execute: async (data: z.infer<T>) => {
-        const id = crypto.randomUUID().slice(0, 8)
-        store.set(id, data)
-        return { id, ...data, created: true }
-      },
-    }),
-
-    [`delete${entityName}`]: tool({
-      description: `Delete a ${entityName.toLowerCase()} by ID.`,
-      parameters: z.object({
-        id: z.string().describe(`${entityName} ID`),
-      }),
-      execute: async ({ id }) => {
-        const existed = store.delete(id)
-        return { id, deleted: existed }
-      },
-    }),
-  }
-}
-
-// Usage
+```typescript
 const todoSchema = z.object({
   title: z.string().describe('Todo title'),
   priority: z.enum(['low', 'medium', 'high']).describe('Priority level'),
   done: z.boolean().default(false),
 })
-
 const todoStore = new Map<string, z.infer<typeof todoSchema>>()
 const todoTools = createCRUDTools('Todo', todoSchema, todoStore)
 ```
+
+How does the `list` tool work with `z.object({})`? How does `create` use the schema as its parameters? What should `get` and `delete` return when the ID is not found?
 
 > **Advanced Note:** In production, limit the number of tools exposed to the model. Research shows that model accuracy for tool selection degrades with more than ~15-20 tools. If you have many tools, use a "tool router" pattern: a lightweight model first selects which tool category is relevant, then the main model works with only the relevant tools.
 
@@ -1189,34 +411,14 @@ const safeFileRead = tool({
     path: z.string().describe('Relative path within the project directory'),
   }),
   execute: async ({ path: inputPath }) => {
-    const projectRoot = '/home/user/project'
-
-    // Normalize and resolve the path
-    const resolvedPath = resolve(projectRoot, normalize(inputPath))
-
-    // Ensure path is within the project directory
-    if (!resolvedPath.startsWith(projectRoot)) {
-      return { error: 'Access denied: path outside project directory' }
-    }
-
-    // Block sensitive files
-    const blockedPatterns = ['.env', 'secrets', 'credentials', '.key', '.pem']
-    const lowerPath = resolvedPath.toLowerCase()
-    for (const pattern of blockedPatterns) {
-      if (lowerPath.includes(pattern)) {
-        return { error: `Access denied: cannot read files matching pattern '${pattern}'` }
-      }
-    }
-
-    try {
-      const content = await Bun.file(resolvedPath).text()
-      return { path: inputPath, content: content.slice(0, 10000) } // Limit size
-    } catch {
-      return { error: `File not found: ${inputPath}` }
-    }
+    // Your implementation here
   },
 })
 ```
+
+Build the `execute` function with three layers of defense: (1) Resolve and normalize the path relative to a `projectRoot`, then check it stays within that directory using `startsWith`. (2) Check the path against a list of blocked patterns (`.env`, `secrets`, `credentials`, `.key`, `.pem`). (3) Read the file and cap the returned content at a max character limit. Return an `{ error }` object for denied or missing files, or `{ path, content }` on success.
+
+Why is `resolve(projectRoot, normalize(inputPath))` necessary instead of just concatenating strings? What attack does it prevent?
 
 ### Allowlists
 
@@ -1233,26 +435,14 @@ const safeShellTool = tool({
     command: z.enum(allowedCommands).describe('The command to execute (must be from the allowed list)'),
   }),
   execute: async ({ command }) => {
-    const parts = command.split(' ')
-    const proc = Bun.spawn(parts, {
-      cwd: '/home/user/project',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-
-    const stdout = await new Response(proc.stdout).text()
-    const stderr = await new Response(proc.stderr).text()
-    const exitCode = await proc.exited
-
-    return {
-      command,
-      stdout: stdout.slice(0, 5000),
-      stderr: stderr.slice(0, 1000),
-      exitCode,
-    }
+    // Your implementation here
   },
 })
 ```
+
+Build the `execute` function. Split the command string into parts, spawn a subprocess using `Bun.spawn` with `stdout: 'pipe'` and `stderr: 'pipe'`, read both streams, and return `{ command, stdout, stderr, exitCode }`. Cap stdout and stderr at reasonable limits (e.g., 5000 and 1000 characters) to prevent token budget overflow.
+
+Why does using `z.enum(allowedCommands)` in the parameters provide security at the schema level? What happens if the model tries to generate a command not in the allowlist?
 
 ### Rate Limiting Tools
 
@@ -1262,51 +452,24 @@ import { z } from 'zod'
 
 class ToolRateLimiter {
   private calls: Map<string, number[]> = new Map()
-  private maxCalls: number
-  private windowMs: number
 
-  constructor(maxCalls: number, windowMs: number) {
-    this.maxCalls = maxCalls
-    this.windowMs = windowMs
-  }
+  constructor(private maxCalls: number, private windowMs: number) {}
 
   check(toolName: string): boolean {
-    const now = Date.now()
-    const calls = this.calls.get(toolName) ?? []
-
-    // Remove old calls outside the window
-    const recentCalls = calls.filter(t => now - t < this.windowMs)
-    this.calls.set(toolName, recentCalls)
-
-    if (recentCalls.length >= this.maxCalls) {
-      return false // Rate limited
-    }
-
-    recentCalls.push(now)
-    return true
+    /* ... */
   }
 }
 
 const rateLimiter = new ToolRateLimiter(10, 60_000) // 10 calls per minute
 
 function rateLimitedTool(name: string, config: Parameters<typeof tool>[0]): ReturnType<typeof tool> {
-  const originalExecute = config.execute
-
-  return tool({
-    ...config,
-    execute: async (args: any) => {
-      if (!rateLimiter.check(name)) {
-        return { error: 'Rate limit exceeded. Please wait before trying again.' }
-      }
-
-      if (originalExecute) {
-        return originalExecute(args)
-      }
-      return { error: 'No execute function defined' }
-    },
-  })
+  /* ... */
 }
 ```
+
+Build the `ToolRateLimiter` class with a `calls` map tracking timestamps per tool name. The `check` method should filter out timestamps outside the window, return `false` if at the limit, and record the current timestamp if allowed. Then build `rateLimitedTool` as a wrapper: extract `config.execute`, return a new `tool` that calls `rateLimiter.check(name)` before delegating to the original execute function. Return an error object if rate-limited.
+
+Why use a sliding window (filtering by timestamp) rather than a simple counter that resets? What edge case does the sliding window handle better?
 
 ### Sandboxing and Audit Logging
 
@@ -1325,28 +488,13 @@ import { z } from 'zod'
 
 // Audit logging wrapper
 function auditedTool(name: string, config: Parameters<typeof tool>[0]): ReturnType<typeof tool> {
-  const originalExecute = config.execute
-
-  return tool({
-    ...config,
-    execute: async (args: any) => {
-      const startTime = Date.now()
-      console.log(`[AUDIT] Tool: ${name} | Args: ${JSON.stringify(args)} | Time: ${new Date().toISOString()}`)
-
-      try {
-        const result = originalExecute ? await originalExecute(args) : null
-        const duration = Date.now() - startTime
-        console.log(`[AUDIT] Tool: ${name} | Duration: ${duration}ms | Success`)
-        return result
-      } catch (error) {
-        const duration = Date.now() - startTime
-        console.log(`[AUDIT] Tool: ${name} | Duration: ${duration}ms | Error: ${error}`)
-        throw error
-      }
-    },
-  })
+  /* ... */
 }
 ```
+
+Build `auditedTool` as a wrapper that intercepts the tool's `execute` function. Before calling the original execute, log the tool name, arguments (as JSON), and current timestamp. After execution, log the duration and whether it succeeded or failed. Use `try/catch` to capture errors — log them and re-throw so the caller still sees the error. Return a new `tool()` with the wrapped execute.
+
+What information should you avoid logging (think about PII and credentials in tool arguments)? How would you make the logging configurable?
 
 > **Beginner Note:** Security in tool use is about defense in depth. The model might generate unexpected or malicious arguments — not because it is adversarial, but because it is probabilistic and can make mistakes. Validate everything, limit everything, and log everything.
 
@@ -1366,7 +514,155 @@ function auditedTool(name: string, config: Parameters<typeof tool>[0]): ReturnTy
 >
 > This means your agents can gain new capabilities without code changes — just connect to a new MCP server.
 
-> **Local Alternative (Ollama):** Tool calling works with `ollama('qwen3.5')` — Qwen 3.5 has native function calling support. If tool calling fails with your local model, try the cloud variant (`ollama('qwen3.5:cloud')`) for better reliability. The multi-step tool loop and `maxSteps` work identically.
+> **Local Alternative (Ollama):** Tool calling works with `ollama('qwen3.5')` — Qwen 3.5 has native function calling support. If tool calling fails with your local model, try the cloud variant (`ollama('qwen3.5:cloud')`) for better reliability. The multi-step tool loop and `stopWhen: stepCountIs()` work identically.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 10: Production Tool Architecture
+
+### Self-Contained Tool Directories
+
+When an application grows beyond a handful of tools, keeping tool definitions inline becomes unmaintainable. Production systems organize each tool as a self-contained directory:
+
+```
+tools/
+├── SearchWeb/
+│   ├── SearchWeb.ts    # Main implementation (execute function)
+│   ├── prompt.ts       # System prompt fragment describing the tool's purpose
+│   ├── schema.ts       # Zod input/output schemas
+│   └── index.ts        # Re-exports
+├── ReadFile/
+│   ├── ReadFile.ts
+│   ├── prompt.ts
+│   ├── schema.ts
+│   └── index.ts
+```
+
+Each tool owns three things: its **schema** (what arguments it accepts), its **prompt fragment** (instructions the LLM needs to use it well), and its **execution logic** (what happens when it runs). The system prompt is assembled by concatenating the prompt fragments from all registered tools — tools are self-describing.
+
+This pattern scales to dozens of tools. Adding a new tool means adding a new directory, not modifying a central file. It also makes tools testable in isolation: you can unit test the schema, the execution logic, and the prompt fragment separately.
+
+---
+
+## Section 11: Tool Lifecycle Hooks
+
+### Pre- and Post-Execution Hooks
+
+Production tool systems run code before and after every tool execution. These hooks form a pipeline around the core execute function:
+
+```
+validate input (schema) → check permission → preToolUse hook → execute → postToolUse hook → return result
+```
+
+**PreToolUse hooks** run after schema validation but before execution. Uses include:
+
+- Logging the tool call with arguments and timestamp
+- Checking permissions (is this tool allowed in the current context?)
+- Sanitizing inputs (stripping dangerous characters from shell commands)
+- Starting a performance timer
+
+**PostToolUse hooks** run after execution completes. Uses include:
+
+- Logging the result and execution time
+- Validating the output against expected formats
+- Truncating large results before they consume context tokens
+- Auditing (recording what the tool did for compliance)
+
+Hooks can also **block execution**. A preToolUse hook that detects a disallowed operation returns an error result without ever calling the execute function. This is the mechanism behind permission systems.
+
+```typescript
+type PreToolHook = (call: { name: string; args: unknown }) => { allow: boolean; reason?: string }
+type PostToolHook = (call: { name: string; args: unknown; result: unknown; durationMs: number }) => void
+```
+
+---
+
+## Section 12: Tool Result Management
+
+### Truncation for Context Budget
+
+Tool results can be enormous — a file read might return thousands of lines, a search might return dozens of documents. Every token in a tool result consumes context window space that could be used for conversation or reasoning. Production systems enforce result size limits.
+
+The naive approach is to cut the result at a character limit, but this loses structure. A better approach preserves the beginning and end while indicating what was truncated:
+
+```typescript
+function truncateResult(result: string, maxTokens: number): string {
+  /* ... */
+}
+```
+
+Build this function. Estimate the token count (roughly `result.length / 4`), and if within budget, return the result unchanged. Otherwise, compute a character budget from `maxTokens * 4`, split it between a head portion (~70%) and a tail portion (~20%), and join them with a message indicating how many tokens were omitted. Return the concatenated head + omission notice + tail.
+
+Why preserve both the head and tail instead of just truncating at the end? What kind of content typically appears at the end of a file or search result that would be worth preserving?
+
+---
+
+## Section 13: Tool Permissions
+
+### Three-Tier Permission System
+
+Production systems categorize tool operations into three permission levels:
+
+- **Allow** — safe operations that execute without confirmation (reading files in the project directory, running tests)
+- **Deny** — dangerous operations that are always blocked (deleting files outside the project, running destructive shell commands)
+- **Ask** — operations requiring user confirmation before execution (writing files, running arbitrary commands)
+
+Permission rules are declarative and checked before tool execution (in the preToolUse hook). This is the simplest version of the pattern — Module 21 (Safety) covers guardrails in depth.
+
+### Glob-Based Permission Rules
+
+For finer-grained control, production systems match permission rules against the full command or argument string using glob patterns:
+
+```typescript
+const rules: PermissionRule[] = [
+  { pattern: 'git status *', permission: 'allow' },
+  { pattern: 'git push --force *', permission: 'deny' },
+  { pattern: 'npm *', permission: 'ask' },
+  { pattern: 'rm -rf *', permission: 'deny' },
+]
+```
+
+The last matching rule wins. Rules can be scoped per-project (in a project config file) or globally. Unmatched commands fall through to a configurable default — typically `'ask'` in interactive mode and `'deny'` in automated mode.
+
+---
+
+## Section 14: Custom Tools as TypeScript Files
+
+### User-Defined Tools with Zod Schemas
+
+Some production systems let users extend the tool set by placing `.ts` files in a configuration directory. Each file exports one or more tools using the same `tool()` + Zod pattern the Vercel AI SDK uses:
+
+```typescript
+// tools/my-custom-tool.ts
+import { tool } from 'ai'
+import { z } from 'zod'
+
+export const myCustomTool = tool({
+  description: 'Looks up a user by email address',
+  parameters: z.object({ email: z.email() }),
+  execute: async ({ email }) => {
+    // implementation
+  },
+})
+```
+
+The runtime discovers tools by scanning the directory at startup, importing each file, and registering any exported `tool()` instances. The filename and export name become the tool identity. This pattern supports hot-reloading — adding or modifying a tool file takes effect without restarting the application.
+
+The `execute` function can receive a `context` parameter with session information (working directory, session ID, user identity), giving tools access to session state without global variables.
+
+---
+
+## Section 15: Context-Providing Tools (LSP Pattern)
+
+### Tools That Inform Rather Than Act
+
+Not all tools perform actions. Some tools exist to give the LLM better information for decision-making. The strongest example is Language Server Protocol (LSP) integration, where tools expose code intelligence operations: go-to-definition, find-references, hover info, and workspace symbol search.
+
+The key insight is that these tools' output is not a final result — it is intelligence that informs the LLM's next action. When the LLM calls "find all references to function X" before renaming it, the tool result tells the LLM which files need updating. The LLM then uses that information to make accurate, complete edits.
+
+Other examples of context-providing tools: file search (find relevant files before reading them), grep (locate patterns before editing), and diagnostics (discover errors after a change). Designing tools as context providers — not just action executors — produces more capable agents because the LLM can gather information before committing to an action.
 
 ---
 
@@ -1378,10 +674,16 @@ In this module, you learned:
 2. **Tool definitions with Zod:** How to define tools with names, descriptions, and typed parameter schemas that guide the model toward correct usage.
 3. **The tool call lifecycle:** The model proposes a tool call, your code executes it, and the result is sent back — the model never runs code directly.
 4. **Single and multi-step tool calls:** How to handle one-shot tool use and iterative loops where the model chains multiple tool calls to accomplish complex tasks.
-5. **maxSteps and automatic loops:** The Vercel AI SDK's `maxSteps` parameter automates the tool execution loop, letting the model call tools repeatedly until it has a final answer.
+5. **stopWhen and automatic loops:** The Vercel AI SDK's `stopWhen` parameter with `stepCountIs()` automates the tool execution loop, letting the model call tools repeatedly until it has a final answer.
 6. **Error handling:** How to catch tool execution errors, report them back to the model in a structured way, and validate inputs before execution.
 7. **Tool design patterns:** Principles for granularity, naming, composability, and deciding between fine-grained and coarse-grained tool interfaces.
 8. **Security considerations:** Input validation, sandboxing, allowlists, and running tool execution with restricted permissions to prevent misuse.
+9. **Production tool architecture:** Self-contained tool directories with separate schema, prompt fragment, and execution logic for scalable tool systems.
+10. **Lifecycle hooks:** Pre- and post-execution hooks for logging, timing, permission checks, and output validation.
+11. **Result truncation:** Intelligently truncating large tool results to preserve context budget while keeping structure.
+12. **Tool permissions:** Three-tier (allow/deny/ask) and glob-based permission systems for controlling tool execution.
+13. **Custom tools:** User-defined tools as TypeScript files with Zod schemas, discovered and registered at runtime.
+14. **Context-providing tools:** Tools that inform the LLM's decisions (like LSP) rather than just performing actions.
 
 In Module 8, you will learn about embeddings — the vector representations that enable semantic search and form the foundation of RAG systems.
 
@@ -1406,7 +708,7 @@ The model generates a structured request (tool name + arguments) but never execu
 
 ### Question 2 (Medium)
 
-What does `maxSteps: 5` mean in a `generateText` call with tools?
+What does `stopWhen: stepCountIs(5)` mean in a `generateText` call with tools?
 
 A) The model can call a maximum of 5 tools total
 B) The SDK will make up to 5 calls to the model, automatically handling tool calls and results
@@ -1415,7 +717,7 @@ D) The model will generate at most 5 sentences
 
 **Answer: B**
 
-`maxSteps` controls the maximum number of model call iterations. The SDK will call the model, execute any requested tools, send results back, and repeat — up to 5 times. This allows multi-step tool chains where each step can involve one or more tool calls.
+`stopWhen: stepCountIs(5)` controls the maximum number of model call iterations. The SDK will call the model, execute any requested tools, send results back, and repeat — up to 5 times. This allows multi-step tool chains where each step can involve one or more tool calls.
 
 ---
 
@@ -1464,6 +766,32 @@ The model generates tool arguments probabilistically — it can produce unexpect
 
 ---
 
+### Question 6 (Medium)
+
+A tool result returns 5,000 lines of file content into the conversation. What production pattern prevents this from consuming the entire context window?
+
+- A) Increasing the model's context window size
+- B) Truncating the result with a head/tail split that preserves structure while indicating what was omitted
+- C) Compressing the result with gzip before adding it to messages
+- D) Splitting the result across multiple tool call responses
+
+**Answer: B** — Production systems enforce result size limits using intelligent truncation. A head/tail split (e.g., 70% head, 30% tail) preserves the most important content at the beginning and end while inserting an indicator of how many tokens were omitted. This keeps tool results within their context budget allocation without losing structural context.
+
+---
+
+### Question 7 (Hard)
+
+A preToolUse hook checks permissions before tool execution. In a system with allow/deny/ask tiers and glob-based rules `["git status *" → allow, "git push --force *" → deny, "git *" → ask]`, what happens when the model calls a tool with the argument `git push --force origin main`?
+
+- A) The command is allowed because `git *` matches and ask means auto-approve
+- B) The command is denied because the `git push --force *` deny rule matches and blocks execution before it reaches the ask rule
+- C) The command requires user confirmation because `git *` is the most general match
+- D) The command fails because no rule matches exactly
+
+**Answer: B** — Glob-based permission rules are matched against the full command string. The `git push --force *` pattern matches `git push --force origin main` and its permission is `deny`, which blocks execution in the preToolUse hook without ever calling the execute function. The more specific deny rule takes precedence over the general `git *` ask rule.
+
+---
+
 ## Exercises
 
 ### Exercise 1: Multi-Tool Assistant
@@ -1473,10 +801,10 @@ Build an interactive assistant with three tools: calculator, web search (simulat
 **Requirements:**
 
 1. Define three tools with complete Zod schemas:
-   - `calculator`: evaluates mathematical expressions safely (use a parser, not eval)
+   - `calculator`: evaluates mathematical expressions (use `Function()` with input validation as shown in the module, or the `mathjs` package)
    - `searchWeb`: simulates web search (returns predefined results for known queries)
    - `readFile`: reads files from a specified directory (with path validation)
-2. Use `maxSteps: 10` for multi-step reasoning
+2. Use `stopWhen: stepCountIs(10)` for multi-step reasoning
 3. Log each tool call with timing information
 4. Handle errors gracefully (return structured error objects)
 5. Implement path validation for `readFile` (restrict to a project directory)
@@ -1485,7 +813,7 @@ Build an interactive assistant with three tools: calculator, web search (simulat
 **Starter code:**
 
 ```typescript
-import { generateText, tool } from 'ai'
+import { generateText, tool, stepCountIs } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
@@ -1503,8 +831,8 @@ const tools = {
       // TODO: Define parameters
     }),
     execute: async args => {
-      // TODO: Implement safe math evaluation (no eval!)
-      // Consider using a simple parser for +, -, *, /, ^, sqrt, etc.
+      // TODO: Implement math evaluation
+      // Use Function() with input validation (as shown in the module) or the mathjs package
     },
   }),
 
@@ -1599,3 +927,52 @@ describe('Tool Security', () => {
 - Error messages are informative but do not leak paths or system info
 - Rate limiting kicks in after the configured threshold
 - Audit log contains entries for every tool call attempt
+
+### Exercise 3: Tool Lifecycle Hooks
+
+Build a hook system that wraps tool execution with pre- and post-hooks for logging, timing, and permission checking.
+
+**What to build:** Create `src/tools/exercises/lifecycle-hooks.ts`
+
+**Requirements:**
+
+1. Define a `ToolRunner` that accepts a map of tools and arrays of pre/post hooks
+2. Pre-hooks receive `{ name: string; args: unknown }` and return `{ allow: boolean; reason?: string }` — if any pre-hook returns `allow: false`, execution is blocked and the reason is returned as the tool result
+3. Post-hooks receive `{ name: string; args: unknown; result: unknown; durationMs: number }` and run after execution completes (they cannot block)
+4. Implement a logging pre-hook that records every tool call attempt with timestamp and arguments
+5. Implement a timing post-hook that records execution duration for each tool
+6. Implement a permission pre-hook that checks tool names against an allowlist and blocks unrecognized tools
+7. The `ToolRunner.execute(name, args)` method runs the full pipeline: pre-hooks, execute, post-hooks
+
+**Expected behavior:**
+
+- Calling an allowed tool runs all pre-hooks (all return `allow: true`), executes the tool, runs all post-hooks, and returns the result
+- Calling a blocked tool runs pre-hooks until one returns `allow: false`, skips execution and post-hooks, and returns the denial reason
+- The logging hook captures all attempts (both allowed and blocked)
+- The timing hook records accurate durations (within 10ms) for executed tools
+
+**File:** `src/tools/exercises/lifecycle-hooks.ts`
+
+### Exercise 4: Tool Result Truncation
+
+Build a result truncation system that keeps tool results within a token budget while preserving useful structure.
+
+**What to build:** Create `src/tools/exercises/result-truncation.ts`
+
+**Requirements:**
+
+1. Implement `truncateToolResult(result: string, maxTokens: number): string` that truncates results exceeding the token budget
+2. Use a 70/30 head/tail split — preserve the first 70% and last 30% of the allowed content, with a truncation notice in between
+3. The truncation notice should state how many tokens were omitted
+4. Use a simple token estimation: 1 token per 4 characters
+5. If the result is within budget, return it unchanged
+6. Handle edge cases: empty results, results exactly at the budget, very small budgets (under 20 tokens)
+
+**Expected behavior:**
+
+- A 1000-token result with a 500-token budget returns ~350 tokens of head, a truncation notice, and ~150 tokens of tail
+- A 100-token result with a 500-token budget returns the original result unchanged
+- The truncation notice reads something like `"... (500 tokens omitted) ..."`
+- An empty result returns an empty string regardless of budget
+
+**File:** `src/tools/exercises/result-truncation.ts`

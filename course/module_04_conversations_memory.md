@@ -68,6 +68,8 @@ The model sees the entire conversation and understands that "instead" refers to 
 
 ### Making a Multi-turn Call
 
+The `generateText` function accepts a `messages` array. To build a multi-turn conversation, you need a helper that takes the message array and returns the model's response:
+
 ```typescript
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -77,30 +79,14 @@ interface Message {
   content: string
 }
 
-async function chat(messages: Message[]): Promise<string> {
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages,
-  })
-  return text
-}
-
-// Build a conversation step by step
-const conversation: Message[] = [
-  { role: 'system', content: 'You are a math tutor. Explain step by step.' },
-  { role: 'user', content: 'What is the derivative of x^3?' },
-]
-
-const response1 = await chat(conversation)
-console.log('Assistant:', response1)
-
-// Append the assistant's response and the next user message
-conversation.push({ role: 'assistant', content: response1 })
-conversation.push({ role: 'user', content: 'What about the second derivative?' })
-
-const response2 = await chat(conversation)
-console.log('Assistant:', response2)
+async function chat(messages: Message[]): Promise<string>
 ```
+
+This function should call `generateText` with the messages array and return the `text` from the result.
+
+To run a multi-turn conversation, start with a `Message[]` containing a system prompt and the first user message. Call `chat`, then push the assistant's response back into the array with `role: 'assistant'`. When the user sends another message, push it with `role: 'user'` and call `chat` again. Each call sends the entire accumulated array, so the model sees the full history.
+
+What happens if you forget to push the assistant's response back into the array before adding the next user message?
 
 > **Beginner Note:** The `role: 'assistant'` messages are responses from the model that you append back into the array. This is how the model "remembers" what it said. You are responsible for maintaining this array — the API does not do it for you.
 
@@ -138,12 +124,9 @@ const problematic: Message[] = [
 
 ### A Complete Conversational Loop
 
-Here is a full interactive conversation using standard input:
+To build an interactive chatbot, you need a REPL (read-eval-print loop). The structure is:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface Message {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -155,40 +138,21 @@ const conversation: Message[] = [
     content: 'You are a friendly assistant. Keep responses under 3 sentences unless asked for detail.',
   },
 ]
-
-async function getResponse(messages: Message[]): Promise<string> {
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages,
-  })
-  return text
-}
-
-// Simple REPL loop
-const reader = Bun.stdin.stream().getReader()
-const decoder = new TextDecoder()
-
-console.log('Chat started. Type "quit" to exit.\n')
-
-process.stdout.write('You: ')
-while (true) {
-  const { value, done } = await reader.read()
-  if (done) break
-
-  const input = decoder.decode(value).trim()
-  if (input.toLowerCase() === 'quit') break
-
-  conversation.push({ role: 'user', content: input })
-
-  const response = await getResponse(conversation)
-  conversation.push({ role: 'assistant', content: response })
-
-  console.log(`\nAssistant: ${response}\n`)
-  process.stdout.write('You: ')
-}
-
-console.log(`\nConversation ended. Total messages: ${conversation.length}`)
 ```
+
+Build a function `getResponse(messages: Message[]): Promise<string>` that calls `generateText` with the messages array and returns the text.
+
+Then build the REPL loop. In Bun, you can read stdin with `Bun.stdin.stream().getReader()` and decode chunks with `TextDecoder`. The loop should:
+
+1. Print a prompt (`You: `)
+2. Read a line of input
+3. If the input is `"quit"`, break out of the loop
+4. Push the user message into the conversation array
+5. Call `getResponse` with the conversation
+6. Push the assistant response into the conversation array
+7. Print the response and loop back to step 1
+
+After the loop ends, print the total message count. How would you handle the case where `reader.read()` returns `done: true`?
 
 ---
 
@@ -224,8 +188,9 @@ A typical user message might be 50-200 tokens. An assistant response might be 10
 
 These numbers seem generous until you factor in long messages, code blocks, tool call results, or pasted documents. In practice, even large context windows fill up faster than you expect.
 
+To reason about this concretely, define a `TokenEstimate` interface with fields for `systemPrompt`, `averageUserMessage`, `averageAssistantMessage`, and `maxResponseTokens` (all numbers representing token counts).
+
 ```typescript
-// Rough estimation of conversation token usage
 interface TokenEstimate {
   systemPrompt: number
   averageUserMessage: number
@@ -233,22 +198,10 @@ interface TokenEstimate {
   maxResponseTokens: number
 }
 
-function estimateMaxTurns(contextWindow: number, estimate: TokenEstimate): number {
-  const availableForHistory = contextWindow - estimate.systemPrompt - estimate.maxResponseTokens
-  const tokensPerTurn = estimate.averageUserMessage + estimate.averageAssistantMessage
-  return Math.floor(availableForHistory / tokensPerTurn)
-}
-
-const claude35Sonnet = estimateMaxTurns(200_000, {
-  systemPrompt: 500,
-  averageUserMessage: 100,
-  averageAssistantMessage: 300,
-  maxResponseTokens: 4096,
-})
-
-console.log(`Estimated max turns for Claude Sonnet 4: ${claude35Sonnet}`)
-// ~488 turns — but real conversations are rarely this uniform
+function estimateMaxTurns(contextWindow: number, estimate: TokenEstimate): number
 ```
+
+This function should calculate the available tokens for history (context window minus system prompt minus max response tokens), then divide by the tokens per turn (average user + average assistant message) to get the maximum number of turns. What happens to the estimate when `maxResponseTokens` is very large?
 
 > **Advanced Note:** The context window includes both input and output tokens. When you set `maxOutputTokens` for the response, that reduces the space available for your input. A 200K context window with `maxOutputTokens: 8192` leaves 191,808 tokens for your messages.
 
@@ -317,7 +270,7 @@ interface MemoryStrategy {
 
 ### The Conversation Manager
 
-The manager composes state and strategy. It owns the state, delegates context building to the strategy, and allows hot-swapping strategies without losing any data:
+The manager composes state and strategy. It owns the state, delegates context building to the strategy, and allows hot-swapping strategies without losing any data.
 
 ```typescript
 import type { ModelMessage } from 'ai'
@@ -327,46 +280,22 @@ class ConversationManager {
   private strategy: MemoryStrategy
   private systemPrompt: string
 
-  constructor(config: { systemPrompt: string; strategy: MemoryStrategy }) {
-    this.systemPrompt = config.systemPrompt
-    this.strategy = config.strategy
-  }
+  constructor(config: { systemPrompt: string; strategy: MemoryStrategy })
 
-  addUserMessage(content: string): void {
-    this.state.history.push({ role: 'user', content })
-  }
-
-  addAssistantMessage(content: string): void {
-    this.state.history.push({ role: 'assistant', content })
-  }
-
-  buildContext(): ModelMessage[] {
-    return this.strategy.buildContext(this.systemPrompt, this.state)
-  }
-
-  setStrategy(strategy: MemoryStrategy): void {
-    this.strategy = strategy
-  }
-
-  getState(): ConversationState {
-    return this.state
-  }
-
-  setState(state: ConversationState): void {
-    this.state = state
-  }
-
-  getHistory(): ModelMessage[] {
-    return [...this.state.history]
-  }
-
-  getMessageCount(): number {
-    return this.state.history.length
-  }
+  addUserMessage(content: string): void
+  addAssistantMessage(content: string): void
+  buildContext(): ModelMessage[]
+  setStrategy(strategy: MemoryStrategy): void
+  getState(): ConversationState
+  setState(state: ConversationState): void
+  getHistory(): ModelMessage[]
+  getMessageCount(): number
 }
 ```
 
-Notice what `setStrategy` does — it swaps the strategy function. The state is untouched. History, summaries, facts — all preserved. This is the composition advantage over inheritance: no state transfer, no reconstruction, no bugs.
+Build this class. The constructor should store the system prompt and strategy from the config. `addUserMessage` and `addAssistantMessage` push messages into `state.history` with the appropriate role. `buildContext` delegates to `this.strategy.buildContext(this.systemPrompt, this.state)`. `setStrategy` replaces the strategy reference — the state is untouched. `getHistory` should return a copy of the history array (not a reference to it). `getMessageCount` returns the length of the history.
+
+Why does `setStrategy` not need to do anything with the state? What would go wrong if `getHistory` returned a direct reference instead of a copy?
 
 ---
 
@@ -385,31 +314,25 @@ The system prompt (S) is always included. The window slides forward as new messa
 
 ### Implementation
 
-The windowing logic — take the last N messages, ensure we start on a user message — is a reusable building block. Extract it as a helper, then wrap it in a strategy:
+The windowing logic — take the last N messages, ensure we start on a user message — is a reusable building block. Extract it as a helper, then wrap it in a strategy.
+
+First, build the helper function:
 
 ```typescript
 import type { ModelMessage } from 'ai'
 
-function getWindowedMessages(history: ModelMessage[], windowSize: number): ModelMessage[] {
-  const recentMessages = history.slice(-windowSize)
-  const startIndex = recentMessages.findIndex((m) => m.role === 'user')
-  return startIndex > 0 ? recentMessages.slice(startIndex) : recentMessages
-}
-
-function createSlidingWindowStrategy(windowSize: number = 20): MemoryStrategy {
-  return {
-    buildContext(systemPrompt: string, state: ConversationState): ModelMessage[] {
-      return [{ role: 'system', content: systemPrompt }, ...getWindowedMessages(state.history, windowSize)]
-    },
-  }
-}
-
-// Usage
-const manager = new ConversationManager({
-  systemPrompt: 'You are a helpful assistant. Be concise.',
-  strategy: createSlidingWindowStrategy(10), // Keep last 10 messages (5 exchanges)
-})
+function getWindowedMessages(history: ModelMessage[], windowSize: number): ModelMessage[]
 ```
+
+This function should slice the last `windowSize` messages from the history. Then find the first `user` message in that slice — if it is not at position 0, trim everything before it. Why? Because if the window boundary falls in the middle of an exchange, you might start with an orphaned assistant message, which violates the alternation rules.
+
+Then build the strategy factory:
+
+```typescript
+function createSlidingWindowStrategy(windowSize: number = 20): MemoryStrategy
+```
+
+This factory returns a `MemoryStrategy` whose `buildContext` prepends the system prompt as a `{ role: 'system', content: systemPrompt }` message, then appends the result of `getWindowedMessages(state.history, windowSize)`.
 
 `getWindowedMessages` is a pure function — it takes history and a window size, returns trimmed messages. The strategy factory wraps it with the system prompt. Later, the hybrid strategy will reuse this same helper.
 
@@ -459,66 +382,30 @@ Unlike the sliding window, the full history stays in `state.history` — the sum
 
 ### Implementation
 
-Like the windowing logic, the summarization checks are reusable helpers. Extract them as pure functions that operate on `ConversationState`:
+Like the windowing logic, the summarization checks are reusable helpers. Build two pure functions:
 
 ```typescript
 import type { ModelMessage } from 'ai'
 
-function needsSummarization(state: ConversationState, threshold: number): boolean {
-  const unsummarized = state.history.length - (state.summarization?.until ?? 0)
-  return unsummarized > threshold
-}
+function needsSummarization(state: ConversationState, threshold: number): boolean
 
-function getSummarizationText(state: ConversationState, keepRecent: number): string {
-  const startFrom = state.summarization?.until ?? 0
-  const toSummarize = state.history.slice(startFrom, -keepRecent)
-
-  let text = state.summarization ? `Previous summary: ${state.summarization.summary}\n\n` : ''
-  text += toSummarize.map((m) => `${m.role}: ${m.content}`).join('\n')
-  return text
-}
+function getSummarizationText(state: ConversationState, keepRecent: number): string
 ```
 
-The strategy factory wraps these helpers and adds `buildContext`:
+`needsSummarization` should calculate how many messages in the history have not been summarized yet. The unsummarized count is the total history length minus `state.summarization?.until ?? 0`. If that count exceeds the threshold, return `true`.
+
+`getSummarizationText` should build the text to send to the LLM for summarization. It needs to gather messages from the last summary point (`state.summarization?.until ?? 0`) up to but not including the most recent `keepRecent` messages. If a previous summary exists, prepend it with a `"Previous summary: "` prefix so the LLM can build on it. Format each message as `"role: content"` joined by newlines.
+
+Then build the strategy factory:
 
 ```typescript
-function createSummarizingStrategy(config: {
-  summarizeThreshold?: number
-  keepRecent?: number
-}): MemoryStrategy & {
+function createSummarizingStrategy(config: { summarizeThreshold?: number; keepRecent?: number }): MemoryStrategy & {
   needsSummarization(state: ConversationState): boolean
   getSummarizationText(state: ConversationState): string
-} {
-  const threshold = config.summarizeThreshold ?? 20
-  const keepRecent = config.keepRecent ?? 6
-
-  return {
-    buildContext(systemPrompt: string, state: ConversationState): ModelMessage[] {
-      const messages: ModelMessage[] = [{ role: 'system', content: systemPrompt }]
-
-      if (state.summarization) {
-        messages.push({
-          role: 'system',
-          content: `Previous conversation summary: ${state.summarization.summary}`,
-        })
-      }
-
-      const startFrom = state.summarization?.until ?? 0
-      messages.push(...state.history.slice(startFrom))
-
-      return messages
-    },
-
-    needsSummarization(state: ConversationState): boolean {
-      return needsSummarization(state, threshold)
-    },
-
-    getSummarizationText(state: ConversationState): string {
-      return getSummarizationText(state, keepRecent)
-    },
-  }
 }
 ```
+
+The returned object should have three methods. `buildContext` assembles the context: start with the system prompt, then if `state.summarization` exists add a system message with the summary text, then append all messages from `state.summarization?.until ?? 0` onward. `needsSummarization` and `getSummarizationText` delegate to the helpers with the config values.
 
 The chatbot loop calls `needsSummarization()` each turn, and when it returns true, sends `getSummarizationText()` to the LLM and stores the result:
 
@@ -535,7 +422,7 @@ if (strategy.needsSummarization(state)) {
 }
 ```
 
-Notice: the full history is never truncated. `state.history` always has every message. `summarization.until` tells the strategy where the summary covers up to, so `buildContext` only includes messages *after* that point.
+Notice: the full history is never truncated. `state.history` always has every message. `summarization.until` tells the strategy where the summary covers up to, so `buildContext` only includes messages _after_ that point.
 
 ### The Summarization Prompt Matters
 
@@ -591,66 +478,33 @@ The fact sheet is the key addition. Facts are key-value pairs (like `name: Jorda
 
 ### Implementation
 
-The hybrid strategy composes the helpers from Sections 4 and 5. No duplicated logic — `getWindowedMessages` handles the window, `needsSummarization` and `getSummarizationText` handle the summary checks. The only new code is the fact sheet injection:
+The hybrid strategy composes the helpers from Sections 4 and 5. No duplicated logic — `getWindowedMessages` handles the window, `needsSummarization` and `getSummarizationText` handle the summary checks. The only new code is the fact sheet injection.
 
 ```typescript
 import type { ModelMessage } from 'ai'
 
-function createHybridStrategy(config: {
-  windowSize?: number
-  summarizeThreshold?: number
-}): MemoryStrategy & {
+function createHybridStrategy(config: { windowSize?: number; summarizeThreshold?: number }): MemoryStrategy & {
   needsSummarization(state: ConversationState): boolean
   getSummarizationText(state: ConversationState): string
-} {
-  const windowSize = config.windowSize ?? 10
-  const threshold = config.summarizeThreshold ?? 20
-
-  return {
-    buildContext(systemPrompt: string, state: ConversationState): ModelMessage[] {
-      const parts: ModelMessage[] = []
-
-      // 1. System prompt (always first)
-      parts.push({ role: 'system', content: systemPrompt })
-
-      // 2. Fact sheet (if facts exist)
-      const facts = state.facts?.entries
-      if (facts && Object.keys(facts).length > 0) {
-        const factSheet = Object.entries(facts)
-          .map(([k, v]) => `- ${k}: ${v}`)
-          .join('\n')
-        parts.push({
-          role: 'system',
-          content: `Known facts about the user:\n${factSheet}`,
-        })
-      }
-
-      // 3. Rolling summary (if exists) — same pattern as summarizing strategy
-      if (state.summarization) {
-        parts.push({
-          role: 'system',
-          content: `Summary of earlier conversation:\n${state.summarization.summary}`,
-        })
-      }
-
-      // 4. Recent messages — reuses getWindowedMessages from Section 4
-      parts.push(...getWindowedMessages(state.history, windowSize))
-
-      return parts
-    },
-
-    // Reuses helpers from Section 5
-    needsSummarization(state: ConversationState): boolean {
-      return needsSummarization(state, threshold)
-    },
-
-    getSummarizationText(state: ConversationState): string {
-      return getSummarizationText(state, windowSize)
-    },
-  }
 }
+```
 
-// Usage
+The factory should default `windowSize` to 10 and `summarizeThreshold` to 20. The returned object needs three methods:
+
+**`buildContext`** assembles four layers in order:
+
+1. System prompt as the first system message (always first)
+2. Fact sheet — if `state.facts?.entries` has any keys, format them as `"- key: value"` lines and add as a system message with the prefix `"Known facts about the user:"`
+3. Rolling summary — if `state.summarization` exists, add as a system message with the prefix `"Summary of earlier conversation:"`
+4. Recent messages — call `getWindowedMessages(state.history, windowSize)` from Section 4
+
+**`needsSummarization`** and **`getSummarizationText`** reuse the helpers from Section 5, passing `windowSize` as the `keepRecent` parameter to `getSummarizationText`.
+
+How does the fact sheet survive summarization? Why does `getWindowedMessages` use `windowSize` instead of `keepRecent` here?
+
+Usage looks like:
+
+```typescript
 const manager = new ConversationManager({
   systemPrompt: 'You are a personal assistant.',
   strategy: createHybridStrategy({ windowSize: 8, summarizeThreshold: 16 }),
@@ -704,7 +558,7 @@ In-memory conversations are lost when the process restarts. For production appli
 
 ### Saving and Loading ConversationState
 
-Because `ConversationState` is a plain data object, persistence is straightforward — serialize it to JSON:
+Because `ConversationState` is a plain data object, persistence is straightforward — serialize it to JSON. Define the on-disk format and the save/load functions:
 
 ```typescript
 interface SavedConversation {
@@ -721,25 +575,14 @@ async function saveConversation(
   systemPrompt: string,
   state: ConversationState,
   createdAt?: string
-): Promise<void> {
-  const data: SavedConversation = {
-    id,
-    systemPrompt,
-    state,
-    createdAt: createdAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  }
-  await Bun.write(filePath, JSON.stringify(data, null, 2))
-}
+): Promise<void>
 
-async function loadConversation(filePath: string): Promise<SavedConversation> {
-  const file = Bun.file(filePath)
-  if (!(await file.exists())) {
-    throw new Error(`Conversation file not found: ${filePath}`)
-  }
-  return file.json() as Promise<SavedConversation>
-}
+async function loadConversation(filePath: string): Promise<SavedConversation>
 ```
+
+`saveConversation` should assemble a `SavedConversation` object (using the current timestamp for `updatedAt`, and `createdAt` defaults to now if not provided), then write it to the file path as formatted JSON using `Bun.write` and `JSON.stringify(data, null, 2)`.
+
+`loadConversation` should read the file using `Bun.file(filePath)`. Check if the file exists first — if not, throw an error with a descriptive message. If it exists, parse and return it as `SavedConversation`.
 
 To resume a conversation, load the state and pass it to a new manager:
 
@@ -759,9 +602,11 @@ const manager = new ConversationManager({
 manager.setState(saved.state)
 ```
 
-Because the state includes everything — history, summaries, facts — the restored conversation has full fidelity regardless of which strategy you use when resuming. You can even resume with a *different* strategy than the one used when saving.
+Because the state includes everything — history, summaries, facts — the restored conversation has full fidelity regardless of which strategy you use when resuming. You can even resume with a _different_ strategy than the one used when saving.
 
 ### Listing and Managing Conversations
+
+Build two more utility functions:
 
 ```typescript
 import { readdir, unlink } from 'node:fs/promises'
@@ -774,33 +619,14 @@ interface ConversationSummary {
   messageCount: number
 }
 
-async function listConversations(directory: string): Promise<ConversationSummary[]> {
-  const files = await readdir(directory)
-  const jsonFiles = files.filter((f) => f.endsWith('.json'))
+async function listConversations(directory: string): Promise<ConversationSummary[]>
 
-  const summaries: ConversationSummary[] = []
-
-  for (const file of jsonFiles) {
-    const filePath = `${directory}/${file}`
-    const data: SavedConversation = await Bun.file(filePath).json()
-
-    summaries.push({
-      id: data.id,
-      filePath,
-      createdAt: data.createdAt,
-      updatedAt: data.updatedAt,
-      messageCount: data.state.history.length,
-    })
-  }
-
-  summaries.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-  return summaries
-}
-
-async function deleteConversation(filePath: string): Promise<void> {
-  await unlink(filePath)
-}
+async function deleteConversation(filePath: string): Promise<void>
 ```
+
+`listConversations` should read all `.json` files from the directory using `readdir`, load each one with `Bun.file`, and build a `ConversationSummary` for each (pulling `messageCount` from `data.state.history.length`). Sort the results by `updatedAt` descending (most recent first).
+
+`deleteConversation` should remove the file using `unlink`.
 
 > **Beginner Note:** For production applications, you would typically use a database (PostgreSQL, SQLite, Redis) instead of JSON files. The pattern is the same — serialize the conversation data and store it with a unique ID. JSON files work well for development and small-scale applications.
 
@@ -819,37 +645,21 @@ Token counting serves two purposes:
 
 ### Estimating Tokens
 
-Exact token counting requires the model's actual tokenizer. For estimation, a simple heuristic works well:
+Exact token counting requires the model's actual tokenizer. For estimation, a simple heuristic works well. Build two estimation functions:
 
 ```typescript
-/**
- * Estimate token count for a string.
- * Rule of thumb: 1 token ≈ 4 characters in English.
- * This is an approximation — actual counts vary by model and content.
- */
-function estimateTokens(text: string): number {
-  // Simple character-based estimation
-  return Math.ceil(text.length / 4)
-}
+function estimateTokens(text: string): number
 
-/**
- * More accurate estimation using word-based heuristic.
- * English text averages ~1.3 tokens per word.
- * Code averages ~2 tokens per word due to punctuation.
- */
-function estimateTokensAccurate(text: string, isCode: boolean = false): number {
-  const words = text.split(/\s+/).filter(Boolean).length
-  const multiplier = isCode ? 2.0 : 1.3
-  return Math.ceil(words * multiplier)
-}
-
-// Test with known examples
-console.log(estimateTokens('Hello, world!')) // ~4 (actual: ~4)
-console.log(estimateTokens('The quick brown fox jumps over the lazy dog.'))
-// ~12 (actual: ~10)
+function estimateTokensAccurate(text: string, isCode?: boolean): number
 ```
 
+`estimateTokens` uses the character-based heuristic: 1 token is approximately 4 characters in English. Divide `text.length` by 4 and round up.
+
+`estimateTokensAccurate` uses a word-based heuristic. Split the text on whitespace, count the words, then multiply by a factor: ~1.3 for English prose, ~2.0 for code (because of punctuation, braces, and special characters). The `isCode` parameter (default `false`) selects the multiplier.
+
 ### Token Counting for Message Arrays
+
+Build functions to count tokens for entire message arrays and track budget usage:
 
 ```typescript
 interface Message {
@@ -863,24 +673,7 @@ interface TokenBudget {
   reservedForSystem: number
 }
 
-function countMessageTokens(messages: Message[]): number {
-  let total = 0
-
-  for (const message of messages) {
-    // Each message has overhead for role formatting (~4 tokens)
-    total += 4
-    total += estimateTokens(message.content)
-  }
-
-  // Conversation framing overhead (~3 tokens)
-  total += 3
-
-  return total
-}
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
-}
+function countMessageTokens(messages: Message[]): number
 
 function getRemainingBudget(
   messages: Message[],
@@ -890,46 +683,18 @@ function getRemainingBudget(
   remaining: number
   percentUsed: number
   canFitMoreMessages: boolean
-} {
-  const used = countMessageTokens(messages)
-  const availableForMessages = budget.contextWindow - budget.maxResponseTokens - budget.reservedForSystem
-  const remaining = availableForMessages - used
-
-  return {
-    used,
-    remaining,
-    percentUsed: (used / availableForMessages) * 100,
-    canFitMoreMessages: remaining > 200, // At least 200 tokens for a new message
-  }
 }
-
-// Usage
-const messages: Message[] = [
-  { role: 'system', content: 'You are a helpful assistant.' },
-  { role: 'user', content: 'Explain quantum computing in simple terms.' },
-  {
-    role: 'assistant',
-    content: 'Quantum computing uses quantum bits (qubits) that can be 0, 1, or both at once...',
-  },
-  { role: 'user', content: 'How is that useful practically?' },
-]
-
-const budget: TokenBudget = {
-  contextWindow: 200_000, // Claude Sonnet 4
-  maxResponseTokens: 4096,
-  reservedForSystem: 500,
-}
-
-const status = getRemainingBudget(messages, budget)
-console.log(`Tokens used: ${status.used}`)
-console.log(`Tokens remaining: ${status.remaining}`)
-console.log(`Percent used: ${status.percentUsed.toFixed(2)}%`)
-console.log(`Can fit more: ${status.canFitMoreMessages}`)
 ```
+
+`countMessageTokens` should iterate over the messages, adding ~4 tokens of overhead per message (for role formatting), plus `estimateTokens(message.content)` for the content. Add ~3 tokens at the end for conversation framing overhead.
+
+`getRemainingBudget` calculates the available space for messages (`contextWindow - maxResponseTokens - reservedForSystem`), subtracts the used tokens from `countMessageTokens`, and returns the budget status. Set `canFitMoreMessages` to `true` if at least 200 tokens remain — enough for a minimal new message.
+
+What happens to `percentUsed` if the available space is very small? Could `remaining` go negative?
 
 ### Token-Aware Sliding Window
 
-Combine token counting with the sliding window to trim by token count rather than message count:
+Combine token counting with the sliding window to trim by token count rather than message count. Build a class that manages the conversation with token awareness:
 
 ```typescript
 import { generateText, type LanguageModel } from 'ai'
@@ -938,14 +703,6 @@ import { mistral } from '@ai-sdk/mistral'
 interface Message {
   role: 'system' | 'user' | 'assistant'
   content: string
-}
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
-}
-
-function messageTokens(msg: Message): number {
-  return 4 + estimateTokens(msg.content)
 }
 
 class TokenAwareConversation {
@@ -960,105 +717,27 @@ class TokenAwareConversation {
     model?: LanguageModel
     maxInputTokens?: number
     maxResponseTokens?: number
-  }) {
-    this.systemPrompt = config.systemPrompt
-    this.model = config.model ?? mistral('mistral-small-latest')
-    this.maxInputTokens = config.maxInputTokens ?? 180_000
-    this.maxResponseTokens = config.maxResponseTokens ?? 4096
-  }
+  })
 
-  async send(userMessage: string): Promise<string> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    const contextMessages = this.buildContext()
-
-    const { text, usage } = await generateText({
-      model: this.model,
-      messages: contextMessages,
-      maxOutputTokens: this.maxResponseTokens,
-    })
-
-    this.messages.push({ role: 'assistant', content: text })
-
-    // Log actual token usage for calibration
-    if (usage) {
-      console.log(`[Tokens] Input: ${usage.inputTokens}, Output: ${usage.outputTokens}`)
-    }
-
-    return text
-  }
-
-  private buildContext(): Message[] {
-    const systemMsg: Message = {
-      role: 'system',
-      content: this.systemPrompt,
-    }
-    const systemTokens = messageTokens(systemMsg)
-    const budgetForMessages = this.maxInputTokens - systemTokens - this.maxResponseTokens
-
-    // Start from the most recent messages and work backward
-    const selected: Message[] = []
-    let usedTokens = 0
-
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const msgTokens = messageTokens(this.messages[i])
-
-      if (usedTokens + msgTokens > budgetForMessages) {
-        break // No more room
-      }
-
-      selected.unshift(this.messages[i])
-      usedTokens += msgTokens
-    }
-
-    // Ensure we start with a user message
-    while (selected.length > 0 && selected[0].role === 'assistant') {
-      selected.shift()
-    }
-
-    console.log(`[Context] Using ${selected.length}/${this.messages.length} messages (${usedTokens} tokens)`)
-
-    return [systemMsg, ...selected]
-  }
-
-  /** Get token usage statistics */
+  async send(userMessage: string): Promise<string>
+  private buildContext(): Message[]
   getTokenStats(): {
     totalHistoryTokens: number
     messageCount: number
     averageTokensPerMessage: number
-  } {
-    const total = this.messages.reduce((sum, m) => sum + messageTokens(m), 0)
-    return {
-      totalHistoryTokens: total,
-      messageCount: this.messages.length,
-      averageTokensPerMessage: this.messages.length > 0 ? total / this.messages.length : 0,
-    }
   }
 }
-
-// Usage
-const chat = new TokenAwareConversation({
-  systemPrompt: 'You are a technical assistant for TypeScript developers.',
-  maxInputTokens: 10_000, // Low limit for demonstration
-  maxResponseTokens: 1024,
-})
-
-const questions = [
-  'What is a generic type in TypeScript?',
-  'Show me an example with arrays.',
-  'How do conditional types work?',
-  'What about mapped types?',
-  'Can you combine them?',
-]
-
-for (const q of questions) {
-  console.log(`\nUser: ${q}`)
-  const response = await chat.send(q)
-  console.log(`Assistant: ${response.slice(0, 100)}...`)
-}
-
-console.log('\nToken stats:', chat.getTokenStats())
 ```
+
+The constructor stores config values, defaulting the model to `mistral('mistral-small-latest')`, `maxInputTokens` to 180,000, and `maxResponseTokens` to 4,096.
+
+**`send`** pushes the user message, calls `buildContext` to get the context-windowed messages, calls `generateText` with that context, pushes the assistant response, and returns the text. If `usage` is available in the response, log the input/output token counts.
+
+**`buildContext`** is the key method. It computes the token budget: `maxInputTokens` minus the system message tokens minus `maxResponseTokens`. Then it iterates from the most recent message backward, accumulating messages until adding the next one would exceed the budget. After selection, it trims any leading assistant messages (to maintain role alternation). Finally it prepends the system message.
+
+Why iterate from newest to oldest instead of oldest to newest? What is the trade-off of using token-based windowing versus message-count-based windowing?
+
+**`getTokenStats`** calculates the total tokens across all stored messages and returns summary statistics.
 
 ### Using Actual Token Counts from the API
 
@@ -1097,6 +776,99 @@ if (usage) {
 
 ---
 
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: LLM-Assisted Memory Extraction
+
+### Using the LLM to Decide What to Remember
+
+The summarization strategy compresses entire conversation segments into summaries. But there is a more targeted approach: ask the LLM to extract only the _facts worth remembering_ from a conversation, and store those separately.
+
+This is a production-essential pattern. Instead of a rolling summary that drifts over time, you maintain a curated set of structured memories — user preferences, project decisions, important names and dates — that persist across compaction cycles.
+
+### The Extraction Pattern
+
+After every N turns (or before compaction), send the recent conversation to the LLM with an extraction prompt:
+
+```typescript
+const extractionPrompt = `Review this conversation and extract facts worth remembering.
+Categories: user preferences, project context, decisions made, named entities.
+Return only new or updated facts — do not repeat known facts.`
+```
+
+The LLM returns structured data (using `Output.object()` from Module 3) with the extracted facts. These are stored in the `facts` field of `ConversationState` and injected into every future context window.
+
+### Why This Beats Pure Summarization
+
+Summaries compress everything — important and unimportant alike. Extraction is surgical: it identifies the high-value information and discards the rest. A summary might say "The user discussed their TypeScript project." Extraction captures: `language: TypeScript`, `framework: Next.js`, `deployment: Vercel`.
+
+Extracted facts also do not drift. A summary of a summary can distort details. A fact like `name: Jordan` stays exact indefinitely.
+
+> **Persistent Memory Directories** — Some production coding agents persist extracted memories to a dedicated directory (e.g., `~/.app/memories/`) that survives across sessions, restarts, and context compaction. Each memory is a file with metadata (timestamp, source, category). At session start, relevant memories are loaded and injected into the system prompt. This is fundamentally different from session persistence — it stores **curated knowledge**, not raw conversation history.
+
+---
+
+## Section 10: Token Budget Allocation
+
+### The Context Window as a Budget
+
+Production systems treat the context window as a budget to be allocated, not just a limit to avoid hitting. A typical allocation:
+
+| Component            | Budget % | Purpose                     |
+| -------------------- | -------- | --------------------------- |
+| System prompt        | 5-15%    | Instructions, role, rules   |
+| Memories/facts       | 5-10%    | Persistent knowledge        |
+| Conversation summary | 10-20%   | Compressed older context    |
+| Recent messages      | 40-60%   | Active conversation window  |
+| Response tokens      | 10-20%   | Space for the model's reply |
+
+The key insight is that these allocations are configurable and should be tuned per use case. A coding assistant needs more space for tool results. A creative writing assistant needs more space for recent messages.
+
+### Budget Monitoring
+
+Track token usage per component and trigger compaction when any component exceeds its allocation:
+
+```typescript
+// Monitor budget usage — compact when conversation exceeds its allocation
+const conversationTokens = countMessageTokens(messages)
+const budgetLimit = contextWindow * 0.6
+if (conversationTokens > budgetLimit) {
+  // Trigger compaction
+}
+```
+
+Warning thresholds at 80% and auto-compact at 90% give your application a graceful degradation path rather than a hard failure when the context fills up.
+
+---
+
+## Section 11: Microcompaction
+
+### Surgical Pruning Without Full Summarization
+
+Full compaction (summarizing older messages) is a heavyweight operation — it requires an LLM call and replaces detailed history with a compressed summary. Microcompaction is a lighter-weight alternative that surgically removes low-value content without any LLM calls.
+
+Microcompaction targets:
+
+1. **Duplicate tool results** — if the same file was read three times, keep only the latest result
+2. **Verbose outputs** — truncate long tool outputs to their first N lines
+3. **Redundant assistant messages** — if the assistant said "I'll search for that" followed by the actual search results, the preamble can be removed
+4. **Non-essential metadata** — timestamps, progress updates, and status messages
+
+### The Microcompaction Pattern
+
+```typescript
+// Microcompaction: remove duplicate tool results, truncate verbose outputs
+// No LLM call required — pure data transformation on the message array
+```
+
+The key difference from summarization: microcompaction is deterministic and free (no LLM call). It is applied _before_ checking whether full compaction is needed, often reducing token count enough to avoid the expensive summarization step entirely.
+
+In practice, production systems layer these approaches: microcompaction runs every turn (cheap), summarization runs only when microcompaction is not enough (expensive).
+
+> **Automatic Compaction Agents** — Some production systems run a hidden "compaction agent" — a separate `generateText` call with its own system prompt optimized for compression. Rather than heuristic truncation, the compaction agent produces a compressed summary preserving key decisions, tool results, and task state. It runs automatically and invisibly when the context fills up. This is LLM-assisted memory extraction taken further — the compaction agent maintains conversational coherence while dramatically reducing token count.
+
+---
+
 ## Summary
 
 In this module, you learned:
@@ -1109,6 +881,9 @@ In this module, you learned:
 6. **Hybrid approaches:** Combining a fact sheet, rolling summary, and sliding window gives the best balance of context retention and cost control. Facts survive summarization without distortion.
 7. **Conversation persistence:** Because `ConversationState` is a plain data object, serializing it to JSON gives full-fidelity save/restore that works with any strategy.
 8. **Token estimation:** Character-based estimation (length/4) provides a practical way to manage token budgets without external libraries.
+9. **LLM-assisted memory extraction:** Using the LLM to extract structured facts from conversations, producing curated knowledge that survives compaction without distortion.
+10. **Token budget allocation:** Treating the context window as a budget with percentage allocations for system prompt, memories, summary, recent messages, and response tokens.
+11. **Microcompaction:** Lightweight, deterministic pruning (removing duplicate tool results, truncating verbose outputs) that reduces token count without LLM calls.
 
 In Module 5, you will explore what happens when context windows are very large and how prompt caching can dramatically reduce costs for repeated context.
 
@@ -1188,6 +963,32 @@ D) To format messages for the API
 **Answer: B**
 
 The fact sheet stores critical persistent information (like the user's name, project details, or key decisions) in a structured format that is always included in the context. This prevents "summary drift" where important details get distorted or lost through repeated summarization cycles.
+
+---
+
+### Question 6 (Medium)
+
+What advantage does LLM-assisted memory extraction have over rolling summarization for preserving user preferences across long conversations?
+
+- A) Extraction is cheaper because it uses fewer tokens
+- B) Extraction captures structured facts (e.g., `language: TypeScript`) that stay exact across compaction cycles, while summaries can distort details over repeated compression
+- C) Extraction does not require any LLM calls
+- D) Summarization cannot handle conversations longer than 10 turns
+
+**Answer: B** — Summaries compress everything and a summary of a summary can distort details over time ("summary drift"). Extraction is surgical — it identifies high-value facts and stores them in structured form. A fact like `name: Jordan` or `framework: Next.js` stays exact indefinitely, while a summary might gradually lose or alter such details.
+
+---
+
+### Question 7 (Hard)
+
+A production system uses microcompaction before checking whether full summarization is needed. Which of the following is NOT a valid microcompaction target?
+
+- A) Duplicate tool results where the same file was read multiple times
+- B) Verbose tool outputs truncated to their first N lines
+- C) The system prompt, condensed to save tokens
+- D) Assistant preamble messages like "I'll search for that" when followed by actual results
+
+**Answer: C** — Microcompaction targets low-value content in the message history: duplicate tool results, verbose outputs, and redundant assistant messages. The system prompt is never a microcompaction target — it contains the behavioral instructions the model needs and must remain intact. Microcompaction is deterministic and free (no LLM call), applied before the more expensive full summarization step.
 
 ---
 
@@ -1326,3 +1127,143 @@ The test provides 24 hardcoded user messages with facts planted in the first 3 m
 > **Note for Claude Code:** When writing the test file for this exercise, generate a realistic 20-30 message conversation yourself and hardcode it. Plant the `TestFacts` values (name, location, company, language) in the first 3 messages. Do not call the LLM to generate test messages at test time — that adds latency and nondeterminism.
 
 **Try it:** Run `bun test tests/memory/benchmark.test.ts` to validate your implementation.
+
+---
+
+### Exercise 3: Session Memory with LLM Extraction
+
+**Objective:** Build a `SessionMemory` class that uses the LLM to extract key facts from a conversation, persists them, and re-injects them into a fresh context after compaction.
+
+**File:** `src/exercises/m04/ex03-session-memory.ts`
+
+**What to build:**
+
+1. Define a `MemoryEntry` type with: `key` (string), `value` (string), `category` (enum: `'preference' | 'fact' | 'decision' | 'context'`), `extractedAt` (ISO date string)
+2. Export a class `SessionMemory` with:
+   - `constructor(savePath: string)` — path to a JSON file for persistence
+   - `async extractFromMessages(messages: Message[], model: LanguageModel): Promise<MemoryEntry[]>` — sends the messages to the LLM with an extraction prompt and uses `generateText` with `Output.object()` to get structured facts back. Returns only new or updated entries.
+   - `addEntries(entries: MemoryEntry[]): void` — merges new entries into the memory store, overwriting existing entries with the same key
+   - `getEntries(category?: string): MemoryEntry[]` — returns all entries, optionally filtered by category
+   - `toPromptString(): string` — formats all entries as a string suitable for injection into a system prompt (e.g., `"- name: Jordan\n- language: TypeScript"`)
+   - `async save(): Promise<void>` — persists the memory store to disk as JSON
+   - `async load(): Promise<void>` — loads the memory store from disk if it exists
+3. The extraction prompt should ask the LLM to identify: user preferences, project facts, decisions made, and important named entities
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m04/ex03-session-memory.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 3: Session Memory', () => {
+  it('should extract facts from a conversation', async () => {
+    const memory = new SessionMemory('./data/test-memory.json')
+    const messages = [
+      { role: 'user' as const, content: 'My name is Jordan and I work at DataFlow.' },
+      { role: 'assistant' as const, content: 'Nice to meet you, Jordan! What can I help with?' },
+      { role: 'user' as const, content: 'I prefer TypeScript and use Next.js for my projects.' },
+    ]
+    const entries = await memory.extractFromMessages(messages, model)
+    expect(entries.length).toBeGreaterThan(0)
+    const names = entries.map(e => e.key)
+    expect(names.some(n => n.toLowerCase().includes('name'))).toBe(true)
+  })
+
+  it('should format entries as a prompt string', () => {
+    const memory = new SessionMemory('./data/test-memory.json')
+    memory.addEntries([
+      { key: 'name', value: 'Jordan', category: 'fact', extractedAt: new Date().toISOString() },
+      { key: 'language', value: 'TypeScript', category: 'preference', extractedAt: new Date().toISOString() },
+    ])
+    const prompt = memory.toPromptString()
+    expect(prompt).toContain('name')
+    expect(prompt).toContain('Jordan')
+  })
+
+  it('should overwrite existing entries with the same key', () => {
+    const memory = new SessionMemory('./data/test-memory.json')
+    memory.addEntries([{ key: 'city', value: 'Austin', category: 'fact', extractedAt: new Date().toISOString() }])
+    memory.addEntries([{ key: 'city', value: 'Portland', category: 'fact', extractedAt: new Date().toISOString() }])
+    expect(memory.getEntries().filter(e => e.key === 'city')).toHaveLength(1)
+    expect(memory.getEntries().find(e => e.key === 'city')?.value).toBe('Portland')
+  })
+})
+```
+
+---
+
+### Exercise 4: Auto-Compact Trigger
+
+**Objective:** Build a token budget monitor that triggers compaction at configurable thresholds, connecting token counting (Section 8) with the summarization strategy (Section 5).
+
+**File:** `src/exercises/m04/ex04-auto-compact.ts`
+
+**What to build:**
+
+1. Define a `CompactionConfig` type:
+   ```typescript
+   interface CompactionConfig {
+     contextWindow: number
+     maxResponseTokens: number
+     warnThreshold: number // percentage (e.g., 0.8 for 80%)
+     compactThreshold: number // percentage (e.g., 0.9 for 90%)
+   }
+   ```
+2. Export a function `checkBudget(messages: Message[], config: CompactionConfig): { status: 'ok' | 'warn' | 'compact'; percentUsed: number; tokensUsed: number }` that estimates the token count of the message array and returns the budget status
+3. Export an async function `autoCompact(messages: Message[], config: CompactionConfig, model: LanguageModel): Promise<{ messages: Message[]; compacted: boolean; summary?: string }>` that:
+   - Calls `checkBudget` to determine if compaction is needed
+   - If status is `'compact'`, summarizes the older messages (keeping the most recent 6) using `generateText` with a summarization prompt, and returns the compacted message array with the summary prepended as a system message
+   - If status is `'ok'` or `'warn'`, returns the original messages unchanged
+4. The summarization prompt should preserve key facts, decisions, and named entities
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m04/ex04-auto-compact.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 4: Auto-Compact Trigger', () => {
+  it('should return ok status when under warn threshold', () => {
+    const messages = [{ role: 'user' as const, content: 'Hello' }]
+    const result = checkBudget(messages, {
+      contextWindow: 100_000,
+      maxResponseTokens: 4096,
+      warnThreshold: 0.8,
+      compactThreshold: 0.9,
+    })
+    expect(result.status).toBe('ok')
+  })
+
+  it('should return warn status when between thresholds', () => {
+    // Generate messages large enough to hit 80-90% of a small context window
+    const longMessage = 'x'.repeat(3200) // ~800 tokens
+    const messages = Array.from({ length: 10 }, () => ({
+      role: 'user' as const,
+      content: longMessage,
+    }))
+    const result = checkBudget(messages, {
+      contextWindow: 12_000,
+      maxResponseTokens: 1000,
+      warnThreshold: 0.8,
+      compactThreshold: 0.9,
+    })
+    expect(result.status).toBe('warn')
+  })
+
+  it('should compact when over compact threshold', async () => {
+    const longMessage = 'x'.repeat(4000) // ~1000 tokens
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `${longMessage} message ${i}`,
+    }))
+    const result = await autoCompact(
+      messages,
+      { contextWindow: 12_000, maxResponseTokens: 1000, warnThreshold: 0.8, compactThreshold: 0.9 },
+      model
+    )
+    expect(result.compacted).toBe(true)
+    expect(result.summary).toBeTruthy()
+    expect(result.messages.length).toBeLessThan(messages.length)
+  })
+})
+```

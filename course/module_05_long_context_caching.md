@@ -61,39 +61,10 @@ import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { readFile } from 'node:fs/promises'
 
-// Load an entire book into context
-async function analyzeDocument(filePath: string, question: string): Promise<string> {
-  const document = await readFile(filePath, 'utf-8')
-
-  const estimatedTokens = Math.ceil(document.length / 4)
-  console.log(`Document size: ${document.length} characters (~${estimatedTokens} tokens)`)
-
-  const { text, usage } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a document analyst. Answer questions based on the provided document. Always cite specific sections.',
-      },
-      {
-        role: 'user',
-        content: `<document>\n${document}\n</document>\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  if (usage) {
-    console.log(`Actual tokens - Input: ${usage.inputTokens}, Output: ${usage.outputTokens}`)
-  }
-
-  return text
-}
-
-// Usage
-const answer = await analyzeDocument('./data/annual-report-2025.txt', 'What were the key revenue drivers in Q3?')
-console.log(answer)
+async function analyzeDocument(filePath: string, question: string): Promise<string>
 ```
+
+Build a function that reads a file from disk, estimates its token count (divide character length by 4), and sends the entire document to `generateText` in a user message wrapped in `<document>` tags. Include a system message instructing the model to cite specific sections. Log the estimated and actual token usage from the `usage` property on the result. What should you do if `usage` is undefined?
 
 > **Beginner Note:** Just because you can fit an entire book in the context window does not mean the model processes it all equally well. Research shows that models pay most attention to the beginning and end of the context (the "lost in the middle" effect). Place the most important information at the start or end of your input.
 
@@ -102,36 +73,10 @@ console.log(answer)
 Studies have shown that LLMs struggle with information placed in the middle of very long contexts. This affects how you structure large inputs:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-// Better: Important context at the beginning and end
-async function structuredLongContext(document: string, question: string): Promise<string> {
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content: `You are a precise document analyst. The user will provide a document and a question.
-Focus your analysis on the specific sections relevant to the question.
-Always quote the source text when answering.`,
-      },
-      {
-        role: 'user',
-        content: `Question (read this first): ${question}
-
-<document>
-${document}
-</document>
-
-Now answer the question above based on the document. Quote relevant passages.`,
-      },
-    ],
-  })
-
-  return text
-}
+async function structuredLongContext(document: string, question: string): Promise<string>
 ```
+
+Build a function that places the **question before the document** in the user message, so the model reads the question first and knows what to look for. After the document, repeat the question as a reminder. The system message should instruct the model to focus on relevant sections and quote source text. Why does placing the question at both the start and end of the user message help with long contexts?
 
 > **Advanced Note:** The "lost in the middle" effect varies by model and has been improving with each generation. Claude 3.5 models handle long contexts significantly better than earlier versions. However, placing key information at the extremes of your context is still good practice as a reliability measure.
 
@@ -144,43 +89,16 @@ Now answer the question above based on the document. Quote relevant passages.`,
 Send the entire document to the model. Simple, accurate, but expensive.
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface DocumentQAResult {
   answer: string
   tokensUsed: number
   estimatedCost: number
 }
 
-async function fullContextQA(document: string, question: string): Promise<DocumentQAResult> {
-  const { text, usage } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content: 'Answer the question based on the provided document. Be precise and cite sections.',
-      },
-      {
-        role: 'user',
-        content: `<document>\n${document}\n</document>\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  const inputTokens = usage?.inputTokens ?? 0
-  const outputTokens = usage?.outputTokens ?? 0
-
-  // Claude Sonnet pricing (example — check current rates)
-  const cost = (inputTokens / 1_000_000) * 3.0 + (outputTokens / 1_000_000) * 15.0
-
-  return {
-    answer: text,
-    tokensUsed: inputTokens + outputTokens,
-    estimatedCost: cost,
-  }
-}
+async function fullContextQA(document: string, question: string): Promise<DocumentQAResult>
 ```
+
+Build a function that sends the full document to `generateText`, then computes cost from usage data. Extract `inputTokens` and `outputTokens` from `usage` (default to 0 if undefined). To estimate cost, use per-million-token pricing: `(inputTokens / 1_000_000) * inputRate + (outputTokens / 1_000_000) * outputRate`. Return the answer text, total tokens, and estimated cost.
 
 ### Strategy 2: Chunked Retrieval (RAG)
 
@@ -194,38 +112,10 @@ interface Chunk {
   tokens: number
 }
 
-function chunkDocument(document: string, chunkSize: number = 500): Chunk[] {
-  const paragraphs = document.split('\n\n')
-  const chunks: Chunk[] = []
-  let currentChunk = ''
-  let chunkIndex = 0
-
-  for (const paragraph of paragraphs) {
-    const estimatedTokens = Math.ceil((currentChunk + paragraph).length / 4)
-
-    if (estimatedTokens > chunkSize && currentChunk) {
-      chunks.push({
-        text: currentChunk.trim(),
-        index: chunkIndex++,
-        tokens: Math.ceil(currentChunk.length / 4),
-      })
-      currentChunk = paragraph
-    } else {
-      currentChunk += '\n\n' + paragraph
-    }
-  }
-
-  if (currentChunk.trim()) {
-    chunks.push({
-      text: currentChunk.trim(),
-      index: chunkIndex,
-      tokens: Math.ceil(currentChunk.length / 4),
-    })
-  }
-
-  return chunks
-}
+function chunkDocument(document: string, chunkSize: number = 500): Chunk[]
 ```
+
+Build a function that splits a document into chunks of approximately `chunkSize` tokens. Split on paragraph boundaries (`\n\n`). Accumulate paragraphs into a current chunk until adding the next paragraph would exceed the token limit, then start a new chunk. Estimate tokens as `Math.ceil(text.length / 4)`. What happens if a single paragraph exceeds the chunk size?
 
 ### Decision Matrix: Full Context vs RAG
 
@@ -258,46 +148,14 @@ Groq supports automatic prompt caching on GPT-OSS models — no code changes or 
 import { generateText } from 'ai'
 import { groq } from '@ai-sdk/groq'
 
-// Large reference document that stays the same across queries
-const referenceDocument = `... (imagine 50,000 tokens of documentation) ...`
-
-async function queryWithCaching(question: string): Promise<string> {
-  const { text, usage } = await generateText({
-    model: groq('openai/gpt-oss-20b'),
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a documentation expert. Answer questions based on the reference material.',
-      },
-      {
-        // Static content FIRST — this is what gets cached
-        role: 'user',
-        content: `Reference documentation:\n${referenceDocument}\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  // Check cache performance via usage metadata
-  if (usage) {
-    console.log(`Total input tokens: ${usage.inputTokens}`)
-    console.log(`Output tokens: ${usage.outputTokens}`)
-    // Groq reports cached tokens in providerMetadata
-    const providerUsage = usage as any
-    console.log(`Cached tokens: ${providerUsage.cachedTokens ?? 0}`)
-  }
-
-  return text
-}
-
-// First call: computes and caches the prefix
-const answer1 = await queryWithCaching('What is the authentication flow?')
-
-// Second call: cache hit on the document prefix (50% cheaper)
-const answer2 = await queryWithCaching('How do I configure rate limiting?')
-
-// Third call: also hits cache
-const answer3 = await queryWithCaching('What are the API endpoints?')
+async function queryWithCaching(question: string): Promise<string>
 ```
+
+Build a function that takes a question and sends it to `generateText` using `groq('openai/gpt-oss-20b')`. The key pattern: place the large static reference document in the message **before** the dynamic question. Groq automatically detects repeated prompt prefixes and caches them.
+
+After the call, check the `usage` object. Groq reports cached tokens in `providerMetadata` — cast usage and look for a `cachedTokens` property. Log total input tokens, output tokens, and cached tokens.
+
+Test by calling the function multiple times with different questions against the same document. The first call computes and caches the prefix. Subsequent calls should show a non-zero `cachedTokens` value, indicating a cache hit at 50% discount.
 
 > **Beginner Note:** Groq's caching is fully automatic. The platform detects when your prompt starts with the same prefix as a recent request and reuses the cached computation. Cached tokens cost 50% less and do not count toward your rate limits. The cache expires after 2 hours without use.
 
@@ -305,46 +163,19 @@ const answer3 = await queryWithCaching('What are the API endpoints?')
 
 Anthropic takes a different approach: you explicitly mark cache breakpoints using `cache_control` in `providerOptions`. This gives you precise control over what gets cached:
 
+Anthropic requires explicit cache markers. Instead of a single string for the user message content, you pass an **array of content blocks**. The block containing the static document gets a `providerOptions` property:
+
 ```typescript
-import { generateText } from 'ai'
-import { anthropic } from '@ai-sdk/anthropic'
-
-async function queryWithExplicitCaching(question: string): Promise<string> {
-  const { text, usage } = await generateText({
-    model: anthropic('claude-sonnet-4-20250514'),
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a documentation expert. Answer questions based on the reference material.',
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `Reference documentation:\n${referenceDocument}`,
-            providerOptions: {
-              anthropic: { cacheControl: { type: 'ephemeral' } },
-            },
-          },
-          {
-            type: 'text',
-            text: `\n\nQuestion: ${question}`,
-          },
-        ],
-      },
-    ],
-  })
-
-  if (usage) {
-    const providerUsage = usage as any
-    console.log(`Cache read tokens: ${providerUsage.cacheReadInputTokens ?? 0}`)
-    console.log(`Cache creation tokens: ${providerUsage.cacheCreationInputTokens ?? 0}`)
-  }
-
-  return text
+{
+  type: 'text',
+  text: `Reference documentation:\n${referenceDocument}`,
+  providerOptions: {
+    anthropic: { cacheControl: { type: 'ephemeral' } },
+  },
 }
 ```
+
+The dynamic question goes in a separate content block without cache markers. After the call, check `usage` for `cacheReadInputTokens` and `cacheCreationInputTokens` to see cache behavior.
 
 > **Intermediate Note:** The `cache_control: { type: 'ephemeral' }` marker tells Anthropic "cache everything up to this point." The cache lives about 5 minutes (refreshed each time you use it). You only pay the cache creation cost on the first call. Anthropic's cache offers up to 90% savings on cached tokens — a deeper discount than Groq's 50%, but requires explicit markers and has a shorter TTL.
 
@@ -357,101 +188,34 @@ OpenAI also provides automatic caching, similar to Groq. Prompts of 1024+ tokens
 The key to effective caching is identifying the **static prefix** — the part of your prompt that does not change between calls. With automatic caching (Groq, OpenAI), the cache matches from the beginning of the prompt up to the first difference. With explicit caching (Anthropic), you mark the boundary yourself.
 
 ```typescript
-import { generateText } from 'ai'
-import { groq } from '@ai-sdk/groq'
-
-// Pattern: System prompt + static context (prefix) + dynamic query (suffix)
-// Groq automatically caches the matching prefix across requests
 async function cachedDocumentQA(
   staticContext: string,
   dynamicQuery: string
-): Promise<{ answer: string; cacheHit: boolean }> {
-  const { text, usage } = await generateText({
-    model: groq('openai/gpt-oss-20b'),
-    messages: [
-      {
-        role: 'system',
-        content: `You are an expert analyst. Use the provided context to answer questions accurately.
-
-<context>
-${staticContext}
-</context>`,
-      },
-      {
-        role: 'user',
-        content: dynamicQuery,
-      },
-    ],
-  })
-
-  const providerUsage = usage as any
-  const cacheHit = (providerUsage.cachedTokens ?? 0) > 0
-
-  return { answer: text, cacheHit }
-}
-
-// Multiple queries against the same context
-const context = await Bun.file('./data/product-specs.txt').text()
-
-const queries = [
-  'What are the hardware requirements?',
-  'What operating systems are supported?',
-  'What is the maximum concurrent user count?',
-  'Describe the backup procedures.',
-]
-
-for (const query of queries) {
-  const { answer, cacheHit } = await cachedDocumentQA(context, query)
-  console.log(`Query: ${query}`)
-  console.log(`Cache hit: ${cacheHit}`)
-  console.log(`Answer: ${answer.slice(0, 100)}...\n`)
-}
+): Promise<{ answer: string; cacheHit: boolean }>
 ```
+
+Build a function that separates static and dynamic content across messages. Place the static context inside the **system message** (wrapped in `<context>` tags) — this becomes the cached prefix. The dynamic query goes in a separate **user message**. After the call, check `usage` for `cachedTokens` to determine if a cache hit occurred (any value > 0 means a hit). Return both the answer and a boolean indicating whether the cache was hit.
+
+Test by loading a document from disk and running multiple queries against it in a loop, logging whether each query got a cache hit.
 
 ### Multi-turn Caching
 
 Caching is particularly effective for multi-turn conversations where the system prompt and early context remain constant. With automatic caching, the static system prompt prefix is cached across turns without any special configuration:
 
 ```typescript
-import { generateText } from 'ai'
-import { groq } from '@ai-sdk/groq'
-
 class CachedConversation {
   private messages: Array<{ role: 'user' | 'assistant'; content: string }> = []
   private systemContent: string
   private model: string
 
-  constructor(config: { systemPrompt: string; staticContext: string; model?: string }) {
-    this.model = config.model ?? 'openai/gpt-oss-20b'
-
-    // Combine system prompt and static context into a cacheable prefix
-    // This stays constant across turns, so Groq caches it automatically
-    this.systemContent = `${config.systemPrompt}\n\n<context>\n${config.staticContext}\n</context>`
-  }
-
-  async send(userMessage: string): Promise<{ text: string; cached: boolean }> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    const { text, usage } = await generateText({
-      model: groq(this.model),
-      messages: [
-        { role: 'system', content: this.systemContent },
-        ...this.messages.map(m => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        })),
-      ],
-    })
-
-    this.messages.push({ role: 'assistant', content: text })
-
-    const providerUsage = usage as any
-    const cached = (providerUsage.cachedTokens ?? 0) > 0
-
-    return { text, cached }
-  }
+  constructor(config: { systemPrompt: string; staticContext: string; model?: string })
+  async send(userMessage: string): Promise<{ text: string; cached: boolean }>
 }
 ```
+
+Build a class that maintains a conversation with a cached prefix. The constructor combines the system prompt and static context into a single `systemContent` string (with the context wrapped in `<context>` tags) — this becomes the stable prefix that Groq caches automatically.
+
+The `send` method pushes the user message onto the internal messages array, calls `generateText` with the system content followed by all accumulated messages, pushes the assistant response, and returns both the text and a cache-hit boolean. How does the growing conversation history after the cached prefix affect cache behavior? (Hint: only the prefix is cached — the conversation turns after it are always computed fresh.)
 
 > **Intermediate Note:** With Anthropic's explicit caching, you would add `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` to the system message content block. Anthropic also has minimum size requirements (1024 tokens for Claude Sonnet 4, 2048 tokens for Claude Haiku 4.5) — content smaller than this threshold will not be cached. Groq's minimum is lower (128–1024 tokens depending on model) and requires no explicit markers.
 
@@ -522,7 +286,6 @@ The savings come from two places:
 The KV cache grows linearly with context length and model size:
 
 ```typescript
-// KV cache size estimation (conceptual)
 interface ModelConfig {
   layers: number
   heads: number
@@ -530,29 +293,10 @@ interface ModelConfig {
   bytesPerParam: number // 2 for float16, 1 for int8
 }
 
-function estimateKVCacheSize(config: ModelConfig, sequenceLength: number): { bytes: number; megabytes: number } {
-  // Per token: 2 (K and V) × layers × heads × headDim × bytesPerParam
-  const bytesPerToken = 2 * config.layers * config.heads * config.headDim * config.bytesPerParam
-  const totalBytes = bytesPerToken * sequenceLength
-
-  return {
-    bytes: totalBytes,
-    megabytes: totalBytes / (1024 * 1024),
-  }
-}
-
-// Example: Claude-like model (approximate)
-const claudeConfig: ModelConfig = {
-  layers: 80,
-  heads: 64,
-  headDim: 128,
-  bytesPerParam: 2,
-}
-
-const cache200K = estimateKVCacheSize(claudeConfig, 200_000)
-console.log(`KV cache for 200K tokens: ${cache200K.megabytes.toFixed(0)} MB`)
-// This is per-request GPU memory — expensive at scale
+function estimateKVCacheSize(config: ModelConfig, sequenceLength: number): { bytes: number; megabytes: number }
 ```
+
+Build a function that estimates the GPU memory required for the KV cache. The formula is: `bytesPerToken = 2 (K and V) * layers * heads * headDim * bytesPerParam`. Multiply by `sequenceLength` for total bytes, then convert to megabytes. Try it with a Claude-like config (80 layers, 64 heads, 128 headDim, 2 bytes) at 200K tokens — what does the memory requirement look like? This is per-request GPU memory, which is why long-context requests are expensive at scale.
 
 > **Advanced Note:** The KV cache is why longer contexts cost more, even beyond the linear token pricing. Providers need GPU memory to store the cache for each concurrent request. This is a fundamental hardware constraint that affects pricing and availability for long-context requests.
 
@@ -573,174 +317,51 @@ Even with large context windows, compression helps:
 Remove irrelevant content before sending to the model:
 
 ```typescript
-/**
- * Strip unnecessary whitespace, boilerplate, and formatting
- * from documents before including them in context.
- */
-function preprocessDocument(text: string): string {
-  let processed = text
+function preprocessDocument(text: string): string
 
-  // Collapse multiple blank lines into one
-  processed = processed.replace(/\n{3,}/g, '\n\n')
-
-  // Remove excessive whitespace
-  processed = processed.replace(/[ \t]+/g, ' ')
-
-  // Remove common boilerplate patterns
-  processed = processed.replace(/^Copyright.*$/gm, '')
-  processed = processed.replace(/^All rights reserved.*$/gm, '')
-  processed = processed.replace(/^Page \d+ of \d+$/gm, '')
-
-  // Remove HTML tags if present
-  processed = processed.replace(/<[^>]+>/g, '')
-
-  // Trim each line
-  processed = processed
-    .split('\n')
-    .map(line => line.trim())
-    .join('\n')
-
-  return processed.trim()
-}
-
-// Measure compression
 function compressionStats(
   original: string,
   compressed: string
-): { originalTokens: number; compressedTokens: number; savings: string } {
-  const origTokens = Math.ceil(original.length / 4)
-  const compTokens = Math.ceil(compressed.length / 4)
-  const savings = ((1 - compTokens / origTokens) * 100).toFixed(1)
-
-  return {
-    originalTokens: origTokens,
-    compressedTokens: compTokens,
-    savings: `${savings}%`,
-  }
-}
+): { originalTokens: number; compressedTokens: number; savings: string }
 ```
+
+Build two functions. `preprocessDocument` should strip unnecessary content before sending to the model. Use regex replacements to: collapse multiple blank lines into one (`/\n{3,}/g`), collapse excessive whitespace, remove common boilerplate (copyright lines, page numbers), strip HTML tags, and trim each line. Return the cleaned text.
+
+`compressionStats` compares original and compressed text by estimating tokens (`Math.ceil(length / 4)`) and computing savings as a percentage. What kinds of documents benefit most from this preprocessing?
 
 ### Technique 2: Selective Inclusion
 
 Only include relevant sections of a document:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface DocumentSection {
   title: string
   content: string
   tokens: number
 }
 
-function parseDocumentSections(document: string): DocumentSection[] {
-  const sections: DocumentSection[] = []
-  const parts = document.split(/^## /gm)
-
-  for (const part of parts) {
-    if (!part.trim()) continue
-
-    const lines = part.split('\n')
-    const title = lines[0].trim()
-    const content = lines.slice(1).join('\n').trim()
-
-    sections.push({
-      title,
-      content,
-      tokens: Math.ceil(content.length / 4),
-    })
-  }
-
-  return sections
-}
+function parseDocumentSections(document: string): DocumentSection[]
 
 async function selectRelevantSections(
   sections: DocumentSection[],
   question: string,
   maxTokens: number
-): Promise<DocumentSection[]> {
-  // Use the LLM to identify relevant section titles
-  const sectionList = sections.map((s, i) => `${i}. ${s.title}`).join('\n')
-
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a document navigator. Given a list of section titles and a question, return the indices of the most relevant sections as comma-separated numbers. Return only the numbers.',
-      },
-      {
-        role: 'user',
-        content: `Sections:\n${sectionList}\n\nQuestion: ${question}`,
-      },
-    ],
-    maxTokens: 100,
-  })
-
-  const indices = text
-    .split(',')
-    .map(s => parseInt(s.trim()))
-    .filter(n => !isNaN(n) && n >= 0 && n < sections.length)
-
-  // Select sections within token budget
-  const selected: DocumentSection[] = []
-  let totalTokens = 0
-
-  for (const idx of indices) {
-    if (totalTokens + sections[idx].tokens <= maxTokens) {
-      selected.push(sections[idx])
-      totalTokens += sections[idx].tokens
-    }
-  }
-
-  return selected
-}
+): Promise<DocumentSection[]>
 ```
+
+Build two functions. `parseDocumentSections` splits a markdown document on `## ` headers, extracting each section's title (first line), content (remaining lines), and estimated token count.
+
+`selectRelevantSections` uses the LLM itself to pick which sections are relevant. Send a numbered list of section titles to `generateText` with a system prompt that says "return the indices of relevant sections as comma-separated numbers." Parse the response into indices, filter out invalid ones, then select sections greedily until the `maxTokens` budget is exhausted. What happens if the LLM returns indices that are out of range? How do you handle that?
 
 ### Technique 3: LLM-Based Compression
 
 Use a smaller, cheaper model to compress content before sending to the main model:
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function compressContext(text: string, targetRatio: number = 0.3): Promise<string> {
-  const originalTokens = Math.ceil(text.length / 4)
-  const targetTokens = Math.floor(originalTokens * targetRatio)
-
-  const { text: compressed } = await generateText({
-    model: mistral('mistral-small-latest'), // Use cheaper model for compression
-    messages: [
-      {
-        role: 'system',
-        content: `Compress the following text to approximately ${targetTokens} tokens.
-Preserve all key facts, names, numbers, and relationships.
-Remove redundancy, examples, and verbose explanations.
-Output only the compressed text, no commentary.`,
-      },
-      {
-        role: 'user',
-        content: text,
-      },
-    ],
-  })
-
-  const compressedTokens = Math.ceil(compressed.length / 4)
-  console.log(
-    `Compressed: ${originalTokens} → ${compressedTokens} tokens (${((compressedTokens / originalTokens) * 100).toFixed(1)}%)`
-  )
-
-  return compressed
-}
-
-// Usage
-const longDocument = `... (imagine a 10,000 word document) ...`
-const compressed = await compressContext(longDocument, 0.25)
-// Now use 'compressed' in your main prompt instead of 'longDocument'
+async function compressContext(text: string, targetRatio: number = 0.3): Promise<string>
 ```
+
+Build a function that uses a cheaper model to compress content. Calculate the target token count from the original text length and `targetRatio`. Send the text to `generateText` with a system prompt that instructs the model to compress to approximately that many tokens, preserving key facts, names, numbers, and relationships while removing redundancy and examples. Log the compression ratio achieved. Use the compressed output in place of the original document in subsequent prompts.
 
 > **Advanced Note:** LLM-based compression risks losing important details. Always validate that key facts survive compression, especially numerical data, proper nouns, and causal relationships. Consider using structured extraction (Module 3) to pull out key facts before compression.
 
@@ -755,42 +376,13 @@ When processing very long contexts, the model processes the input in chunks rath
 ### Structuring Input for Efficient Processing
 
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * For very long documents, structure the input with clear markers
- * so the model can efficiently navigate the content.
- */
 async function structuredLongDocument(
   sections: Array<{ title: string; content: string }>,
   question: string
-): Promise<string> {
-  // Build a table of contents first
-  const toc = sections.map((s, i) => `[Section ${i + 1}] ${s.title}`).join('\n')
-
-  // Format sections with clear delimiters
-  const formattedSections = sections
-    .map((s, i) => `<section id="${i + 1}" title="${s.title}">\n${s.content}\n</section>`)
-    .join('\n\n')
-
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content: `You are a document analyst. The user provides a structured document with a table of contents followed by sections. Use the table of contents to navigate efficiently. Always cite section numbers in your answers.`,
-      },
-      {
-        role: 'user',
-        content: `Table of Contents:\n${toc}\n\n${formattedSections}\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  return text
-}
+): Promise<string>
 ```
+
+Build a function that structures long input for efficient model processing. First, build a table of contents from the section titles (e.g., `[Section 1] Introduction`). Then format each section with XML-like delimiters: `<section id="1" title="...">content</section>`. Send the TOC followed by the sections, then the question. The system message should instruct the model to use the TOC for navigation and cite section numbers. Why does a table of contents help the model even though it adds tokens?
 
 ### Hierarchical Context Organization
 
@@ -803,93 +395,16 @@ interface HierarchicalDocument {
   sections: Array<{ title: string; content: string }> // Full content
 }
 
-async function buildHierarchicalDocument(document: string): Promise<HierarchicalDocument> {
-  // Parse into sections (simplified)
-  const rawSections = document.split(/^# /gm).filter(Boolean)
-  const sections = rawSections.map(s => {
-    const lines = s.split('\n')
-    return { title: lines[0].trim(), content: lines.slice(1).join('\n').trim() }
-  })
+async function buildHierarchicalDocument(document: string): Promise<HierarchicalDocument>
 
-  // Generate section summaries
-  const { text: summariesJson } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content: 'For each section, write a 1-2 sentence summary. Return as JSON array of {title, summary}.',
-      },
-      {
-        role: 'user',
-        content: sections.map(s => `## ${s.title}\n${s.content.slice(0, 500)}`).join('\n\n'),
-      },
-    ],
-  })
-
-  const sectionSummaries = JSON.parse(summariesJson)
-
-  // Generate overall summary
-  const { text: overallSummary } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'system',
-        content: 'Write a concise summary of this document in 2-3 paragraphs.',
-      },
-      {
-        role: 'user',
-        content: sectionSummaries.map((s: any) => `${s.title}: ${s.summary}`).join('\n'),
-      },
-    ],
-  })
-
-  return {
-    summary: overallSummary,
-    sectionSummaries,
-    sections,
-  }
-}
-
-// Use the hierarchical document: start with summary, drill into sections as needed
-async function hierarchicalQA(doc: HierarchicalDocument, question: string): Promise<string> {
-  // Step 1: Use summaries to identify relevant sections
-  const { text: relevantIndices } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: `Document summary: ${doc.summary}\n\nSections:\n${doc.sectionSummaries
-          .map((s, i) => `${i}. ${s.title}: ${s.summary}`)
-          .join('\n')}\n\nWhich sections are relevant to: ${question}\nReturn comma-separated indices only.`,
-      },
-    ],
-  })
-
-  const indices = relevantIndices
-    .split(',')
-    .map(s => parseInt(s.trim()))
-    .filter(n => !isNaN(n))
-
-  // Step 2: Query with only the relevant sections
-  const relevantContent = indices
-    .map(i => doc.sections[i])
-    .filter(Boolean)
-    .map(s => `## ${s.title}\n${s.content}`)
-    .join('\n\n')
-
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      {
-        role: 'user',
-        content: `Context:\n${relevantContent}\n\nQuestion: ${question}`,
-      },
-    ],
-  })
-
-  return text
-}
+async function hierarchicalQA(doc: HierarchicalDocument, question: string): Promise<string>
 ```
+
+Build two functions that implement a hierarchical approach to long documents.
+
+`buildHierarchicalDocument` parses a document into sections (split on `# ` headers), then makes two LLM calls: one to generate 1-2 sentence summaries for each section (return as JSON), and another to generate an overall summary from those section summaries. The result is a three-level structure: full document summary, per-section summaries, and full section content.
+
+`hierarchicalQA` uses this structure in two steps. First, send the document summary and section summaries to the LLM and ask which sections are relevant to the question (return comma-separated indices). Second, fetch only those sections' full content and send them with the question to get the answer. How does this two-step approach reduce cost compared to always sending the full document?
 
 > **Beginner Note:** Hierarchical organization adds complexity but dramatically reduces cost for repeated queries against the same document. Build the hierarchy once and query many times.
 
@@ -908,122 +423,32 @@ interface PricingTier {
   cachedInputPer1M: number // Price for cached input tokens
 }
 
-// NOTE: Pricing below may be outdated. Verify against:
-// Groq: https://groq.com/pricing
-// Anthropic: https://www.anthropic.com/pricing
-const groqGptOss20bPricing: PricingTier = {
-  inputPer1M: 0.075, // $0.075 per 1M input tokens
-  outputPer1M: 0.3, // $0.30 per 1M output tokens
-  cachedInputPer1M: 0.0375, // $0.0375 per 1M tokens (50% discount)
-}
-
-// For comparison: Anthropic has separate cache write (125% of input) and cache read (10% of input)
-const anthropicSonnetPricing = {
-  inputPer1M: 3.0,
-  outputPer1M: 15.0,
-  cacheWritePer1M: 3.75, // 25% surcharge on first write
-  cacheReadPer1M: 0.3, // 90% discount on subsequent reads
-}
-
 function calculateGroqCost(
   pricing: PricingTier,
-  usage: {
-    inputTokens: number
-    outputTokens: number
-    cachedTokens: number
-  }
-): { total: number; breakdown: Record<string, number> } {
-  const uncachedInputTokens = usage.inputTokens - usage.cachedTokens
-  const inputCost = (uncachedInputTokens / 1_000_000) * pricing.inputPer1M
-  const cachedCost = (usage.cachedTokens / 1_000_000) * pricing.cachedInputPer1M
-  const outputCost = (usage.outputTokens / 1_000_000) * pricing.outputPer1M
+  usage: { inputTokens: number; outputTokens: number; cachedTokens: number }
+): { total: number; breakdown: Record<string, number> }
 
-  return {
-    total: inputCost + cachedCost + outputCost,
-    breakdown: {
-      input: inputCost,
-      cachedInput: cachedCost,
-      output: outputCost,
-    },
-  }
-}
-
-// Scenario: 50K token document, 10 questions, 200 token average response
-function compareCachingScenarios(): void {
-  const documentTokens = 50_000
-  const questionTokens = 50
-  const responseTokens = 200
-  const numQueries = 10
-
-  // Without caching: pay full input cost each time
-  const uncachedCost = calculateGroqCost(groqGptOss20bPricing, {
-    inputTokens: (documentTokens + questionTokens) * numQueries,
-    outputTokens: responseTokens * numQueries,
-    cachedTokens: 0,
-  })
-
-  // With caching: first query is full price, subsequent queries cache the document prefix
-  const cachedCost = calculateGroqCost(groqGptOss20bPricing, {
-    inputTokens: (documentTokens + questionTokens) * numQueries,
-    outputTokens: responseTokens * numQueries,
-    cachedTokens: documentTokens * (numQueries - 1), // 9 out of 10 queries hit cache
-  })
-
-  console.log('=== Groq GPT-OSS 20B Cost Comparison ===')
-  console.log(`Without caching: $${uncachedCost.total.toFixed(4)}`)
-  console.log(`With caching:    $${cachedCost.total.toFixed(4)}`)
-  console.log(
-    `Savings:         $${(uncachedCost.total - cachedCost.total).toFixed(4)} (${(((uncachedCost.total - cachedCost.total) / uncachedCost.total) * 100).toFixed(1)}%)`
-  )
-
-  console.log('\n--- Uncached Breakdown ---')
-  for (const [key, value] of Object.entries(uncachedCost.breakdown)) {
-    console.log(`  ${key}: $${value.toFixed(4)}`)
-  }
-
-  console.log('\n--- Cached Breakdown ---')
-  for (const [key, value] of Object.entries(cachedCost.breakdown)) {
-    console.log(`  ${key}: $${value.toFixed(4)}`)
-  }
-}
-
-compareCachingScenarios()
+function compareCachingScenarios(): void
 ```
+
+Build a cost calculator and a comparison function. Reference pricing (verify against current rates):
+
+- **Groq GPT-OSS 20B:** $0.075/1M input, $0.30/1M output, $0.0375/1M cached input (50% discount)
+- **Anthropic Sonnet:** $3.0/1M input, $15.0/1M output, $3.75/1M cache write, $0.30/1M cache read
+
+`calculateGroqCost` separates input tokens into uncached (`inputTokens - cachedTokens`) and cached portions, applies different rates to each, adds output cost, and returns a total with a breakdown.
+
+`compareCachingScenarios` models a scenario: 50K-token document, 10 questions, 200-token responses. Compare the cost with zero cached tokens vs the cost where 9 out of 10 queries hit the cache (first query pays full price). Print both totals and the percentage savings. How significant are the savings at this scale?
 
 ### Break-Even Analysis
 
 With automatic caching (Groq, OpenAI), there is no cache write surcharge — you simply pay 50% less for cached tokens. This means caching is beneficial from the very first cache hit (the second query):
 
 ```typescript
-/**
- * Compare savings across providers for a given number of queries.
- * Groq/OpenAI: no write surcharge, 50% discount on cached reads.
- * Anthropic: 25% write surcharge, but 90% discount on cached reads.
- */
-function compareCachingSavings(documentTokens: number, numQueries: number): void {
-  // Groq: 50% discount, no write surcharge, caching starts on 2nd query
-  const groqUncached = (documentTokens / 1_000_000) * 0.075 * numQueries
-  const groqCached =
-    (documentTokens / 1_000_000) * 0.075 + // First query: full price
-    (documentTokens / 1_000_000) * 0.0375 * (numQueries - 1) // Subsequent: 50% off
-  const groqSavings = ((groqUncached - groqCached) / groqUncached) * 100
-
-  // Anthropic: 25% write surcharge, 90% read discount
-  const anthropicUncached = (documentTokens / 1_000_000) * 3.0 * numQueries
-  const anthropicCached =
-    (documentTokens / 1_000_000) * 3.75 + // First query: cache write (125% of input)
-    (documentTokens / 1_000_000) * 0.3 * (numQueries - 1) // Subsequent: cache read (10% of input)
-  const anthropicSavings = ((anthropicUncached - anthropicCached) / anthropicUncached) * 100
-
-  console.log(`=== ${numQueries} queries against ${documentTokens} token document ===`)
-  console.log(`Groq savings:      ${groqSavings.toFixed(1)}%`)
-  console.log(`Anthropic savings:  ${anthropicSavings.toFixed(1)}%`)
-}
-
-compareCachingSavings(50_000, 2) // Even 2 queries saves money
-compareCachingSavings(50_000, 10) // 10 queries: significant savings on both
-compareCachingSavings(50_000, 100) // High volume: Anthropic's 90% discount dominates
+function compareCachingSavings(documentTokens: number, numQueries: number): void
 ```
+
+Build a function that compares caching savings across providers. For Groq: first query at full price, subsequent queries at 50% discount, no write surcharge. For Anthropic: first query at 125% (cache write surcharge), subsequent queries at 10% (90% discount on reads). Compute the savings percentage for each provider. Test with 2, 10, and 100 queries against a 50K-token document. At what query count does Anthropic's deeper discount overtake Groq's simpler pricing?
 
 > **Advanced Note:** Cache lifetime matters for both approaches. Groq's cache lasts about 2 hours without use — generous for most interactive and batch workloads. Anthropic's ephemeral cache lasts about 5 minutes but is refreshed with each use. OpenAI's cache lasts 5–10 minutes. For high-traffic applications, all caches stay warm naturally. For infrequent queries, Groq's longer TTL is a significant advantage.
 
@@ -1047,81 +472,19 @@ interface UseCase {
 function recommendStrategy(useCase: UseCase): {
   strategy: 'full-context' | 'cached-context' | 'rag' | 'hybrid'
   reasoning: string
-} {
-  // Small documents: just use full context
-  if (useCase.documentSize === 'small') {
-    if (useCase.queryFrequency === 'high-volume') {
-      return {
-        strategy: 'cached-context',
-        reasoning: 'Small document fits easily in context. Caching saves cost at high volume.',
-      }
-    }
-    return {
-      strategy: 'full-context',
-      reasoning: 'Small document is cheap to include in full. No need for complexity.',
-    }
-  }
-
-  // Huge documents that exceed context window
-  if (useCase.documentSize === 'huge') {
-    return {
-      strategy: 'rag',
-      reasoning: 'Document exceeds context window. RAG is the only viable approach.',
-    }
-  }
-
-  // Medium/large documents with high query volume
-  if (useCase.queryFrequency === 'high-volume' && useCase.documentUpdateFrequency === 'static') {
-    if (useCase.accuracyRequirements === 'critical') {
-      return {
-        strategy: 'cached-context',
-        reasoning: 'High accuracy needs full context. Caching amortizes cost across queries.',
-      }
-    }
-    return {
-      strategy: 'rag',
-      reasoning: 'High volume + non-critical accuracy = RAG for cost efficiency.',
-    }
-  }
-
-  // Frequently updating documents
-  if (useCase.documentUpdateFrequency === 'real-time') {
-    return {
-      strategy: 'rag',
-      reasoning: 'Real-time updates invalidate caches. RAG handles updates by re-embedding changed chunks.',
-    }
-  }
-
-  // Default for medium/large, moderate use
-  return {
-    strategy: 'cached-context',
-    reasoning: 'Moderate use case benefits from caching simplicity and accuracy.',
-  }
 }
-
-// Examples
-console.log(
-  recommendStrategy({
-    documentSize: 'medium',
-    queryFrequency: 'high-volume',
-    documentUpdateFrequency: 'static',
-    accuracyRequirements: 'critical',
-    latencyRequirements: 'moderate',
-  })
-)
-// { strategy: 'cached-context', reasoning: 'High accuracy needs full context...' }
-
-console.log(
-  recommendStrategy({
-    documentSize: 'huge',
-    queryFrequency: 'periodic',
-    documentUpdateFrequency: 'daily',
-    accuracyRequirements: 'high',
-    latencyRequirements: 'strict',
-  })
-)
-// { strategy: 'rag', reasoning: 'Document exceeds context window...' }
 ```
+
+Build a decision function that recommends a strategy based on the use case properties. Work through the logic in this order:
+
+1. **Small documents** — if query frequency is high-volume, recommend `cached-context`; otherwise `full-context` (no need for complexity).
+2. **Huge documents** — always `rag` (they exceed the context window).
+3. **High-volume + static + critical accuracy** — `cached-context` (full context is most accurate, caching amortizes cost).
+4. **High-volume + static + non-critical** — `rag` (cost efficiency wins when accuracy is not paramount).
+5. **Real-time updates** — `rag` (cache invalidation makes caching impractical).
+6. **Default** — `cached-context` for moderate use cases.
+
+Each return should include a `reasoning` string explaining the choice. Test with several scenarios to verify the logic.
 
 ### Decision Tree (Summary)
 
@@ -1142,48 +505,117 @@ Is the document < context window?
 For some use cases, combining both strategies works best:
 
 ```typescript
-import { generateText, embed } from 'ai'
-import { groq } from '@ai-sdk/groq'
-
-/**
- * Hybrid strategy:
- * 1. Cache a summary/overview of the full document (static prefix)
- * 2. Use RAG to retrieve specific details when needed
- * 3. Combine cached overview + retrieved details in context
- *
- * The system prompt with the document overview stays constant across queries,
- * so Groq automatically caches it.
- */
 async function hybridDocumentQA(config: {
   documentSummary: string // Cached automatically (static prefix)
   retrievedChunks: string[] // From vector search (dynamic suffix)
   question: string
-}): Promise<string> {
-  const { text } = await generateText({
-    model: groq('openai/gpt-oss-20b'),
-    messages: [
-      {
-        role: 'system',
-        content: `You are a document expert. You have access to a document overview and specific retrieved sections.
-Use the overview for general context and the retrieved sections for specific details.
-
-Document Overview:
-${config.documentSummary}`,
-      },
-      {
-        role: 'user',
-        content: `Retrieved sections:\n${config.retrievedChunks.join('\n---\n')}\n\nQuestion: ${config.question}`,
-      },
-    ],
-  })
-
-  return text
-}
+}): Promise<string>
 ```
+
+Build a function that combines caching and RAG. Place the document summary in the **system message** (this becomes the cached prefix). Place the retrieved chunks and question in the **user message** (this is the dynamic suffix). The system prompt should instruct the model to use the overview for general context and retrieved sections for specific details. Why is this hybrid approach sometimes better than either strategy alone?
 
 > **Beginner Note:** Start with the simplest approach that works. If your document fits in the context window and you are making a few queries, use full context. Add caching when you notice cost issues. Add RAG when documents are too large. Do not over-engineer from the start.
 
 > **Local Alternative (Ollama):** Prompt caching through the API is a cloud provider feature (Groq, Anthropic, OpenAI). Ollama does not offer explicit prompt caching through its API — but llama.cpp (which powers Ollama) automatically caches the KV state for repeated prefixes, giving you similar benefits transparently. The long context strategies (chunking, summarization, map-reduce) work with any provider. Note that most Ollama models have smaller context windows (8K-32K), so the context management techniques here are even more critical.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: Auto-Compact Systems
+
+### Token Monitoring and Automatic Compaction
+
+Production LLM applications that run for extended sessions (coding assistants, chat agents, long research tasks) must continuously monitor token usage and compact the conversation before hitting the context limit. This is the runtime version of the compression techniques from Section 5 — but triggered automatically rather than manually.
+
+The pattern works in three stages:
+
+1. **Monitor** — After every API response, check `usage.totalTokens` against the model's context window
+2. **Warn** — At 80% capacity, log a warning and consider deferring non-essential context
+3. **Compact** — At 90% capacity, summarize older messages and replace them with a condensed version
+
+```typescript
+const WARN_THRESHOLD = 0.8
+const COMPACT_THRESHOLD = 0.9
+
+// After each generateText call, check usage against the model's max context
+const usageRatio = usage.totalTokens / modelMaxTokens
+if (usageRatio >= COMPACT_THRESHOLD) {
+  messages = await compactMessages(messages)
+}
+```
+
+The compaction step itself is a separate `generateText` call (often to a smaller, cheaper model) that summarizes the conversation so far into a condensed system message. The key design decision is what to preserve: recent messages stay verbatim, older messages get summarized, and the system prompt remains untouched.
+
+### Configurable Thresholds Per Model
+
+Different models have different context windows, so thresholds must be model-aware. A 200K-token model has more room before compaction is needed than a 32K-token model. Production systems map model IDs to their context sizes and compute thresholds dynamically.
+
+---
+
+## Section 10: Cache-Friendly Message Ordering
+
+### Structuring Messages for Maximum Cache Hits
+
+Prompt caching works on prefixes — the provider caches the KV state computed from the beginning of the prompt. Any change in early messages invalidates the cache for everything after it. This has a direct implication for how you structure API calls:
+
+1. **Static content first** — System prompt, tool definitions, reference documents, and any fixed instructions go at the beginning. These rarely change between calls.
+2. **Semi-static content next** — Retrieved context, memory summaries, and session metadata that change infrequently.
+3. **Dynamic content last** — The user's latest message and recent conversation turns go at the end.
+
+```typescript
+const messages = [
+  { role: 'system', content: systemPrompt }, // cached — rarely changes
+  { role: 'system', content: toolDefinitions }, // cached — rarely changes
+  { role: 'user', content: retrievedContext }, // semi-stable
+  ...recentConversation, // dynamic — changes every turn
+  { role: 'user', content: currentUserMessage }, // always new
+]
+```
+
+If you put the user's message before the reference document, every new query invalidates the cache for the (potentially large) document. By keeping static content at the front, the provider reuses the cached prefix and only processes the new dynamic suffix. This is the difference between caching 90% of your tokens and caching 0%.
+
+---
+
+## Section 11: Memory Management for Long-Running LLM Apps
+
+### Applicable Memory Patterns
+
+Long-running LLM applications — agents that operate for hours, chat sessions with hundreds of turns — face memory management challenges beyond just token counts. Several patterns from systems programming apply directly:
+
+**LRU Caches** — Keep the N most recently used items (embeddings, tool results, retrieved documents) and evict the oldest when the cache is full. This prevents unbounded memory growth while keeping frequently accessed data fast to retrieve.
+
+**Circular Buffers** — Store the last N messages in a fixed-size buffer that overwrites the oldest entry when full. This is ideal for "recent context" windows where you always want the last K turns regardless of total conversation length.
+
+**Token Monitoring** — Track cumulative token usage across the session and trigger cleanup actions (compaction, cache eviction, summary generation) when thresholds are exceeded. This is the auto-compact system from Section 9 generalized to all resource types.
+
+**WeakRef for Cleanup** — Use `WeakRef` for references to large objects (parsed documents, embedding vectors) that should be garbage collected when no longer actively used. This prevents memory leaks in long sessions without requiring explicit cleanup code.
+
+These patterns complement each other. A production system might use an LRU cache for embeddings, a circular buffer for recent messages, and token monitoring to trigger compaction — all running simultaneously.
+
+---
+
+## Section 12: Model Variants and Thinking Budgets
+
+### Thinking Tokens as a Context Budget Decision
+
+Some models support configurable reasoning effort — the model spends more tokens "thinking" internally before producing output. This directly trades context capacity for answer quality:
+
+- **Anthropic:** `thinking` budget levels via `providerOptions` (e.g., `{ anthropic: { thinking: { type: 'enabled', budgetTokens: 8192 } } }`)
+- **OpenAI:** `reasoningEffort` levels — `'low'`, `'medium'`, `'high'`
+- **Google:** thinking budget as a token count
+
+More thinking tokens means fewer tokens available for conversation history. A 200K context window with 10K thinking budget has 190K usable for messages. Production systems expose this as a user-facing "variant" selector — a quick question uses a fast variant with minimal thinking, while a complex task uses the max-thinking variant.
+
+```typescript
+// Fast variant — minimal thinking, preserves context space
+providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 1024 } } }
+
+// Deep variant — extensive reasoning, consumes more context
+providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: 8192 } } }
+```
+
+When building context budgets (Section 8's decision framework), account for thinking tokens as a reserved allocation alongside system prompt, tools, and conversation history.
 
 ---
 
@@ -1198,6 +630,10 @@ In this module, you learned:
 5. **KV cache internals:** Understanding how transformers store key-value pairs explains why prompt caching works and why prefix stability matters.
 6. **Context compression:** Preprocessing documents, selectively including content, and using LLM-based summarization reduce token usage while preserving the information the model needs.
 7. **Decision framework:** Choosing between full context, caching, and RAG depends on document size, query frequency, freshness requirements, and budget constraints.
+8. **Auto-compact systems:** Production applications monitor token usage continuously and trigger compaction automatically at configurable thresholds.
+9. **Cache-friendly ordering:** Placing static content first and dynamic content last in messages maximizes prompt cache hit rates.
+10. **Memory management:** LRU caches, circular buffers, token monitoring, and WeakRef are complementary patterns for managing resources in long-running LLM applications.
+11. **Thinking budgets:** Configurable reasoning effort trades context capacity for answer quality — a direct context budget decision.
 
 In Module 6, you will dive deep into streaming — delivering LLM responses to users in real time for better perceived performance.
 
@@ -1277,6 +713,32 @@ D) When you are making only one query
 **Answer: C**
 
 RAG is the better choice when documents are too large to fit in the context window (making full context impossible) or when documents change frequently (which would invalidate the cache). For small, static documents with high accuracy requirements, full context with caching is usually superior.
+
+---
+
+### Question 6 (Medium)
+
+Why should static content (system prompt, tool definitions) be placed at the beginning of the message array rather than after dynamic content?
+
+- A) The model pays more attention to content at the beginning
+- B) Prompt caching works on prefixes — placing stable content first maximizes cache hit rates since dynamic content at the end does not invalidate the cached prefix
+- C) The API requires system messages to come first
+- D) Static content is always shorter than dynamic content
+
+**Answer: B** — Prompt caching stores the KV state computed from the beginning of the prompt. Any change in early messages invalidates the cache for everything after it. By placing static content first, the provider reuses the cached prefix and only processes the new dynamic suffix. Putting dynamic content before static content would invalidate the cache on every request.
+
+---
+
+### Question 7 (Hard)
+
+A production auto-compact system triggers compaction at 90% context capacity. The compaction itself is a `generateText` call to a smaller model. What design risk does this introduce, and how is it mitigated?
+
+- A) The compaction model might hallucinate — mitigated by using structured output with a strict schema
+- B) The compaction call consumes tokens from the already-full context — mitigated by using a separate model call with its own context window, preserving recent messages verbatim and only summarizing older ones
+- C) The compaction happens too frequently — mitigated by caching the compaction result
+- D) The smaller model cannot handle the conversation length — mitigated by switching to a larger model
+
+**Answer: B** — The compaction call is a separate `generateText` invocation with its own context budget, not an addition to the already-full conversation. It takes the older messages, summarizes them into a condensed system message, and the main conversation replaces those messages with the summary. Recent messages stay verbatim to preserve fidelity, and the system prompt remains untouched.
 
 ---
 
@@ -1366,3 +828,50 @@ Build a pipeline that compresses a long document through multiple stages and mea
 - Answer accuracy degrades gracefully with compression level
 - Cost savings are correctly calculated and displayed
 - The pipeline handles edge cases (very short documents, documents with tables)
+
+### Exercise 3: Auto-Compact Monitor
+
+Build a middleware that wraps `generateText` calls, tracks cumulative token usage across a conversation, and triggers a compaction callback when usage exceeds configurable thresholds.
+
+**What to build:** Create `src/memory/auto-compact.ts`
+
+**Requirements:**
+
+1. Define an `AutoCompactMonitor` that accepts a model's max context size and threshold percentages (warn at 80%, compact at 90%)
+2. Expose a `trackUsage(usage: LanguageModelUsage)` method that accumulates token counts after each API call
+3. When the warn threshold is hit, call an `onWarn` callback with current usage stats
+4. When the compact threshold is hit, call an `onCompact` callback that receives the current messages array and returns a compacted version
+5. Expose a `getUsageRatio(): number` method that returns current usage as a fraction of the context window
+6. Support `reset()` to clear usage counters after compaction
+
+**Expected behavior:**
+
+- After 5 API calls each using ~5K tokens against a 32K context model, the monitor should trigger the warn callback around the 4th-5th call and the compact callback shortly after
+- The `onCompact` callback receives messages and returns a shorter array — the monitor should reset its counters after compaction
+- Different model context sizes produce different trigger points for the same token usage
+
+**File:** `src/memory/exercises/auto-compact.ts`
+
+### Exercise 4: Context Window Budget Allocator
+
+Build a budget allocator that divides a model's context window into named segments and tracks consumption against each budget.
+
+**What to build:** Create `src/memory/exercises/context-budget.ts`
+
+**Requirements:**
+
+1. Accept a model's total context window size and a budget configuration mapping segment names to token allocations (e.g., `{ systemPrompt: 20000, tools: 10000, memories: 10000, conversation: 150000, output: 10000 }`)
+2. Validate that all segments sum to no more than the total context window
+3. Expose `allocate(segment: string, tokens: number): boolean` that returns `false` if the segment would exceed its budget
+4. Expose `remaining(segment: string): number` that returns how many tokens are left in that segment
+5. Expose `summary(): Record<string, { used: number; budget: number; ratio: number }>` for a full overview
+6. Support `release(segment: string, tokens: number)` to free tokens when messages are removed
+
+**Expected behavior:**
+
+- Allocating 15K tokens to a segment with a 10K budget returns `false` and does not change state
+- After allocating 8K to a 10K segment, `remaining` returns 2K
+- The summary shows all segments with their usage ratios
+- Releasing tokens increases the remaining budget for that segment
+
+**File:** `src/memory/exercises/context-budget.ts`

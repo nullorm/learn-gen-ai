@@ -40,10 +40,9 @@ Observability for LLM applications goes beyond traditional APM. You need to trac
 
 Traditional application monitoring assumes deterministic behavior. A database query either returns the right data or throws an error. An HTTP request either succeeds or fails. LLM calls exist in a gray zone -- they almost always "succeed" (return a 200 status code with generated text) but the content may be wrong, incomplete, hallucinated, or harmful.
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+Consider what happens when you call `generateText` with a factual question. The API returns HTTP 200, reports token counts and latency -- all green from the perspective of traditional monitoring. But was the answer actually correct? Did the model confuse one historical treaty with another? Traditional monitoring has no idea.
 
+```typescript
 // The fundamental observability challenge: this call "succeeds" even when the
 // answer is wrong. Traditional error monitoring will not catch it.
 interface LLMCallOutcome {
@@ -56,28 +55,9 @@ interface LLMCallOutcome {
 
 // In traditional software, technicalSuccess === everything is fine.
 // In LLM applications, all five dimensions matter.
-async function demonstrateObservabilityGap(): Promise<void> {
-  const startTime = Date.now()
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: 'What year was the Treaty of Tordesillas signed?',
-  })
-
-  const latencyMs = Date.now() - startTime
-
-  // Traditional monitoring sees: 200 OK, 147 tokens, 1.2s latency
-  // All green. Ship it.
-  console.log('Status: Success')
-  console.log(`Latency: ${latencyMs}ms`)
-  console.log(`Tokens: ${result.usage?.inputTokens} in, ${result.usage?.outputTokens} out`)
-
-  // But was the answer actually correct? Was it the Treaty of Tordesillas (1494)?
-  // Did the model confuse it with another treaty?
-  // Traditional monitoring has no idea.
-  console.log(`Response: ${result.text}`)
-}
 ```
+
+What question should you ask yourself after every LLM call in production? Not just "did it return 200?" but something much broader.
 
 ### What Makes LLM Observability Different
 
@@ -145,6 +125,8 @@ interface LLMObservabilityPillars {
 ### Building an LLM Logger
 
 The foundation of observability is structured logging. Every LLM call should produce a structured log entry that captures the complete context of the interaction.
+
+Start with the data model. What information do you need to capture for every LLM interaction?
 
 ```typescript
 import { generateText, Output, streamText } from 'ai'
@@ -216,35 +198,19 @@ interface LLMLogEntry {
     retryable: boolean
   }
 }
-
-// Pricing lookup for cost calculation
-const modelPricing: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
-  'mistral-small-latest': { inputPerMillion: 3.0, outputPerMillion: 15.0 },
-  'mistral-small-latest': { inputPerMillion: 0.8, outputPerMillion: 4.0 },
-  'claude-opus-4-20250514': { inputPerMillion: 15.0, outputPerMillion: 75.0 },
-}
-
-function calculateCost(
-  model: string,
-  inputTokens: number,
-  outputTokens: number
-): { inputCost: number; outputCost: number; totalCost: number } {
-  const pricing = modelPricing[model] || {
-    inputPerMillion: 3.0,
-    outputPerMillion: 15.0,
-  }
-  const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion
-  const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion
-  return { inputCost, outputCost, totalCost: inputCost + outputCost }
-}
-
-// Generate unique IDs
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`
-}
 ```
 
+You will also need a cost calculation helper. Model pricing is per-million tokens, so the formula is straightforward:
+
+```typescript
+// (inputTokens / 1_000_000) * pricing.inputPerMillion
+```
+
+And a simple ID generator for log entries and trace correlation.
+
 ### The LLM Logger Class
+
+The `LLMLogger` class ties everything together. It accepts configuration that controls privacy behavior, stores log entries, and emits them to a destination.
 
 ```typescript
 // Privacy levels control what content is logged
@@ -257,154 +223,23 @@ interface LoggerConfig {
   serviceName: string
   logDestination: 'console' | 'file' | 'remote'
 }
-
-class LLMLogger {
-  private config: LoggerConfig
-  private logs: LLMLogEntry[] = []
-
-  constructor(config: LoggerConfig) {
-    this.config = config
-  }
-
-  // Create a log entry from an LLM call result
-  createEntry(params: {
-    model: string
-    prompt: string
-    systemPrompt?: string
-    response: string
-    usage: { inputTokens: number; outputTokens: number }
-    finishReason: string
-    latencyMs: number
-    timeToFirstTokenMs?: number
-    toolCalls?: string[]
-    cacheHit?: boolean
-    cachedTokens?: number
-    userId: string
-    sessionId: string
-    feature: string
-    traceId: string
-    spanId: string
-    parentSpanId?: string
-    error?: { code: string; message: string; retryCount: number }
-  }): LLMLogEntry {
-    const cost = calculateCost(params.model, params.usage.inputTokens, params.usage.outputTokens)
-
-    const entry: LLMLogEntry = {
-      id: generateId(),
-      timestamp: new Date().toISOString(),
-      level: params.error ? 'error' : 'info',
-      request: {
-        model: params.model,
-        provider: this.extractProvider(params.model),
-        promptHash: this.hashString(params.prompt),
-        systemPromptVersion: params.systemPrompt ? this.hashString(params.systemPrompt).substring(0, 8) : 'none',
-        temperature: 0,
-        maxOutputTokens: undefined,
-        toolsAvailable: params.toolCalls || [],
-      },
-      response: {
-        outputTokens: params.usage.outputTokens,
-        inputTokens: params.usage.inputTokens,
-        totalTokens: params.usage.inputTokens + params.usage.outputTokens,
-        finishReason: params.finishReason,
-        toolCallsMade: params.toolCalls || [],
-        responseTimeMs: params.latencyMs,
-        timeToFirstTokenMs: params.timeToFirstTokenMs,
-      },
-      cost: {
-        inputCostUsd: cost.inputCost,
-        outputCostUsd: cost.outputCost,
-        totalCostUsd: cost.totalCost,
-        cacheHit: params.cacheHit || false,
-        cachedTokens: params.cachedTokens || 0,
-      },
-      context: {
-        userId: params.userId,
-        sessionId: params.sessionId,
-        requestPath: '',
-        feature: params.feature,
-        environment: this.config.environment,
-        traceId: params.traceId,
-        spanId: params.spanId,
-        parentSpanId: params.parentSpanId,
-      },
-    }
-
-    // Add content based on privacy level
-    if (this.config.privacyLevel === 'full') {
-      entry.content = {
-        promptPreview: params.prompt.substring(0, this.config.previewLength),
-        responsePreview: params.response.substring(0, this.config.previewLength),
-        fullPrompt: params.prompt,
-        fullResponse: params.response,
-      }
-    } else if (this.config.privacyLevel === 'preview') {
-      entry.content = {
-        promptPreview: params.prompt.substring(0, this.config.previewLength),
-        responsePreview: params.response.substring(0, this.config.previewLength),
-      }
-    }
-    // metadata-only: no content field at all
-
-    if (params.error) {
-      entry.error = {
-        code: params.error.code,
-        message: params.error.message,
-        retryCount: params.error.retryCount,
-        retryable: this.isRetryable(params.error.code),
-      }
-    }
-
-    this.logs.push(entry)
-    this.emit(entry)
-    return entry
-  }
-
-  // Emit log to configured destination
-  private emit(entry: LLMLogEntry): void {
-    const serialized = JSON.stringify(entry)
-    if (this.config.logDestination === 'console') {
-      console.log(serialized)
-    }
-    // In production: send to your log aggregation service
-    // e.g., Datadog, Elasticsearch, CloudWatch, etc.
-  }
-
-  // Get all logs (for testing/local development)
-  getLogs(): LLMLogEntry[] {
-    return [...this.logs]
-  }
-
-  // Simple hash for prompt fingerprinting
-  private hashString(str: string): string {
-    let hash = 0
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i)
-      hash = (hash << 5) - hash + char
-      hash = hash & hash // Convert to 32-bit integer
-    }
-    return Math.abs(hash).toString(36)
-  }
-
-  private extractProvider(model: string): string {
-    if (model.includes('mistral')) return 'mistral'
-    if (model.includes('claude')) return 'anthropic'
-    if (model.includes('gpt')) return 'openai'
-    if (model.includes('gemini')) return 'google'
-    return 'unknown'
-  }
-
-  private isRetryable(errorCode: string): boolean {
-    const retryableCodes = ['rate_limit', 'overloaded', 'timeout', 'internal_error']
-    return retryableCodes.includes(errorCode)
-  }
-}
 ```
+
+Build an `LLMLogger` class with this constructor and a `createEntry` method. The class should:
+
+- Accept a `LoggerConfig` in its constructor and store log entries in an array
+- `createEntry(params)` -- takes the raw LLM call data (model, prompt, response, usage, latency, context IDs, optional error) and produces a complete `LLMLogEntry`. It should calculate cost from token counts, determine the log level (`'error'` if an error is present, `'info'` otherwise), hash the prompt for fingerprinting, and add content fields based on the privacy level
+- `getLogs()` -- returns a copy of all stored log entries
+- `emit(entry)` -- serializes the entry as JSON and writes to the configured destination
+- Private helpers: `hashString(str)` for prompt fingerprinting, `extractProvider(model)` to derive the provider name from the model string, `isRetryable(errorCode)` to determine if an error can be retried
+
+Think about the three privacy levels. What should each one include in the `content` field? When `privacyLevel` is `'metadata-only'`, should the `content` field exist at all?
 
 ### Using the Logger with Vercel AI SDK
 
+Next, build a `loggedGenerateText` wrapper function. This function wraps `generateText` from the AI SDK and automatically creates a log entry for every call.
+
 ```typescript
-// Wrapper that adds automatic logging to any generateText call
 async function loggedGenerateText(params: {
   model: ReturnType<typeof mistral>
   prompt: string
@@ -417,98 +252,16 @@ async function loggedGenerateText(params: {
   traceId: string
   spanId: string
   parentSpanId?: string
-}): Promise<{ text: string; logEntry: LLMLogEntry }> {
-  const startTime = Date.now()
-
-  try {
-    const result = await generateText({
-      model: params.model,
-      prompt: params.prompt,
-      system: params.system,
-      maxOutputTokens: params.maxOutputTokens,
-    })
-
-    const latencyMs = Date.now() - startTime
-
-    const logEntry = params.logger.createEntry({
-      model: 'mistral-small-latest',
-      prompt: params.prompt,
-      systemPrompt: params.system,
-      response: result.text,
-      usage: {
-        inputTokens: result.usage?.inputTokens || 0,
-        outputTokens: result.usage?.outputTokens || 0,
-      },
-      finishReason: result.finishReason || 'stop',
-      latencyMs,
-      userId: params.userId,
-      sessionId: params.sessionId,
-      feature: params.feature,
-      traceId: params.traceId,
-      spanId: params.spanId,
-      parentSpanId: params.parentSpanId,
-    })
-
-    return { text: result.text, logEntry }
-  } catch (error) {
-    const latencyMs = Date.now() - startTime
-
-    const logEntry = params.logger.createEntry({
-      model: 'mistral-small-latest',
-      prompt: params.prompt,
-      systemPrompt: params.system,
-      response: '',
-      usage: { inputTokens: 0, outputTokens: 0 },
-      finishReason: 'error',
-      latencyMs,
-      userId: params.userId,
-      sessionId: params.sessionId,
-      feature: params.feature,
-      traceId: params.traceId,
-      spanId: params.spanId,
-      parentSpanId: params.parentSpanId,
-      error: {
-        code: (error as any).code || 'unknown',
-        message: (error as Error).message,
-        retryCount: 0,
-      },
-    })
-
-    throw error
-  }
-}
-
-// Usage example
-const logger = new LLMLogger({
-  privacyLevel: 'preview',
-  previewLength: 200,
-  environment: 'production',
-  serviceName: 'research-assistant',
-  logDestination: 'console',
-})
-
-// Every call is automatically logged with full context
-const { text, logEntry } = await loggedGenerateText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Explain the CAP theorem in distributed systems.',
-  system: 'You are a technical instructor. Be concise and precise.',
-  logger,
-  userId: 'user-123',
-  sessionId: 'sess-abc',
-  feature: 'question-answering',
-  traceId: 'trace-xyz',
-  spanId: 'span-001',
-})
-
-console.log(`Logged: ${logEntry.id}`)
-console.log(`Cost: $${logEntry.cost.totalCostUsd.toFixed(6)}`)
-console.log(`Latency: ${logEntry.response.responseTimeMs}ms`)
+}): Promise<{ text: string; logEntry: LLMLogEntry }>
 ```
+
+The wrapper should capture timing (`Date.now()` before and after the call), log successful results with all metadata, and log errors in the catch block before re-throwing. What fields would you populate differently in the error case versus the success case?
 
 ### Token Usage Tracking
 
+Build a `TokenUsageTracker` class that aggregates usage data across multiple log entries.
+
 ```typescript
-// Token usage tracker that aggregates across requests
 interface TokenUsageSummary {
   totalInputTokens: number
   totalOutputTokens: number
@@ -517,137 +270,19 @@ interface TokenUsageSummary {
   averageInputTokens: number
   averageOutputTokens: number
   averageCostUsd: number
-  byModel: Record<
-    string,
-    {
-      inputTokens: number
-      outputTokens: number
-      costUsd: number
-      requestCount: number
-    }
-  >
-  byFeature: Record<
-    string,
-    {
-      inputTokens: number
-      outputTokens: number
-      costUsd: number
-      requestCount: number
-    }
-  >
-  byUser: Record<
-    string,
-    {
-      inputTokens: number
-      outputTokens: number
-      costUsd: number
-      requestCount: number
-    }
-  >
-}
-
-class TokenUsageTracker {
-  private entries: LLMLogEntry[] = []
-
-  record(entry: LLMLogEntry): void {
-    this.entries.push(entry)
-  }
-
-  getSummary(since?: Date): TokenUsageSummary {
-    const filtered = since ? this.entries.filter(e => new Date(e.timestamp) >= since) : this.entries
-
-    const summary: TokenUsageSummary = {
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalCostUsd: 0,
-      requestCount: filtered.length,
-      averageInputTokens: 0,
-      averageOutputTokens: 0,
-      averageCostUsd: 0,
-      byModel: {},
-      byFeature: {},
-      byUser: {},
-    }
-
-    for (const entry of filtered) {
-      summary.totalInputTokens += entry.response.inputTokens
-      summary.totalOutputTokens += entry.response.outputTokens
-      summary.totalCostUsd += entry.cost.totalCostUsd
-
-      // Aggregate by model
-      const model = entry.request.model
-      if (!summary.byModel[model]) {
-        summary.byModel[model] = {
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-          requestCount: 0,
-        }
-      }
-      summary.byModel[model].inputTokens += entry.response.inputTokens
-      summary.byModel[model].outputTokens += entry.response.outputTokens
-      summary.byModel[model].costUsd += entry.cost.totalCostUsd
-      summary.byModel[model].requestCount++
-
-      // Aggregate by feature
-      const feature = entry.context.feature
-      if (!summary.byFeature[feature]) {
-        summary.byFeature[feature] = {
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-          requestCount: 0,
-        }
-      }
-      summary.byFeature[feature].inputTokens += entry.response.inputTokens
-      summary.byFeature[feature].outputTokens += entry.response.outputTokens
-      summary.byFeature[feature].costUsd += entry.cost.totalCostUsd
-      summary.byFeature[feature].requestCount++
-
-      // Aggregate by user
-      const userId = entry.context.userId
-      if (!summary.byUser[userId]) {
-        summary.byUser[userId] = {
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-          requestCount: 0,
-        }
-      }
-      summary.byUser[userId].inputTokens += entry.response.inputTokens
-      summary.byUser[userId].outputTokens += entry.response.outputTokens
-      summary.byUser[userId].costUsd += entry.cost.totalCostUsd
-      summary.byUser[userId].requestCount++
-    }
-
-    if (filtered.length > 0) {
-      summary.averageInputTokens = summary.totalInputTokens / filtered.length
-      summary.averageOutputTokens = summary.totalOutputTokens / filtered.length
-      summary.averageCostUsd = summary.totalCostUsd / filtered.length
-    }
-
-    return summary
-  }
-
-  // Get top consumers for cost management
-  getTopConsumers(
-    dimension: 'model' | 'feature' | 'user',
-    limit: number = 5
-  ): Array<{ key: string; costUsd: number; requestCount: number }> {
-    const summary = this.getSummary()
-    const data = dimension === 'model' ? summary.byModel : dimension === 'feature' ? summary.byFeature : summary.byUser
-
-    return Object.entries(data)
-      .map(([key, value]) => ({
-        key,
-        costUsd: value.costUsd,
-        requestCount: value.requestCount,
-      }))
-      .sort((a, b) => b.costUsd - a.costUsd)
-      .slice(0, limit)
-  }
+  byModel: Record<string, { inputTokens: number; outputTokens: number; costUsd: number; requestCount: number }>
+  byFeature: Record<string, { inputTokens: number; outputTokens: number; costUsd: number; requestCount: number }>
+  byUser: Record<string, { inputTokens: number; outputTokens: number; costUsd: number; requestCount: number }>
 }
 ```
+
+The tracker needs three methods:
+
+- `record(entry)` -- stores a log entry for aggregation
+- `getSummary(since?)` -- computes the `TokenUsageSummary` by iterating over entries, aggregating totals, and building the per-model, per-feature, and per-user breakdowns. If `since` is provided, filter entries by timestamp first
+- `getTopConsumers(dimension, limit)` -- returns the top N consumers sorted by cost for a given dimension (`'model'`, `'feature'`, or `'user'`)
+
+How would you handle the case where `getSummary` is called with no entries recorded yet?
 
 > **Beginner Note:** Structured logging means logging in a machine-readable format like JSON rather than plain text strings. This allows you to search, filter, and aggregate logs programmatically. Instead of `console.log("Request took 1.2s")`, you log `{ "latencyMs": 1200, "model": "claude-sonnet", "userId": "abc" }`. This is essential for any production system.
 
@@ -658,6 +293,8 @@ class TokenUsageTracker {
 ### Distributed Tracing for LLM Pipelines
 
 A single user request to an LLM application often involves multiple steps: retrieval, reranking, generation, tool calls, validation. Tracing connects all these steps into a single trace so you can see the full journey of a request.
+
+The core data model for tracing is the **span** -- one unit of work within a trace:
 
 ```typescript
 // A span represents one unit of work in a trace
@@ -678,352 +315,65 @@ interface Span {
     attributes?: Record<string, string | number | boolean>
   }>
 }
-
-class Tracer {
-  private spans: Map<string, Span> = new Map()
-  private serviceName: string
-
-  constructor(serviceName: string) {
-    this.serviceName = serviceName
-  }
-
-  // Start a new trace (top-level span)
-  startTrace(operationName: string): Span {
-    const traceId = generateId()
-    const spanId = generateId()
-    const span: Span = {
-      traceId,
-      spanId,
-      operationName,
-      serviceName: this.serviceName,
-      startTime: Date.now(),
-      status: 'ok',
-      attributes: {},
-      events: [],
-    }
-    this.spans.set(spanId, span)
-    return span
-  }
-
-  // Start a child span within an existing trace
-  startSpan(operationName: string, parentSpan: Span): Span {
-    const spanId = generateId()
-    const span: Span = {
-      traceId: parentSpan.traceId,
-      spanId,
-      parentSpanId: parentSpan.spanId,
-      operationName,
-      serviceName: this.serviceName,
-      startTime: Date.now(),
-      status: 'ok',
-      attributes: {},
-      events: [],
-    }
-    this.spans.set(spanId, span)
-    return span
-  }
-
-  // End a span and calculate duration
-  endSpan(span: Span, status: 'ok' | 'error' | 'timeout' = 'ok'): void {
-    span.endTime = Date.now()
-    span.durationMs = span.endTime - span.startTime
-    span.status = status
-  }
-
-  // Add an event to a span (e.g., "cache_hit", "retrieval_complete")
-  addEvent(span: Span, name: string, attributes?: Record<string, string | number | boolean>): void {
-    span.events.push({ name, timestamp: Date.now(), attributes })
-  }
-
-  // Set attributes on a span
-  setAttributes(span: Span, attributes: Record<string, string | number | boolean>): void {
-    Object.assign(span.attributes, attributes)
-  }
-
-  // Get all spans for a trace
-  getTrace(traceId: string): Span[] {
-    return Array.from(this.spans.values())
-      .filter(s => s.traceId === traceId)
-      .sort((a, b) => a.startTime - b.startTime)
-  }
-
-  // Print a trace as a visual timeline
-  printTrace(traceId: string): void {
-    const spans = this.getTrace(traceId)
-    if (spans.length === 0) return
-
-    const traceStart = spans[0].startTime
-    console.log(`\nTrace: ${traceId}`)
-    console.log('='.repeat(80))
-
-    for (const span of spans) {
-      const offset = span.startTime - traceStart
-      const duration = span.durationMs || 0
-      const indent = span.parentSpanId ? '  ' : ''
-      const statusIcon = span.status === 'ok' ? '[OK]' : span.status === 'error' ? '[ERR]' : '[TIMEOUT]'
-
-      console.log(
-        `${indent}${statusIcon} ${span.operationName} ` +
-          `[+${offset}ms, ${duration}ms] ` +
-          `${JSON.stringify(span.attributes)}`
-      )
-
-      for (const event of span.events) {
-        const eventOffset = event.timestamp - traceStart
-        console.log(
-          `${indent}  > ${event.name} [+${eventOffset}ms] ` +
-            `${event.attributes ? JSON.stringify(event.attributes) : ''}`
-        )
-      }
-    }
-    console.log('='.repeat(80))
-  }
-}
 ```
+
+Build a `Tracer` class that manages span creation and lifecycle. It needs:
+
+- `startTrace(operationName)` -- creates a root span with a new trace ID and span ID. This is the top-level operation (e.g., `'rag_query'` or `'agent_loop'`)
+- `startSpan(operationName, parentSpan)` -- creates a child span that shares the parent's `traceId` but has its own `spanId`, with `parentSpanId` pointing to the parent
+- `endSpan(span, status?)` -- sets `endTime`, calculates `durationMs`, and updates `status`
+- `addEvent(span, name, attributes?)` -- records a point-in-time event within a span (e.g., `'cache_hit'`, `'vector_search_complete'`)
+- `setAttributes(span, attributes)` -- attaches key-value metadata to a span
+- `getTrace(traceId)` -- returns all spans for a trace, sorted by start time
+- `printTrace(traceId)` -- prints a visual timeline showing span hierarchy with indentation, status icons, timing offsets, and attributes
+
+What distinguishes `startTrace` from `startSpan`? Think about what makes a root span different from a child span.
 
 ### Tracing a RAG Pipeline
 
-Here is how tracing works through a complete RAG pipeline, connecting retrieval, reranking, and generation into a single trace:
+Once you have the `Tracer`, use it to instrument a RAG pipeline. Build a `tracedRAGQuery` function with this signature:
 
 ```typescript
-import { generateText, embed } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { openai } from '@ai-sdk/openai'
-
-// Simulated RAG components for demonstration
-interface Document {
-  id: string
-  content: string
-  metadata: { source: string; relevanceScore?: number }
-}
-
 async function tracedRAGQuery(params: {
   query: string
   userId: string
   tracer: Tracer
-}): Promise<{ answer: string; sources: Document[]; traceId: string }> {
-  const { query, userId, tracer } = params
-
-  // Start the top-level trace
-  const rootSpan = tracer.startTrace('rag_query')
-  tracer.setAttributes(rootSpan, {
-    userId,
-    queryLength: query.length,
-  })
-
-  try {
-    // Step 1: Embed the query
-    const embedSpan = tracer.startSpan('embed_query', rootSpan)
-    tracer.setAttributes(embedSpan, { model: 'text-embedding-3-small' })
-
-    const { embedding } = await embed({
-      model: openai.embedding('text-embedding-3-small'),
-      value: query,
-    })
-
-    tracer.setAttributes(embedSpan, {
-      embeddingDimensions: embedding.length,
-    })
-    tracer.endSpan(embedSpan)
-
-    // Step 2: Retrieve documents
-    const retrieveSpan = tracer.startSpan('retrieve_documents', rootSpan)
-
-    // Simulate retrieval (in production, this queries your vector store)
-    const retrievedDocs: Document[] = [
-      {
-        id: 'doc-1',
-        content: 'The CAP theorem states that...',
-        metadata: { source: 'distributed-systems.pdf', relevanceScore: 0.92 },
-      },
-      {
-        id: 'doc-2',
-        content: 'In distributed computing, consistency...',
-        metadata: { source: 'cs-textbook.pdf', relevanceScore: 0.87 },
-      },
-      {
-        id: 'doc-3',
-        content: 'Network partitions in practice...',
-        metadata: { source: 'blog-post.md', relevanceScore: 0.78 },
-      },
-    ]
-
-    tracer.setAttributes(retrieveSpan, {
-      documentsRetrieved: retrievedDocs.length,
-      topScore: retrievedDocs[0]?.metadata.relevanceScore || 0,
-      bottomScore: retrievedDocs[retrievedDocs.length - 1]?.metadata.relevanceScore || 0,
-    })
-    tracer.addEvent(retrieveSpan, 'vector_search_complete', {
-      candidates: 100,
-      returned: retrievedDocs.length,
-    })
-    tracer.endSpan(retrieveSpan)
-
-    // Step 3: Rerank documents
-    const rerankSpan = tracer.startSpan('rerank_documents', rootSpan)
-
-    // Simulate reranking
-    const rerankedDocs = retrievedDocs.sort(
-      (a, b) => (b.metadata.relevanceScore || 0) - (a.metadata.relevanceScore || 0)
-    )
-
-    tracer.setAttributes(rerankSpan, {
-      inputDocs: retrievedDocs.length,
-      outputDocs: rerankedDocs.length,
-      rerankModel: 'cross-encoder',
-    })
-    tracer.endSpan(rerankSpan)
-
-    // Step 4: Generate answer
-    const generateSpan = tracer.startSpan('generate_answer', rootSpan)
-
-    const context = rerankedDocs.map(d => d.content).join('\n\n')
-
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'Answer the question using only the provided context. Cite sources.',
-      prompt: `Context:\n${context}\n\nQuestion: ${query}`,
-    })
-
-    tracer.setAttributes(generateSpan, {
-      model: 'mistral-small-latest',
-      inputTokens: result.usage?.inputTokens || 0,
-      outputTokens: result.usage?.outputTokens || 0,
-      finishReason: result.finishReason || 'stop',
-    })
-    tracer.endSpan(generateSpan)
-
-    // End the root trace
-    tracer.setAttributes(rootSpan, {
-      success: true,
-      documentsUsed: rerankedDocs.length,
-      totalTokens: (result.usage?.inputTokens || 0) + (result.usage?.outputTokens || 0),
-    })
-    tracer.endSpan(rootSpan)
-
-    // Print the full trace for debugging
-    tracer.printTrace(rootSpan.traceId)
-
-    return {
-      answer: result.text,
-      sources: rerankedDocs,
-      traceId: rootSpan.traceId,
-    }
-  } catch (error) {
-    tracer.setAttributes(rootSpan, {
-      success: false,
-      errorMessage: (error as Error).message,
-    })
-    tracer.endSpan(rootSpan, 'error')
-    throw error
-  }
-}
-
-// Usage
-const tracer = new Tracer('research-assistant')
-const result = await tracedRAGQuery({
-  query: 'Explain the CAP theorem',
-  userId: 'user-123',
-  tracer,
-})
-
-// Output:
-// Trace: 1709812345-abc123
-// ================================================================================
-// [OK] rag_query [+0ms, 2340ms] {"userId":"user-123","queryLength":23,...}
-//   [OK] embed_query [+2ms, 120ms] {"model":"text-embedding-3-small",...}
-//   [OK] retrieve_documents [+125ms, 450ms] {"documentsRetrieved":3,...}
-//     > vector_search_complete [+560ms] {"candidates":100,"returned":3}
-//   [OK] rerank_documents [+580ms, 30ms] {"inputDocs":3,"outputDocs":3,...}
-//   [OK] generate_answer [+615ms, 1720ms] {"model":"mistral-small-latest",...}
-// ================================================================================
+}): Promise<{ answer: string; sources: { text: string; score: number }[]; traceId: string }>
 ```
+
+The function should create a root span for the entire query, then child spans for each stage: `embed_query`, `retrieve_documents`, `rerank_documents`, and `generate_answer`. Each span should record relevant attributes -- for example, the retrieval span should record `documentsRetrieved`, `topScore`, and `bottomScore`.
+
+The visual output should look like a nested timeline:
+
+```
+Trace: 1709812345-abc123
+================================================================================
+[OK] rag_query [+0ms, 2340ms] {"userId":"user-123","queryLength":23,...}
+  [OK] embed_query [+2ms, 120ms] {"model":"text-embedding-3-small",...}
+  [OK] retrieve_documents [+125ms, 450ms] {"documentsRetrieved":3,...}
+    > vector_search_complete [+560ms] {"candidates":100,"returned":3}
+  [OK] rerank_documents [+580ms, 30ms] {"inputDocs":3,"outputDocs":3,...}
+  [OK] generate_answer [+615ms, 1720ms] {"model":"mistral-small-latest",...}
+================================================================================
+```
+
+What should happen to the root span if one of the child spans throws an error? How would you record both the success flag and the error message?
 
 ### Tracing Agent Loops
 
-Agent loops are especially important to trace because they involve multiple iterations of reasoning and tool calls:
+Agent loops are especially important to trace because they involve multiple iterations of reasoning and tool calls. Build a `tracedAgentLoop` function that creates a root span for the entire loop, then per-step spans, each containing child spans for the `reason` phase and any `tool_call` phase.
 
 ```typescript
-// Trace an agent loop with tool calls
 async function tracedAgentLoop(params: {
   query: string
   maxSteps: number
   tracer: Tracer
-}): Promise<{ result: string; traceId: string; steps: number }> {
-  const { query, maxSteps, tracer } = params
-
-  const rootSpan = tracer.startTrace('agent_loop')
-  tracer.setAttributes(rootSpan, {
-    query: query.substring(0, 100),
-    maxSteps,
-  })
-
-  let currentStep = 0
-  let agentDone = false
-  let finalResult = ''
-
-  while (!agentDone && currentStep < maxSteps) {
-    currentStep++
-    const stepSpan = tracer.startSpan(`step_${currentStep}`, rootSpan)
-
-    // Reasoning step
-    const reasonSpan = tracer.startSpan('reason', stepSpan)
-
-    const reasonResult = await generateText({
-      model: mistral('mistral-small-latest'),
-      prompt: `Step ${currentStep}: Given the query "${query}", decide what to do next.`,
-      system: 'You are a research agent. Decide: use a tool or give final answer.',
-    })
-
-    tracer.setAttributes(reasonSpan, {
-      inputTokens: reasonResult.usage?.inputTokens || 0,
-      outputTokens: reasonResult.usage?.outputTokens || 0,
-      decision: reasonResult.text.includes('FINAL') ? 'final_answer' : 'use_tool',
-    })
-    tracer.endSpan(reasonSpan)
-
-    // Check if the agent decided to give a final answer
-    if (reasonResult.text.includes('FINAL')) {
-      tracer.addEvent(stepSpan, 'agent_complete', { step: currentStep })
-      finalResult = reasonResult.text
-      agentDone = true
-    } else {
-      // Tool call step
-      const toolSpan = tracer.startSpan('tool_call', stepSpan)
-      tracer.setAttributes(toolSpan, {
-        toolName: 'web_search',
-        toolInput: query.substring(0, 50),
-      })
-
-      // Simulate tool execution
-      const toolResult = `Search results for: ${query}`
-
-      tracer.setAttributes(toolSpan, {
-        toolOutputLength: toolResult.length,
-        toolSuccess: true,
-      })
-      tracer.endSpan(toolSpan)
-    }
-
-    tracer.endSpan(stepSpan)
-  }
-
-  tracer.setAttributes(rootSpan, {
-    totalSteps: currentStep,
-    completed: agentDone,
-    hitMaxSteps: !agentDone,
-  })
-  tracer.endSpan(rootSpan)
-
-  tracer.printTrace(rootSpan.traceId)
-
-  return {
-    result: finalResult,
-    traceId: rootSpan.traceId,
-    steps: currentStep,
-  }
-}
+}): Promise<{ result: string; traceId: string; steps: number }>
 ```
+
+Key attributes to record on the root span: `totalSteps`, `completed` (did the agent finish naturally?), and `hitMaxSteps` (did it exhaust the step limit?). On each reasoning span, record `inputTokens`, `outputTokens`, and `decision` (whether the agent chose to use a tool or give a final answer).
+
+What patterns in the trace would indicate a malfunctioning agent? Think about what the step count, tool call patterns, and decision attributes would look like.
 
 > **Advanced Note:** In production, you would integrate with OpenTelemetry rather than building a custom tracer. The Vercel AI SDK has built-in OpenTelemetry support via the `telemetry` option on `generateText` and `streamText`. The concepts shown here (spans, traces, attributes, events) map directly to OpenTelemetry primitives. The custom implementation helps you understand what OpenTelemetry does under the hood.
 
@@ -1035,8 +385,9 @@ async function tracedAgentLoop(params: {
 
 Metrics are aggregated numerical measurements that tell you how your application is performing over time. Unlike logs (which capture individual events) and traces (which capture request flows), metrics show trends and distributions.
 
+Build a `MetricsCollector` class that supports three metric types:
+
 ```typescript
-// Core metrics for LLM applications
 interface MetricPoint {
   name: string
   value: number
@@ -1044,249 +395,42 @@ interface MetricPoint {
   tags: Record<string, string>
   type: 'counter' | 'gauge' | 'histogram'
 }
-
-class MetricsCollector {
-  private points: MetricPoint[] = []
-  private histogramBuckets: Record<string, number[]> = {}
-
-  // Increment a counter (e.g., total requests, total errors)
-  increment(name: string, value: number = 1, tags: Record<string, string> = {}): void {
-    this.points.push({
-      name,
-      value,
-      timestamp: Date.now(),
-      tags,
-      type: 'counter',
-    })
-  }
-
-  // Set a gauge value (e.g., active connections, queue depth)
-  gauge(name: string, value: number, tags: Record<string, string> = {}): void {
-    this.points.push({
-      name,
-      value,
-      timestamp: Date.now(),
-      tags,
-      type: 'gauge',
-    })
-  }
-
-  // Record a histogram observation (e.g., latency, token count)
-  histogram(name: string, value: number, tags: Record<string, string> = {}): void {
-    this.points.push({
-      name,
-      value,
-      timestamp: Date.now(),
-      tags,
-      type: 'histogram',
-    })
-
-    if (!this.histogramBuckets[name]) {
-      this.histogramBuckets[name] = []
-    }
-    this.histogramBuckets[name].push(value)
-  }
-
-  // Calculate percentiles for a histogram metric
-  percentile(name: string, p: number): number {
-    const values = this.histogramBuckets[name]
-    if (!values || values.length === 0) return 0
-
-    const sorted = [...values].sort((a, b) => a - b)
-    const index = Math.ceil((p / 100) * sorted.length) - 1
-    return sorted[Math.max(0, index)]
-  }
-
-  // Get average for a histogram metric
-  average(name: string): number {
-    const values = this.histogramBuckets[name]
-    if (!values || values.length === 0) return 0
-    return values.reduce((sum, v) => sum + v, 0) / values.length
-  }
-
-  // Get total for a counter metric
-  total(name: string, tags?: Record<string, string>): number {
-    return this.points
-      .filter(p => p.name === name && (!tags || Object.entries(tags).every(([k, v]) => p.tags[k] === v)))
-      .reduce((sum, p) => sum + p.value, 0)
-  }
-
-  // Get the latest gauge value
-  latestGauge(name: string): number {
-    const gauges = this.points.filter(p => p.name === name && p.type === 'gauge')
-    return gauges.length > 0 ? gauges[gauges.length - 1].value : 0
-  }
-}
 ```
+
+The collector needs these methods:
+
+- `increment(name, value?, tags?)` -- records a counter point (total requests, total errors)
+- `gauge(name, value, tags?)` -- records a gauge point (active connections, queue depth)
+- `histogram(name, value, tags?)` -- records a histogram observation (latency, token count). Store histogram values in a separate bucket array keyed by name so you can compute statistics later
+- `percentile(name, p)` -- computes the p-th percentile from stored histogram values. Sort the values, then find the value at index `ceil((p/100) * length) - 1`
+- `average(name)` -- computes the average of stored histogram values
+- `total(name, tags?)` -- sums all counter values matching the name and optional tags filter
+- `latestGauge(name)` -- returns the most recently recorded gauge value for the given name
+
+How would you implement tag-based filtering in the `total` method? Think about how to check that every key-value pair in the filter tags matches the metric point's tags.
 
 ### Recording LLM-Specific Metrics
 
-```typescript
-// LLM metrics recorder that wraps the generic collector
-class LLMMetrics {
-  private collector: MetricsCollector
+Build an `LLMMetrics` class that wraps `MetricsCollector` with domain-specific recording methods. It should have three recording methods:
 
-  constructor(collector: MetricsCollector) {
-    this.collector = collector
-  }
+**`recordCall(params)`** -- records all metrics from a completed LLM call. Use these metric names:
 
-  // Record metrics from a completed LLM call
-  recordCall(params: {
-    model: string
-    feature: string
-    userId: string
-    latencyMs: number
-    timeToFirstTokenMs?: number
-    inputTokens: number
-    outputTokens: number
-    costUsd: number
-    success: boolean
-    cached: boolean
-    finishReason: string
-  }): void {
-    const tags = {
-      model: params.model,
-      feature: params.feature,
-    }
+- `llm.requests.total` (counter) -- increment for every call
+- `llm.requests.errors` (counter) -- increment when `success` is false
+- `llm.cache.hits` / `llm.cache.misses` (counters)
+- `llm.latency.ms`, `llm.time_to_first_token.ms` (histograms)
+- `llm.tokens.input`, `llm.tokens.output`, `llm.tokens.total` (histograms)
+- `llm.cost.usd` (counter, tagged by model and feature)
+- `llm.cost.usd.per_user` (counter, tagged by userId)
+- `llm.finish_reason` (counter, tagged by reason)
 
-    // Request counter
-    this.collector.increment('llm.requests.total', 1, tags)
+**`recordRetrieval(params)`** -- records RAG retrieval metrics: `rag.retrieval.latency.ms`, `rag.retrieval.documents`, `rag.retrieval.top_score`, and optionally `rag.rerank.latency.ms`.
 
-    if (!params.success) {
-      this.collector.increment('llm.requests.errors', 1, tags)
-    }
+**`recordAgentLoop(params)`** -- records agent metrics: `agent.steps.total`, `agent.tool_calls.total`, `agent.latency.total.ms`, `agent.max_steps_reached`, and `agent.completed`.
 
-    if (params.cached) {
-      this.collector.increment('llm.cache.hits', 1, tags)
-    } else {
-      this.collector.increment('llm.cache.misses', 1, tags)
-    }
+Finally, add a `getReport()` method that compiles a summary object with sections for requests (total, errors, error rate), latency (p50, p90, p99, average), tokens (averages), cost (total USD), and cache (hits, misses, hit rate).
 
-    // Latency histogram
-    this.collector.histogram('llm.latency.ms', params.latencyMs, tags)
-
-    if (params.timeToFirstTokenMs !== undefined) {
-      this.collector.histogram('llm.time_to_first_token.ms', params.timeToFirstTokenMs, tags)
-    }
-
-    // Token usage histograms
-    this.collector.histogram('llm.tokens.input', params.inputTokens, tags)
-    this.collector.histogram('llm.tokens.output', params.outputTokens, tags)
-    this.collector.histogram('llm.tokens.total', params.inputTokens + params.outputTokens, tags)
-
-    // Cost counter
-    this.collector.increment('llm.cost.usd', params.costUsd, tags)
-
-    // Per-user cost
-    this.collector.increment('llm.cost.usd.per_user', params.costUsd, {
-      userId: params.userId,
-    })
-
-    // Finish reason counter
-    this.collector.increment('llm.finish_reason', 1, {
-      ...tags,
-      reason: params.finishReason,
-    })
-  }
-
-  // Record retrieval metrics for RAG pipelines
-  recordRetrieval(params: {
-    feature: string
-    documentsRetrieved: number
-    topRelevanceScore: number
-    retrievalLatencyMs: number
-    rerankLatencyMs?: number
-  }): void {
-    const tags = { feature: params.feature }
-
-    this.collector.histogram('rag.retrieval.latency.ms', params.retrievalLatencyMs, tags)
-    this.collector.histogram('rag.retrieval.documents', params.documentsRetrieved, tags)
-    this.collector.histogram('rag.retrieval.top_score', params.topRelevanceScore, tags)
-
-    if (params.rerankLatencyMs !== undefined) {
-      this.collector.histogram('rag.rerank.latency.ms', params.rerankLatencyMs, tags)
-    }
-  }
-
-  // Record agent loop metrics
-  recordAgentLoop(params: {
-    feature: string
-    totalSteps: number
-    toolCallCount: number
-    totalLatencyMs: number
-    completed: boolean
-    hitMaxSteps: boolean
-  }): void {
-    const tags = { feature: params.feature }
-
-    this.collector.histogram('agent.steps.total', params.totalSteps, tags)
-    this.collector.histogram('agent.tool_calls.total', params.toolCallCount, tags)
-    this.collector.histogram('agent.latency.total.ms', params.totalLatencyMs, tags)
-
-    if (params.hitMaxSteps) {
-      this.collector.increment('agent.max_steps_reached', 1, tags)
-    }
-
-    this.collector.increment('agent.completed', params.completed ? 1 : 0, tags)
-  }
-
-  // Generate a metrics summary report
-  getReport(): Record<string, unknown> {
-    return {
-      requests: {
-        total: this.collector.total('llm.requests.total'),
-        errors: this.collector.total('llm.requests.errors'),
-        errorRate:
-          this.collector.total('llm.requests.errors') / Math.max(this.collector.total('llm.requests.total'), 1),
-      },
-      latency: {
-        p50: this.collector.percentile('llm.latency.ms', 50),
-        p90: this.collector.percentile('llm.latency.ms', 90),
-        p99: this.collector.percentile('llm.latency.ms', 99),
-        average: this.collector.average('llm.latency.ms'),
-      },
-      tokens: {
-        averageInput: this.collector.average('llm.tokens.input'),
-        averageOutput: this.collector.average('llm.tokens.output'),
-        averageTotal: this.collector.average('llm.tokens.total'),
-      },
-      cost: {
-        totalUsd: this.collector.total('llm.cost.usd'),
-      },
-      cache: {
-        hits: this.collector.total('llm.cache.hits'),
-        misses: this.collector.total('llm.cache.misses'),
-        hitRate:
-          this.collector.total('llm.cache.hits') /
-          Math.max(this.collector.total('llm.cache.hits') + this.collector.total('llm.cache.misses'), 1),
-      },
-    }
-  }
-}
-
-// Usage
-const collector = new MetricsCollector()
-const metrics = new LLMMetrics(collector)
-
-// Record metrics from LLM calls
-metrics.recordCall({
-  model: 'mistral-small-latest',
-  feature: 'question-answering',
-  userId: 'user-123',
-  latencyMs: 1200,
-  timeToFirstTokenMs: 350,
-  inputTokens: 500,
-  outputTokens: 200,
-  costUsd: 0.0045,
-  success: true,
-  cached: false,
-  finishReason: 'stop',
-})
-
-// Get the report
-const report = metrics.getReport()
-console.log('Metrics Report:', JSON.stringify(report, null, 2))
-```
+Why is it important to use `Math.max(denominator, 1)` when computing rates like error rate and cache hit rate?
 
 > **Beginner Note:** The three types of metrics serve different purposes. Counters always go up (total requests, total errors). Gauges go up and down (active connections, queue depth). Histograms capture distributions (latency, token counts). For LLM applications, you will use all three: counters for request/error counts, gauges for concurrent connections, and histograms for latency and token distributions.
 
@@ -1299,10 +443,6 @@ console.log('Metrics Report:', JSON.stringify(report, null, 2))
 LLM failures are subtle. The application does not crash -- it returns a plausible-sounding but incorrect response. Here are the most common failure modes and how to diagnose them with observability data.
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 // Failure diagnosis framework
 interface FailureDiagnosis {
   failureType: string
@@ -1311,269 +451,76 @@ interface FailureDiagnosis {
   rootCause: string
   resolution: string
 }
+```
 
-const commonFailures: FailureDiagnosis[] = [
-  {
-    failureType: 'Hallucination',
-    symptoms: [
-      'Model generates plausible but factually incorrect information',
-      'Model cites sources that do not exist',
-      'Model invents statistics or dates',
-    ],
-    observabilitySignals: [
-      'Low retrieval relevance scores in RAG traces',
-      'No retrieval step in trace (model answering from parametric knowledge)',
-      'High token output without corresponding retrieval context',
-      'Quality scores dropping on factual accuracy benchmarks',
-    ],
-    rootCause:
-      'Insufficient or irrelevant context provided, or model relying on training data instead of retrieved documents.',
-    resolution: 'Improve retrieval quality, add explicit grounding instructions, implement fact-checking on output.',
-  },
-  {
-    failureType: 'Wrong Tool Selection',
-    symptoms: [
-      'Agent uses calculator when it should use search',
-      'Agent calls the same tool repeatedly without progress',
-      'Agent skips available tools and tries to answer from memory',
-    ],
-    observabilitySignals: [
-      'Agent trace shows unexpected tool_call spans',
-      'Agent step count approaching maxSteps',
-      'Tool call patterns not matching query type',
-      'High retry count in agent loop metrics',
-    ],
-    rootCause:
-      'Tool descriptions are ambiguous, or the model cannot distinguish which tool is appropriate for the query.',
-    resolution:
-      'Improve tool descriptions with explicit use cases and examples. Add few-shot examples of correct tool selection.',
-  },
-  {
-    failureType: 'Context Window Overflow',
-    symptoms: [
-      'Model ignores information from early in the conversation',
-      'Responses become less coherent in long conversations',
-      'Truncation warnings in logs',
-    ],
-    observabilitySignals: [
-      'Input token counts approaching model context limit',
-      'Monotonically increasing input tokens over conversation turns',
-      "finish_reason changing to 'length' instead of 'stop'",
-    ],
-    rootCause: "Conversation history or retrieved context exceeds the model's effective attention window.",
-    resolution:
-      'Implement conversation summarization, limit retrieved documents, use sliding window over conversation history.',
-  },
-  {
-    failureType: 'Latency Degradation',
-    symptoms: [
-      'Response times increasing over time',
-      'Users experiencing timeouts',
-      'Streaming time-to-first-token increasing',
-    ],
-    observabilitySignals: [
-      'p99 latency increasing in metrics',
-      'Token counts growing (longer prompts = slower responses)',
-      'Provider rate limiting (429 responses in logs)',
-      'Retrieval latency spikes in traces',
-    ],
-    rootCause: 'Growing prompt sizes, provider rate limiting, cold vector store caches, or increased traffic.',
-    resolution:
-      'Optimize prompt length, implement request queuing, add caching layers, consider model tier downgrade for simple queries.',
-  },
-]
+The four key failure modes to understand:
 
-// Automated failure detector that analyzes logs and traces
+**Hallucination** -- The model generates plausible but factually incorrect information, cites nonexistent sources, or invents statistics. The observability signals are low retrieval relevance scores in RAG traces, no retrieval step (model answering from parametric knowledge), high token output without corresponding retrieval context, and quality scores dropping on factual accuracy benchmarks. The root cause is insufficient or irrelevant context, and the resolution is improving retrieval quality and adding grounding instructions.
+
+**Wrong Tool Selection** -- The agent uses the wrong tool, calls the same tool repeatedly without progress, or skips available tools entirely. Look for unexpected `tool_call` spans in the agent trace, step counts approaching the limit, and tool call patterns that do not match the query type. The root cause is usually ambiguous tool descriptions.
+
+**Context Window Overflow** -- The model ignores information from early in the conversation and responses become less coherent. The signals are input token counts approaching the model context limit, monotonically increasing input tokens over turns, and `finish_reason` changing from `'stop'` to `'length'`. The fix is conversation summarization or sliding window history.
+
+**Latency Degradation** -- Response times increasing over time, users experiencing timeouts. Look for p99 latency increasing in metrics, growing token counts, provider rate limiting (429 responses), and retrieval latency spikes.
+
+### Building a Failure Detector
+
+Build a `FailureDetector` class that analyzes recent logs to identify failure patterns automatically.
+
+```typescript
 class FailureDetector {
-  private logger: LLMLogger
-  private metrics: LLMMetrics
+  constructor(
+    private logger: LLMLogger,
+    private metrics: LLMMetrics
+  ) {}
 
-  constructor(logger: LLMLogger, metrics: LLMMetrics) {
-    this.logger = logger
-    this.metrics = metrics
-  }
-
-  // Analyze recent logs for failure patterns
   analyzeRecentFailures(): Array<{
     type: string
     confidence: number
     evidence: string[]
     recommendation: string
-  }> {
-    const logs = this.logger.getLogs()
-    const recentLogs = logs.filter(
-      l => Date.now() - new Date(l.timestamp).getTime() < 60 * 60 * 1000 // Last hour
-    )
-
-    const findings: Array<{
-      type: string
-      confidence: number
-      evidence: string[]
-      recommendation: string
-    }> = []
-
-    // Check for high error rate
-    const errorCount = recentLogs.filter(l => l.level === 'error').length
-    const errorRate = errorCount / Math.max(recentLogs.length, 1)
-    if (errorRate > 0.05) {
-      findings.push({
-        type: 'High Error Rate',
-        confidence: Math.min(errorRate * 10, 1),
-        evidence: [
-          `${errorCount} errors in ${recentLogs.length} requests (${(errorRate * 100).toFixed(1)}%)`,
-          `Error codes: ${[...new Set(recentLogs.filter(l => l.error).map(l => l.error?.code))].join(', ')}`,
-        ],
-        recommendation:
-          'Check provider status page. If rate limiting, implement backoff. If auth errors, verify API keys.',
-      })
-    }
-
-    // Check for latency increase
-    const latencies = recentLogs.map(l => l.response.responseTimeMs)
-    const avgLatency = latencies.reduce((sum, l) => sum + l, 0) / Math.max(latencies.length, 1)
-    if (avgLatency > 5000) {
-      findings.push({
-        type: 'Latency Degradation',
-        confidence: 0.8,
-        evidence: [
-          `Average latency: ${avgLatency.toFixed(0)}ms (threshold: 5000ms)`,
-          `Max latency: ${Math.max(...latencies)}ms`,
-        ],
-        recommendation:
-          'Check token counts (may be growing). Check provider status. Consider model routing to faster models.',
-      })
-    }
-
-    // Check for token count growth (possible context overflow)
-    const tokenCounts = recentLogs.map(l => l.response.inputTokens)
-    if (tokenCounts.length > 10) {
-      const firstHalf = tokenCounts.slice(0, Math.floor(tokenCounts.length / 2))
-      const secondHalf = tokenCounts.slice(Math.floor(tokenCounts.length / 2))
-      const firstAvg = firstHalf.reduce((s, t) => s + t, 0) / firstHalf.length
-      const secondAvg = secondHalf.reduce((s, t) => s + t, 0) / secondHalf.length
-
-      if (secondAvg > firstAvg * 1.5) {
-        findings.push({
-          type: 'Token Count Growth',
-          confidence: 0.7,
-          evidence: [
-            `Average tokens grew from ${firstAvg.toFixed(0)} to ${secondAvg.toFixed(0)} (${((secondAvg / firstAvg - 1) * 100).toFixed(0)}% increase)`,
-            'Possible context window pressure',
-          ],
-          recommendation:
-            'Implement conversation summarization. Check if RAG retrieval is returning too many documents.',
-        })
-      }
-    }
-
-    // Check for cost anomaly
-    const totalCost = recentLogs.reduce((sum, l) => sum + l.cost.totalCostUsd, 0)
-    const costPerRequest = totalCost / Math.max(recentLogs.length, 1)
-    if (costPerRequest > 0.05) {
-      findings.push({
-        type: 'Cost Anomaly',
-        confidence: 0.6,
-        evidence: [
-          `Average cost per request: $${costPerRequest.toFixed(4)}`,
-          `Total cost in last hour: $${totalCost.toFixed(4)}`,
-        ],
-        recommendation:
-          'Check if expensive models are being used unnecessarily. Verify caching is working. Check for runaway agent loops.',
-      })
-    }
-
-    return findings
-  }
+  }>
 }
 ```
 
+The `analyzeRecentFailures` method should filter logs to the last hour, then run four checks:
+
+1. **High error rate** -- Count error-level logs and compute the rate. If it exceeds 5%, add a finding with confidence proportional to the rate (capped at 1.0). Collect the unique error codes as evidence.
+
+2. **Latency degradation** -- Compute average response time from recent logs. If it exceeds 5000ms, add a finding. Include the average and max latency as evidence.
+
+3. **Token count growth** -- Split recent token counts into first half and second half. If the second half average exceeds the first half by 50% or more, this suggests context window pressure. What percentage increase would you consider alarming?
+
+4. **Cost anomaly** -- Compute average cost per request. If it exceeds $0.05, flag it with evidence showing both per-request and total costs.
+
+Each check produces a finding with a type name, confidence score, evidence array, and recommendation string. How would you handle the edge case where there are zero recent logs?
+
 ### Hallucination Diagnosis with Traces
 
+Build a `diagnoseHallucination` function that uses trace data and an LLM-as-judge call to assess whether a response is grounded in the retrieved context.
+
 ```typescript
-// Specific hallucination detector using trace data
 async function diagnoseHallucination(params: {
   query: string
   response: string
-  retrievedDocuments: Document[]
+  retrievedDocuments: { text: string; score: number }[]
   tracer: Tracer
 }): Promise<{
   isLikelyHallucination: boolean
   confidence: number
   evidence: string[]
-}> {
-  const { query, response, retrievedDocuments, tracer } = params
-
-  const diagSpan = tracer.startTrace('hallucination_diagnosis')
-  const evidence: string[] = []
-  let suspicionScore = 0
-
-  // Check 1: Were any documents retrieved?
-  if (retrievedDocuments.length === 0) {
-    evidence.push('No documents were retrieved -- model answered from parametric knowledge only')
-    suspicionScore += 0.4
-  }
-
-  // Check 2: Are retrieved documents relevant?
-  const avgRelevance =
-    retrievedDocuments.reduce((sum, d) => sum + (d.metadata.relevanceScore || 0), 0) /
-    Math.max(retrievedDocuments.length, 1)
-  if (avgRelevance < 0.7) {
-    evidence.push(`Low average retrieval relevance: ${avgRelevance.toFixed(2)} (threshold: 0.70)`)
-    suspicionScore += 0.3
-  }
-
-  // Check 3: Use LLM-as-judge to verify groundedness
-  const verifySpan = tracer.startSpan('groundedness_check', diagSpan)
-
-  const verificationResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        isGrounded: z.boolean().describe('Whether the response is fully supported by the context'),
-        ungroundedClaims: z.array(z.string()).describe('Claims in the response not supported by context'),
-        confidenceScore: z.number().min(0).max(1).describe('Confidence that the response is grounded'),
-      }),
-    }),
-    prompt: `Verify if this response is grounded in the provided context.
-
-Context documents:
-${retrievedDocuments.map(d => d.content).join('\n---\n')}
-
-Response to verify:
-${response}
-
-Check each claim in the response against the context. List any claims not supported by the context.`,
-  })
-
-  tracer.setAttributes(verifySpan, {
-    isGrounded: verificationResult.output!.isGrounded,
-    ungroundedClaimCount: verificationResult.output!.ungroundedClaims.length,
-    confidenceScore: verificationResult.output!.confidenceScore,
-  })
-  tracer.endSpan(verifySpan)
-
-  if (!verificationResult.output!.isGrounded) {
-    evidence.push(`LLM judge found ${verificationResult.output!.ungroundedClaims.length} ungrounded claims`)
-    for (const claim of verificationResult.output!.ungroundedClaims) {
-      evidence.push(`  - Ungrounded: "${claim}"`)
-    }
-    suspicionScore += 0.3
-  }
-
-  tracer.setAttributes(diagSpan, {
-    suspicionScore,
-    isLikelyHallucination: suspicionScore >= 0.5,
-    evidenceCount: evidence.length,
-  })
-  tracer.endSpan(diagSpan)
-
-  return {
-    isLikelyHallucination: suspicionScore >= 0.5,
-    confidence: Math.min(suspicionScore, 1),
-    evidence,
-  }
-}
+}>
 ```
+
+The function should run three checks, each contributing to a suspicion score:
+
+1. Were any documents retrieved? If not, the model answered from parametric knowledge only (add 0.4 to suspicion).
+2. What is the average relevance of retrieved documents? If below 0.7, add 0.3 to suspicion.
+3. Use `generateText` with `Output.object()` to ask an LLM judge whether the response is grounded in the context. The schema should include `isGrounded` (boolean), `ungroundedClaims` (string array), and `confidenceScore` (0-1 number).
+
+If the total suspicion score reaches 0.5 or above, classify it as a likely hallucination. Each check should create a child span under a root `hallucination_diagnosis` span, recording attributes like `isGrounded`, `ungroundedClaimCount`, and `confidenceScore`.
+
+What would you do if the groundedness check itself hallucinates? How could you mitigate this risk?
 
 ---
 
@@ -1581,7 +528,7 @@ Check each claim in the response against the context. List any claims not suppor
 
 ### Key Metrics to Monitor
 
-A well-designed dashboard surfaces the metrics that matter most for LLM application health. Here is a dashboard data structure that captures the essential views:
+A well-designed dashboard surfaces the metrics that matter most for LLM application health. Here is the data structure that captures the essential views:
 
 ```typescript
 // Dashboard data structure for LLM observability
@@ -1642,129 +589,35 @@ interface DashboardData {
     }>
   }
 }
+```
 
-// Dashboard data generator
+### Building a Dashboard Generator
+
+Build a `DashboardGenerator` class that takes the `LLMLogger`, `LLMMetrics`, and `MetricsCollector` as dependencies and produces a `DashboardData` object.
+
+```typescript
 class DashboardGenerator {
-  private logger: LLMLogger
-  private metrics: LLMMetrics
-  private collector: MetricsCollector
+  constructor(
+    private logger: LLMLogger,
+    private metrics: LLMMetrics,
+    private collector: MetricsCollector
+  ) {}
 
-  constructor(logger: LLMLogger, metrics: LLMMetrics, collector: MetricsCollector) {
-    this.logger = logger
-    this.metrics = metrics
-    this.collector = collector
-  }
-
-  generate(periodHours: number = 24): DashboardData {
-    const now = Date.now()
-    const periodStart = now - periodHours * 60 * 60 * 1000
-    const logs = this.logger.getLogs().filter(l => new Date(l.timestamp).getTime() >= periodStart)
-
-    const report = this.metrics.getReport() as any
-
-    // Calculate cost breakdown by model
-    const costByModel: Record<string, number> = {}
-    const costByFeature: Record<string, number> = {}
-    const userCosts: Record<string, number> = {}
-    const tokensByModel: Record<string, { input: number; output: number }> = {}
-    const errorsByType: Record<string, number> = {}
-    const finishReasons: Record<string, number> = {}
-
-    for (const log of logs) {
-      // Cost by model
-      const model = log.request.model
-      costByModel[model] = (costByModel[model] || 0) + log.cost.totalCostUsd
-
-      // Cost by feature
-      const feature = log.context.feature
-      costByFeature[feature] = (costByFeature[feature] || 0) + log.cost.totalCostUsd
-
-      // User costs
-      const userId = log.context.userId
-      userCosts[userId] = (userCosts[userId] || 0) + log.cost.totalCostUsd
-
-      // Tokens by model
-      if (!tokensByModel[model]) {
-        tokensByModel[model] = { input: 0, output: 0 }
-      }
-      tokensByModel[model].input += log.response.inputTokens
-      tokensByModel[model].output += log.response.outputTokens
-
-      // Errors
-      if (log.error) {
-        const code = log.error.code
-        errorsByType[code] = (errorsByType[code] || 0) + 1
-      }
-
-      // Finish reasons
-      const reason = log.response.finishReason
-      finishReasons[reason] = (finishReasons[reason] || 0) + 1
-    }
-
-    const totalCost = logs.reduce((sum, l) => sum + l.cost.totalCostUsd, 0)
-    const latencies = logs.map(l => l.response.responseTimeMs)
-    const errorLogs = logs.filter(l => l.level === 'error')
-
-    return {
-      overview: {
-        totalRequests: logs.length,
-        errorRate: errorLogs.length / Math.max(logs.length, 1),
-        avgLatencyMs: latencies.reduce((s, l) => s + l, 0) / Math.max(latencies.length, 1),
-        totalCostUsd: totalCost,
-        activeSessions: new Set(logs.map(l => l.context.sessionId)).size,
-        periodStart: new Date(periodStart).toISOString(),
-        periodEnd: new Date(now).toISOString(),
-      },
-      latencyPanel: {
-        p50Ms: this.collector.percentile('llm.latency.ms', 50),
-        p90Ms: this.collector.percentile('llm.latency.ms', 90),
-        p99Ms: this.collector.percentile('llm.latency.ms', 99),
-        timeToFirstTokenP50Ms: this.collector.percentile('llm.time_to_first_token.ms', 50),
-        timeToFirstTokenP90Ms: this.collector.percentile('llm.time_to_first_token.ms', 90),
-        timeSeries: [], // Populated from time-bucketed data in production
-      },
-      tokenPanel: {
-        totalInputTokens: logs.reduce((sum, l) => sum + l.response.inputTokens, 0),
-        totalOutputTokens: logs.reduce((sum, l) => sum + l.response.outputTokens, 0),
-        avgInputPerRequest: this.collector.average('llm.tokens.input'),
-        avgOutputPerRequest: this.collector.average('llm.tokens.output'),
-        tokensByModel,
-      },
-      costPanel: {
-        totalCostUsd: totalCost,
-        costByModel,
-        costByFeature,
-        topUsersByCost: Object.entries(userCosts)
-          .map(([userId, costUsd]) => ({ userId, costUsd }))
-          .sort((a, b) => b.costUsd - a.costUsd)
-          .slice(0, 10),
-        costTrend: [], // Populated from daily aggregates in production
-        projectedDailyCost: (totalCost / Math.max(periodHours, 1)) * 24,
-        budgetRemainingUsd: 100 - totalCost, // Example: $100/day budget
-      },
-      qualityPanel: {
-        cacheHitRate: report.cache?.hitRate || 0,
-        retrievalRelevanceAvg: this.collector.average('rag.retrieval.top_score'),
-        agentCompletionRate:
-          this.collector.total('agent.completed') /
-          Math.max(this.collector.total('agent.completed') + this.collector.total('agent.max_steps_reached'), 1),
-        avgAgentSteps: this.collector.average('agent.steps.total'),
-        finishReasonBreakdown: finishReasons,
-      },
-      errorPanel: {
-        errorRate: errorLogs.length / Math.max(logs.length, 1),
-        errorsByType,
-        recentErrors: errorLogs.slice(-10).map(l => ({
-          timestamp: l.timestamp,
-          errorCode: l.error?.code || 'unknown',
-          message: l.error?.message || 'Unknown error',
-          traceId: l.context.traceId,
-        })),
-      },
-    }
-  }
+  generate(periodHours: number = 24): DashboardData
 }
 ```
+
+The `generate` method should:
+
+1. Filter logs to the specified time period using `periodStart = now - periodHours * 60 * 60 * 1000`.
+2. Iterate over filtered logs once, accumulating breakdowns by model, feature, and user for cost and token panels. Also count errors by type and finish reasons.
+3. Compute the overview panel from log aggregates -- total requests, error rate (using `Math.max(logs.length, 1)` to avoid division by zero), average latency, total cost, and unique session count.
+4. Populate the latency panel using the `MetricsCollector`'s `percentile` method for p50, p90, and p99.
+5. Populate the cost panel, sorting top users by cost descending and limiting to 10. Calculate `projectedDailyCost` by extrapolating from the period.
+6. Populate the quality panel using the `MetricsCollector`'s `average` and `total` methods for retrieval relevance, agent completion rate, and agent steps.
+7. Populate the error panel with the 10 most recent error logs.
+
+Think about how you would populate the `timeSeries` and `costTrend` arrays in production. What time bucketing approach would you use?
 
 > **Beginner Note:** You do not need to build a custom dashboard from scratch. Tools like Grafana, Datadog, and New Relic can visualize the metrics you collect. The key is emitting the right data -- the visualization tool is secondary. Start by logging structured JSON and viewing it in your log aggregator. Add dedicated dashboards as your application grows.
 
@@ -1803,212 +656,41 @@ interface AlertEvent {
   message: string
   traceIds: string[] // Related traces for investigation
 }
+```
 
+Build an `AlertManager` class with the following behavior:
+
+```typescript
 class AlertManager {
-  private rules: AlertRule[] = []
-  private activeAlerts: Map<string, AlertEvent> = new Map()
-  private lastAlertTime: Map<string, number> = new Map()
-  private alertHistory: AlertEvent[] = []
+  private rules: AlertRule[]
+  private activeAlerts: Map<string, AlertEvent>
+  private lastAlertTime: Map<string, number>
+  private alertHistory: AlertEvent[]
 
-  constructor() {
-    // Default alert rules for LLM applications
-    this.rules = [
-      {
-        id: 'error-rate-high',
-        name: 'High Error Rate',
-        description: 'Error rate exceeds 5%',
-        metric: 'error_rate',
-        condition: 'above',
-        threshold: 0.05,
-        windowMinutes: 15,
-        severity: 'critical',
-        notifyChannels: ['slack', 'pagerduty'],
-        cooldownMinutes: 30,
-      },
-      {
-        id: 'latency-p99-high',
-        name: 'P99 Latency Degradation',
-        description: 'P99 latency exceeds 10 seconds',
-        metric: 'latency_p99_ms',
-        condition: 'above',
-        threshold: 10000,
-        windowMinutes: 10,
-        severity: 'warning',
-        notifyChannels: ['slack'],
-        cooldownMinutes: 15,
-      },
-      {
-        id: 'cost-spike',
-        name: 'Hourly Cost Spike',
-        description: 'Hourly cost exceeds 3x the daily average',
-        metric: 'hourly_cost_usd',
-        condition: 'above',
-        threshold: 0, // Dynamically calculated
-        windowMinutes: 60,
-        severity: 'warning',
-        notifyChannels: ['slack', 'email'],
-        cooldownMinutes: 60,
-      },
-      {
-        id: 'daily-budget-warning',
-        name: 'Daily Budget Warning',
-        description: 'Daily spend exceeds 70% of budget',
-        metric: 'daily_cost_usd',
-        condition: 'above',
-        threshold: 70, // 70% of daily budget
-        windowMinutes: 1440, // 24 hours
-        severity: 'warning',
-        notifyChannels: ['slack'],
-        cooldownMinutes: 240,
-      },
-      {
-        id: 'daily-budget-critical',
-        name: 'Daily Budget Critical',
-        description: 'Daily spend exceeds 90% of budget',
-        metric: 'daily_cost_usd',
-        condition: 'above',
-        threshold: 90, // 90% of daily budget
-        windowMinutes: 1440,
-        severity: 'critical',
-        notifyChannels: ['slack', 'pagerduty', 'email'],
-        cooldownMinutes: 120,
-      },
-      {
-        id: 'cache-hit-rate-low',
-        name: 'Low Cache Hit Rate',
-        description: 'Cache hit rate drops below 20%',
-        metric: 'cache_hit_rate',
-        condition: 'below',
-        threshold: 0.2,
-        windowMinutes: 30,
-        severity: 'info',
-        notifyChannels: ['slack'],
-        cooldownMinutes: 60,
-      },
-      {
-        id: 'retrieval-quality-low',
-        name: 'Low Retrieval Quality',
-        description: 'Average retrieval relevance drops below 0.6',
-        metric: 'retrieval_relevance_avg',
-        condition: 'below',
-        threshold: 0.6,
-        windowMinutes: 30,
-        severity: 'warning',
-        notifyChannels: ['slack'],
-        cooldownMinutes: 60,
-      },
-      {
-        id: 'agent-max-steps',
-        name: 'Agent Loop Failures',
-        description: 'More than 10% of agent loops hit max steps',
-        metric: 'agent_max_steps_rate',
-        condition: 'above',
-        threshold: 0.1,
-        windowMinutes: 30,
-        severity: 'warning',
-        notifyChannels: ['slack'],
-        cooldownMinutes: 60,
-      },
-    ]
-  }
-
-  // Evaluate all rules against current metrics
-  evaluate(dashboardData: DashboardData): AlertEvent[] {
-    const newAlerts: AlertEvent[] = []
-    const now = Date.now()
-
-    for (const rule of this.rules) {
-      // Check cooldown
-      const lastAlert = this.lastAlertTime.get(rule.id)
-      if (lastAlert && now - lastAlert < rule.cooldownMinutes * 60 * 1000) {
-        continue
-      }
-
-      const currentValue = this.getMetricValue(rule.metric, dashboardData)
-      let triggered = false
-
-      switch (rule.condition) {
-        case 'above':
-          triggered = currentValue > rule.threshold
-          break
-        case 'below':
-          triggered = currentValue < rule.threshold
-          break
-        case 'rate_increase':
-          // Would compare against historical baseline
-          triggered = false
-          break
-      }
-
-      if (triggered) {
-        const alert: AlertEvent = {
-          ruleId: rule.id,
-          ruleName: rule.name,
-          severity: rule.severity,
-          timestamp: new Date().toISOString(),
-          currentValue,
-          threshold: rule.threshold,
-          message: `${rule.name}: current value ${currentValue.toFixed(4)} ${rule.condition} threshold ${rule.threshold}`,
-          traceIds: dashboardData.errorPanel.recentErrors.slice(0, 3).map(e => e.traceId),
-        }
-
-        newAlerts.push(alert)
-        this.activeAlerts.set(rule.id, alert)
-        this.alertHistory.push(alert)
-        this.lastAlertTime.set(rule.id, now)
-
-        // In production: send to notification channels
-        this.notify(alert, rule.notifyChannels)
-      } else {
-        // Clear resolved alerts
-        if (this.activeAlerts.has(rule.id)) {
-          this.activeAlerts.delete(rule.id)
-        }
-      }
-    }
-
-    return newAlerts
-  }
-
-  private getMetricValue(metric: string, data: DashboardData): number {
-    switch (metric) {
-      case 'error_rate':
-        return data.overview.errorRate
-      case 'latency_p99_ms':
-        return data.latencyPanel.p99Ms
-      case 'hourly_cost_usd':
-        return data.costPanel.totalCostUsd
-      case 'daily_cost_usd':
-        return (
-          (data.costPanel.totalCostUsd / Math.max(data.costPanel.budgetRemainingUsd + data.costPanel.totalCostUsd, 1)) *
-          100
-        )
-      case 'cache_hit_rate':
-        return data.qualityPanel.cacheHitRate
-      case 'retrieval_relevance_avg':
-        return data.qualityPanel.retrievalRelevanceAvg
-      case 'agent_max_steps_rate':
-        return 1 - data.qualityPanel.agentCompletionRate
-      default:
-        return 0
-    }
-  }
-
-  private notify(alert: AlertEvent, channels: string[]): void {
-    for (const channel of channels) {
-      console.log(`[ALERT][${alert.severity.toUpperCase()}][${channel}] ${alert.message}`)
-    }
-  }
-
-  getActiveAlerts(): AlertEvent[] {
-    return Array.from(this.activeAlerts.values())
-  }
-
-  getAlertHistory(): AlertEvent[] {
-    return [...this.alertHistory]
-  }
+  constructor()
+  evaluate(dashboardData: DashboardData): AlertEvent[]
+  getActiveAlerts(): AlertEvent[]
+  getAlertHistory(): AlertEvent[]
 }
 ```
+
+The constructor should initialize default alert rules for LLM applications. Consider including rules for:
+
+- **High error rate** (`error_rate` above 0.05, critical severity, 15-minute window, 30-minute cooldown)
+- **P99 latency degradation** (`latency_p99_ms` above 10000, warning severity)
+- **Hourly cost spike** (`hourly_cost_usd` above a dynamic threshold, warning severity)
+- **Daily budget warning** at 70% (`daily_cost_usd`, warning) and **critical** at 90%
+- **Low cache hit rate** (`cache_hit_rate` below 0.2, info severity)
+- **Low retrieval quality** (`retrieval_relevance_avg` below 0.6, warning severity)
+- **Agent loop failures** (`agent_max_steps_rate` above 0.1, warning severity)
+
+The `evaluate` method should iterate over all rules, check cooldown (skip if the last alert was within `cooldownMinutes`), extract the current metric value from the `DashboardData`, compare against the threshold based on the condition (`'above'`, `'below'`, or `'rate_increase'`), and create an `AlertEvent` if triggered. Resolved alerts (condition no longer met) should be removed from `activeAlerts`.
+
+You will need a private `getMetricValue(metric, data)` method that maps metric names to fields in `DashboardData`. For example, `'error_rate'` maps to `data.overview.errorRate` and `'agent_max_steps_rate'` maps to `1 - data.qualityPanel.agentCompletionRate`.
+
+Also add a private `notify(alert, channels)` method -- for now, log the alert to console with severity, channel, and message. In production, this would send to Slack, PagerDuty, or email.
+
+Why is cooldown important? What would happen without it during a sustained outage?
 
 ---
 
@@ -2018,98 +700,44 @@ class AlertManager {
 
 Logging LLM interactions creates a tension between debuggability and privacy. Full prompt/response logs are invaluable for debugging but may contain PII, sensitive business data, or information subject to regulatory constraints.
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+### PII Detection Patterns
 
-// PII detection patterns
+Start by defining regex patterns for common PII types. Each pattern needs a `name`, a `pattern` (RegExp with the `g` flag), and a `replacement` string:
+
+```typescript
 const piiPatterns: Array<{
   name: string
   pattern: RegExp
   replacement: string
-}> = [
-  {
-    name: 'email',
-    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
-    replacement: '[EMAIL_REDACTED]',
-  },
-  {
-    name: 'phone',
-    pattern: /(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g,
-    replacement: '[PHONE_REDACTED]',
-  },
-  {
-    name: 'ssn',
-    pattern: /\b\d{3}-\d{2}-\d{4}\b/g,
-    replacement: '[SSN_REDACTED]',
-  },
-  {
-    name: 'credit_card',
-    pattern: /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g,
-    replacement: '[CC_REDACTED]',
-  },
-  {
-    name: 'ip_address',
-    pattern: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
-    replacement: '[IP_REDACTED]',
-  },
-  {
-    name: 'api_key',
-    pattern: /\b(sk-|pk-|api[_-]?key[=:]\s*)[a-zA-Z0-9_-]{20,}\b/gi,
-    replacement: '[API_KEY_REDACTED]',
-  },
-]
+}>
+```
 
-// Privacy-aware logging middleware
+Cover at minimum: email addresses (`[EMAIL_REDACTED]`), phone numbers (`[PHONE_REDACTED]`), SSNs (`[SSN_REDACTED]`), credit card numbers (`[CC_REDACTED]`), IP addresses (`[IP_REDACTED]`), and API keys (`[API_KEY_REDACTED]`). How would you write a regex that catches phone numbers with various separators (dots, dashes, spaces) and optional country code?
+
+### Building a Privacy Filter
+
+Build a `PrivacyFilter` class with three methods:
+
+```typescript
 class PrivacyFilter {
-  private patterns: typeof piiPatterns
-  private detectionCounts: Record<string, number> = {}
+  constructor(customPatterns?: typeof piiPatterns)
 
-  constructor(customPatterns?: typeof piiPatterns) {
-    this.patterns = customPatterns || piiPatterns
-  }
-
-  // Redact PII from text
-  redact(text: string): {
-    redacted: string
-    detections: string[]
-  } {
-    let result = text
-    const detections: string[] = []
-
-    for (const { name, pattern, replacement } of this.patterns) {
-      const matches = result.match(pattern)
-      if (matches && matches.length > 0) {
-        detections.push(`${name}: ${matches.length} instance(s)`)
-        this.detectionCounts[name] = (this.detectionCounts[name] || 0) + matches.length
-        result = result.replace(pattern, replacement)
-      }
-    }
-
-    return { redacted: result, detections }
-  }
-
-  // Check if text contains PII (without redacting)
-  containsPII(text: string): boolean {
-    for (const { pattern } of this.patterns) {
-      if (pattern.test(text)) {
-        // Reset regex lastIndex since we use the 'g' flag
-        pattern.lastIndex = 0
-        return true
-      }
-    }
-    return false
-  }
-
-  // Get PII detection statistics
-  getStats(): Record<string, number> {
-    return { ...this.detectionCounts }
-  }
+  redact(text: string): { redacted: string; detections: string[] }
+  containsPII(text: string): boolean
+  getStats(): Record<string, number>
 }
+```
 
-// Privacy-aware logger configuration
+The `redact` method should apply each pattern in sequence, replacing matches with the corresponding replacement string. Track how many instances of each PII type were found and return both the redacted text and a detections array (e.g., `['email: 2 instance(s)', 'phone: 1 instance(s)']`). Maintain a running count across calls in a `detectionCounts` map.
+
+The `containsPII` method should return `true` if any pattern matches, without modifying the text. Watch out for the regex `g` flag -- `RegExp.test()` advances `lastIndex`, so you need to reset it after each test. Why does this matter?
+
+### Privacy Policies by Environment
+
+Define a `PrivacyPolicy` interface with per-environment settings:
+
+```typescript
 interface PrivacyPolicy {
-  // What to log in each environment
   development: {
     logFullPrompts: boolean
     logFullResponses: boolean
@@ -2128,106 +756,153 @@ interface PrivacyPolicy {
     retentionDays: number
   }
 }
+```
 
-const defaultPrivacyPolicy: PrivacyPolicy = {
-  development: {
-    logFullPrompts: true,
-    logFullResponses: true,
-    redactPII: false, // Developers need to see real data for debugging
-  },
-  staging: {
-    logFullPrompts: true,
-    logFullResponses: true,
-    redactPII: true, // Redact PII but log full content
-  },
-  production: {
-    logFullPrompts: false, // Only log hashes and previews
-    logFullResponses: false,
-    redactPII: true,
-    maxPreviewLength: 100,
-    retentionDays: 30, // Delete logs after 30 days
-  },
-}
+The recommended defaults are: development logs everything without redaction (developers need real data), staging logs everything with PII redaction, and production logs only metadata with redacted previews truncated to `maxPreviewLength` characters and a 30-day retention policy.
 
-// Privacy-aware logging wrapper
+### Building a Privacy-Aware Logger
+
+Build a `PrivacyAwareLogger` class that combines the `PrivacyFilter` with the `PrivacyPolicy`:
+
+```typescript
 class PrivacyAwareLogger {
-  private filter: PrivacyFilter
-  private policy: PrivacyPolicy
-  private environment: 'development' | 'staging' | 'production'
+  constructor(environment: 'development' | 'staging' | 'production', policy?: PrivacyPolicy)
 
-  constructor(environment: 'development' | 'staging' | 'production', policy?: PrivacyPolicy) {
-    this.filter = new PrivacyFilter()
-    this.policy = policy || defaultPrivacyPolicy
-    this.environment = environment
-  }
-
-  // Prepare text for logging according to privacy policy
   prepareForLogging(text: string): {
     loggableText: string
     piiDetected: boolean
     detections: string[]
-  } {
-    const envPolicy = this.policy[this.environment]
-    let result = text
-    let detections: string[] = []
-
-    // Check for PII
-    const piiDetected = this.filter.containsPII(text)
-
-    // Apply redaction if policy requires it
-    if ('redactPII' in envPolicy && envPolicy.redactPII) {
-      const redactResult = this.filter.redact(text)
-      result = redactResult.redacted
-      detections = redactResult.detections
-    }
-
-    // Truncate if in production
-    if (this.environment === 'production' && !this.policy.production.logFullPrompts) {
-      const maxLen = this.policy.production.maxPreviewLength
-      if (result.length > maxLen) {
-        result = result.substring(0, maxLen) + `... [truncated, ${text.length} total chars]`
-      }
-    }
-
-    return { loggableText: result, piiDetected, detections }
   }
 
-  // Log a warning if PII is detected (useful for alerting)
-  logPIIWarning(context: string, detections: string[]): void {
-    if (detections.length > 0) {
-      console.warn(
-        JSON.stringify({
-          level: 'warn',
-          event: 'pii_detected',
-          context,
-          detections,
-          timestamp: new Date().toISOString(),
-        })
-      )
-    }
-  }
+  logPIIWarning(context: string, detections: string[]): void
 }
-
-// Usage example
-const privacyLogger = new PrivacyAwareLogger('production')
-
-const userInput = 'My email is john@example.com and my phone is 555-123-4567'
-const prepared = privacyLogger.prepareForLogging(userInput)
-
-console.log('Loggable text:', prepared.loggableText)
-// Output: "My email is [EMAIL_REDACTED] and my phone is [PHONE_REDAC...
-//         [truncated, 62 total chars]"
-console.log('PII detected:', prepared.piiDetected)
-// Output: true
-console.log('Detections:', prepared.detections)
-// Output: ["email: 1 instance(s)", "phone: 1 instance(s)"]
 ```
+
+The `prepareForLogging` method should: (1) check for PII, (2) apply redaction if the environment policy requires it, (3) truncate the result to `maxPreviewLength` if in production with `logFullPrompts` set to false, appending `... [truncated, N total chars]`. The `logPIIWarning` method should emit a structured JSON warning when detections are present, including the context, detections, and timestamp.
+
+For testing, pass in a string like `'My email is john@example.com and my phone is 555-123-4567'` and verify the production output is truncated and redacted.
 
 > **Beginner Note:** The simplest privacy-safe approach is to never log the full prompt or response in production. Log only metadata: model, token counts, latency, cost, user ID, and a hash of the prompt for grouping. If you need to debug a specific request, use the trace ID to look it up in a separate, access-controlled debug log with a short retention period.
 
 > **Advanced Note:** Consider implementing data residency controls for multi-region deployments. Logs containing user data may need to stay in the same region as the user (GDPR, data sovereignty laws). Use log routing to direct logs to region-specific storage. Also consider implementing a "right to be forgotten" mechanism that can purge all logs associated with a specific user ID on request.
 
-> **Local Alternative (Ollama):** All observability patterns (structured logging, tracing, metrics) work identically with `ollama('qwen3.5')`. Logging and tracing are application-level concerns independent of the model provider. In fact, observability is more important with local models — you need to monitor inference speed, GPU utilization, and memory usage in addition to the standard LLM metrics.
+> **Local Alternative (Ollama):** All observability patterns (structured logging, tracing, metrics) work identically with `ollama('qwen3.5')`. Logging and tracing are application-level concerns independent of the model provider. In fact, observability is more important with local models -- you need to monitor inference speed, GPU utilization, and memory usage in addition to the standard LLM metrics.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: OpenTelemetry for LLM Apps
+
+OpenTelemetry (OTel) is the industry standard for distributed tracing. For LLM applications, OTel provides structured traces that span the full pipeline: user input, LLM call, tool execution, and response generation.
+
+Each operation becomes a **span** with attributes:
+
+- `llm.model` — which model handled the request
+- `llm.tokens.input` / `llm.tokens.output` — token counts
+- `llm.duration_ms` — how long the call took
+- `tool.name` — which tool was invoked (for tool call spans)
+
+Spans nest naturally: an agent turn span contains an LLM call span, which contains tool execution spans. This hierarchy lets you see exactly where time and tokens are spent.
+
+**Pattern:** Create a root span for each user message. Within it, create child spans for each LLM call and tool execution. Attach token counts and latency as span attributes. Export to a tracing backend (or log as JSON for local development):
+
+```ts
+const span = tracer.startSpan('llm.generate', { attributes: { 'llm.model': model.modelId } })
+const result = await generateText({ model, prompt })
+span.setAttribute('llm.tokens.input', result.usage.inputTokens)
+span.end()
+```
+
+## Section 10: Context Window Monitoring
+
+The context window is a finite resource that deserves the same monitoring as memory or CPU. A context monitor tracks:
+
+- **Current usage** — how many tokens are consumed by system prompt, conversation history, tool definitions, and tool results
+- **Usage over time** — how the window fills up as the conversation progresses
+- **Compaction events** — when compaction was triggered and how much space it freed
+- **Threshold alerts** — warnings when usage exceeds 60%, 80%, or 95% of the window
+
+**Key insight for LLM apps:** Memory monitoring is not just about heap — it is about context window usage too. Both are finite resources that need monitoring. A context window filling up silently causes degraded responses (the model loses important context) long before it causes an error.
+
+**Pattern:** After each LLM call, calculate the token count of each message category and log it as a structured metric. Trigger compaction proactively when usage crosses a threshold rather than waiting for the window to overflow.
+
+## Section 11: Pipeline Profiling
+
+LLM pipelines have multiple stages, and the bottleneck is not always the LLM call. A pipeline profiler instruments each step with timing:
+
+1. **Embedding generation** — How long does it take to embed the query?
+2. **Vector search** — How long does retrieval take? How many documents are returned?
+3. **Context assembly** — How long to format retrieved documents into a prompt?
+4. **LLM generation** — Time to first token (TTFT) and total generation time.
+5. **Post-processing** — Output parsing, validation, guardrail checks.
+
+Profile your pipeline with real queries and identify the bottleneck. Often it is not the LLM call — slow embedding models or unindexed vector searches can dominate total latency.
+
+**Pattern:** Wrap each pipeline stage in a timed span (using OTel or a simple timer). Log the duration of each stage and compute the percentage of total time each stage consumes. The stage taking the most time is where optimization effort should focus.
+
+## Section 12: Enhanced Structured Logging
+
+Upgrade from basic logging to production-grade structured logs. Every log entry should be a JSON object with:
+
+- **Trace ID** — Links the log entry to a distributed trace, enabling correlation across services.
+- **Conversation ID** — Which conversation this entry belongs to.
+- **Turn number** — Which turn within the conversation.
+- **Token counts** — Input and output tokens for the associated LLM call.
+- **Severity** — `debug`, `info`, `warn`, `error` levels.
+- **Timestamp** — ISO 8601 format for consistent parsing.
+
+```ts
+logger.info({
+  traceId,
+  conversationId,
+  turn: 5,
+  model: 'mistral-large-latest',
+  tokens: { input: 4200, output: 380 },
+  latencyMs: 1250,
+  event: 'llm.response',
+})
+```
+
+Structured JSON logs are machine-parseable, enabling automated alerting, dashboarding, and anomaly detection. Plain text logs require regex parsing and break when the format changes.
+
+## Section 13: Context Visualization
+
+Make the abstract "200K token window" tangible by visualizing what occupies it. A context visualizer shows the composition of the context window as a simple bar or table:
+
+```
+Context Window Usage (42,000 / 200,000 tokens - 21%)
+[████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 21%
+  System prompt:     18,200 tokens (43%)
+  Tool definitions:   4,100 tokens (10%)
+  Conversation:      12,500 tokens (30%)
+  Tool results:       7,200 tokens (17%)
+```
+
+This visualization connects to every earlier module: you can see your system prompt size (Module 2), conversation history (Module 4), tool definitions (Module 6), and RAG context (Module 10) all competing for space.
+
+## Section 14: LSP Diagnostics as Observability Signal
+
+(See Module 10 Section 11 for LSP background.)
+
+Language Server Protocol (LSP) diagnostics provide a continuous, zero-cost quality signal for generated code. After any code generation or modification, TypeScript compiler diagnostics reveal type errors, missing imports, and unused variables immediately — without running a test suite or paying for an LLM-as-judge call.
+
+**Pattern:** Run `tsc --noEmit` (or use a TypeScript language server) after each code modification and collect the diagnostics. Track error and warning counts over time alongside your other observability metrics (token usage, latency, cost). A spike in diagnostics after a code generation step indicates the model produced low-quality code.
+
+This is an always-on quality signal: unlike tests (which must be run explicitly) or LLM-as-judge (which costs tokens), LSP diagnostics are free and immediate after initial setup.
+
+## Section 15: Session Sharing for Debugging
+
+Agent conversations are shareable debug artifacts. When an agent produces a bad result, the team can review the exact sequence of decisions — prompts, tool calls, results, and responses — rather than trying to reproduce the issue.
+
+**Pattern:** Implement a session export that serializes the full interaction into a reviewable format:
+
+- All messages (system, user, assistant, tool calls, tool results)
+- Token counts and latency for each LLM call
+- Tool invocations with parameters and return values
+- Timestamps for each event
+
+The exported session is a JSON file that teammates can inspect. This transforms agent interactions from ephemeral to auditable. The conversation history IS the debug log.
 
 ---
 
@@ -2243,6 +918,13 @@ In this module, you learned:
 6. **Dashboard design:** Building dashboards that surface actionable insights about application health, cost trends, quality distributions, and user patterns.
 7. **Alerting:** Configuring alerts for cost spikes, error rate increases, latency degradation, and quality drops that require immediate attention.
 8. **Privacy considerations:** Handling PII in logs, implementing field-level redaction, and designing logging policies that balance debugging needs with data protection requirements.
+9. **OpenTelemetry for LLM apps:** Using OTel spans with LLM-specific attributes (model, tokens, latency) to build hierarchical traces across agent turns, LLM calls, and tool executions.
+10. **Context window monitoring:** Tracking token usage across message categories (system prompt, history, tool results) and triggering proactive compaction at usage thresholds.
+11. **Pipeline profiling:** Instrumenting each pipeline stage (embedding, retrieval, generation, post-processing) to identify the actual bottleneck, which is often not the LLM call.
+12. **Enhanced structured logging:** Upgrading to JSON log entries with trace ID, conversation ID, turn number, token counts, and severity for machine-parseable alerting and dashboarding.
+13. **Context visualization:** Rendering context window composition as a bar or table so developers can see how system prompt, tools, history, and results compete for space.
+14. **LSP diagnostics as observability signal:** Using compiler diagnostics as a free, always-on quality signal for generated code alongside traditional metrics.
+15. **Session sharing for debugging:** Exporting full agent interactions (messages, tool calls, token counts, timestamps) as shareable JSON artifacts for team review.
 
 In Module 24, you will learn how to deploy LLM applications to production with authentication, rate limiting, streaming endpoints, and provider failover.
 
@@ -2305,6 +987,28 @@ D) Only log error responses in full
 
 ---
 
+**Question 6 (Medium):** A pipeline profiler shows that embedding generation takes 200ms, vector search takes 800ms, context assembly takes 10ms, LLM generation takes 500ms, and post-processing takes 15ms. Where should optimization effort focus?
+
+A) LLM generation, because it is the most expensive operation in terms of tokens
+B) Vector search, because it is the bottleneck at 800ms — more than the LLM call itself
+C) Context assembly, because it is the fastest step and could be doing more work
+D) Post-processing, because it runs last and delays the final response
+
+**Answer: B** -- Pipeline profiling reveals that the bottleneck is not always the LLM call. In this case, vector search at 800ms dominates total latency. Optimizing it (adding indexes, reducing the search space, caching frequent queries) would have more impact than optimizing the LLM call. Without profiling, most developers would assume the LLM is the bottleneck and miss the real optimization opportunity.
+
+---
+
+**Question 7 (Hard):** A context window monitor shows: system prompt 43%, tool definitions 10%, conversation history 30%, tool results 17%. The total is 42,000 out of 200,000 tokens. A user reports degraded response quality on long conversations. What is the most likely cause and how does context visualization help diagnose it?
+
+A) The model is too slow — context visualization cannot diagnose quality issues
+B) As the conversation grows, history will crowd out tool results and the model will lose access to retrieved information needed for accurate responses
+C) The system prompt is too large and should be shortened immediately
+D) The tool definitions are taking too much space
+
+**Answer: B** -- Context visualization makes the window allocation concrete. At 42K tokens the system has room, but as conversation history grows, it will consume an increasing percentage. Eventually, tool results (retrieved documents, file contents) must be truncated or dropped to fit within the window. When the model loses access to this retrieved context, response quality degrades because the model falls back to parametric knowledge instead of grounded facts. The visualization helps identify exactly when this crowding occurs and which category to compact first.
+
+---
+
 ## Exercises
 
 ### Exercise 1: Add Observability to a RAG Pipeline
@@ -2359,3 +1063,88 @@ Build a metrics dashboard generator that produces a JSON report suitable for ren
    - Top 3 cost consumers by user, model, and feature
 
 **Expected output:** A complete dashboard JSON showing all panels (overview, latency, tokens, cost, quality, errors) plus any active alerts with actionable messages.
+
+### Exercise 3: OpenTelemetry Instrumentation
+
+Instrument an LLM pipeline with OpenTelemetry-style spans to produce structured traces.
+
+**Specification:**
+
+1. Create a simple `Tracer` class that supports:
+   - `startSpan(name, attributes?)` — returns a `Span` object with `setAttribute`, `addEvent`, and `end` methods
+   - Nested spans (child spans reference their parent via `parentSpanId`)
+   - Automatic duration calculation (start time to end time)
+   - Export as a JSON array of completed spans
+
+2. Instrument a pipeline that performs: user message processing, LLM call (via `generateText`), tool execution (simulate with a delay), and response formatting. Each step should be a span with relevant attributes (`llm.model`, `llm.tokens.input`, `llm.tokens.output`, `tool.name`, `duration_ms`).
+
+3. Run 5 queries through the instrumented pipeline. For each query, export the trace and verify:
+   - The root span covers the full request duration
+   - Child spans are properly nested
+   - Token counts and model name are recorded as attributes
+   - The sum of child span durations approximately equals the parent span duration
+
+4. Print a visual trace for the slowest query showing the span hierarchy with indentation and timing.
+
+**Create:** `src/observability/exercises/otel-instrumentation.ts`
+
+**Expected output:** A visual trace tree for each query showing span names, durations, and key attributes, plus a summary of total tokens and cost across all queries.
+
+### Exercise 4: Context Window Monitor
+
+Build a real-time context window monitor that tracks usage across message categories and alerts on thresholds.
+
+**Specification:**
+
+1. Create a `ContextMonitor` class that tracks token usage by category:
+   - System prompt tokens
+   - Tool definition tokens
+   - Conversation history tokens
+   - Tool result tokens
+   - Remaining capacity
+
+2. Implement `update(messages)` that takes the current message array, estimates tokens per category, and records a usage snapshot with a timestamp.
+
+3. Implement threshold alerts:
+   - `warning` at 60% total usage
+   - `critical` at 80% total usage
+   - `overflow` at 95% total usage
+   - Per-category alerts when tool results exceed 30% of the window or conversation history exceeds 50%
+
+4. Implement `visualize()` that prints an ASCII bar chart showing context window composition (similar to the example in Section 13).
+
+5. Simulate a 20-turn conversation where each turn adds messages and tool results. Show how the context window fills over time. Trigger at least one compaction event when usage exceeds 80%.
+
+**Create:** `src/observability/exercises/context-monitor.ts`
+
+**Expected output:** An ASCII visualization after each turn showing context usage, alerts when thresholds are crossed, and a compaction event that reduces usage.
+
+### Exercise 5: Pipeline Profiler
+
+Build a profiler that instruments each stage of a RAG pipeline and identifies the bottleneck.
+
+**Specification:**
+
+1. Create a `PipelineProfiler` class with:
+   - `stage(name, fn)` — wraps an async function in timing instrumentation, returns the function's result
+   - `getReport()` — returns timing data for all stages: name, duration, percentage of total time
+   - `reset()` — clears all recorded data
+
+2. Instrument a simulated RAG pipeline with these stages:
+   - `embed_query` — Simulate embedding generation (50-200ms)
+   - `vector_search` — Simulate vector DB lookup (100-500ms)
+   - `rerank` — Simulate reranking (30-100ms)
+   - `assemble_context` — Simulate prompt construction (5-20ms)
+   - `llm_generate` — Make an actual `generateText` call
+
+3. Run the pipeline 5 times and collect profiling data for each run.
+
+4. Generate a profiling report showing:
+   - Average duration per stage across all runs
+   - Percentage of total time per stage
+   - The identified bottleneck (stage with highest average percentage)
+   - A recommendation (e.g., "vector_search takes 45% of pipeline time — consider adding an index")
+
+**Create:** `src/observability/exercises/pipeline-profiler.ts`
+
+**Expected output:** A profiling report table showing stage timings, percentages, and a bottleneck recommendation.

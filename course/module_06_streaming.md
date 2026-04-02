@@ -41,47 +41,13 @@ TTFT measures how long the user waits before seeing any output. It is the most c
 import { generateText, streamText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 
-// Non-streaming: user waits for the entire response
-async function measureNonStreaming(): Promise<void> {
-  const start = performance.now()
-
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: 'Explain the theory of relativity in 3 paragraphs.',
-  })
-
-  const totalTime = performance.now() - start
-  console.log(`Non-streaming: ${totalTime.toFixed(0)}ms to see anything`)
-  console.log(`Response length: ${text.length} characters`)
-}
-
-// Streaming: user sees first token almost immediately
-async function measureStreaming(): Promise<void> {
-  const start = performance.now()
-  let firstTokenTime: number | null = null
-
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    prompt: 'Explain the theory of relativity in 3 paragraphs.',
-  })
-
-  let fullText = ''
-  for await (const chunk of result.textStream) {
-    if (firstTokenTime === null) {
-      firstTokenTime = performance.now() - start
-    }
-    fullText += chunk
-  }
-
-  const totalTime = performance.now() - start
-  console.log(`Streaming TTFT: ${firstTokenTime?.toFixed(0)}ms`)
-  console.log(`Streaming total: ${totalTime.toFixed(0)}ms`)
-  console.log(`Response length: ${fullText.length} characters`)
-}
-
-await measureNonStreaming()
-await measureStreaming()
+async function measureNonStreaming(): Promise<void>
+async function measureStreaming(): Promise<void>
 ```
+
+Build two functions that demonstrate the TTFT difference. `measureNonStreaming` uses `generateText` — record `performance.now()` before the call, then log the elapsed time after the response arrives. The user sees nothing until the entire response is ready.
+
+`measureStreaming` uses `streamText` and iterates over `result.textStream` with `for await`. Record when the first chunk arrives (the TTFT) and when iteration completes (total time). How do you track first-token time? Set a variable to `null` initially, and only set it on the first iteration. What do you expect the total time to be relative to the non-streaming version?
 
 Typical results:
 
@@ -135,83 +101,28 @@ await streamWithAsyncIteration()
 
 ### Consuming the Full Result
 
-After streaming completes, you can access the full response and metadata:
+After streaming completes, you can access the full response and metadata through promise properties on the result object:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function streamWithFullResult(): Promise<void> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    messages: [
-      { role: 'system', content: 'You are a concise assistant.' },
-      { role: 'user', content: 'What are the three laws of thermodynamics?' },
-    ],
-  })
-
-  // Stream the text
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk)
-  }
-  console.log()
-
-  // After streaming, access the complete result
-  const fullText = await result.text
-  const usage = await result.usage
-  const finishReason = await result.finishReason
-
-  console.log(`\n--- Metadata ---`)
-  console.log(`Full text length: ${fullText.length}`)
-  console.log(`Finish reason: ${finishReason}`)
-  if (usage) {
-    console.log(`Input tokens: ${usage.inputTokens}`)
-    console.log(`Output tokens: ${usage.outputTokens}`)
-  }
-}
-
-await streamWithFullResult()
+const fullText = await result.text
+const usage = await result.usage
+const finishReason = await result.finishReason
 ```
+
+Build a function that first iterates over `result.textStream` (writing each chunk to stdout), then awaits these three properties and logs the full text length, finish reason, and token usage. These properties are promises that resolve once the stream is fully consumed.
 
 ### Streaming with Messages (Multi-turn)
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface Message {
   role: 'system' | 'user' | 'assistant'
   content: string
 }
 
-async function streamConversation(messages: Message[]): Promise<string> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    messages,
-  })
-
-  let fullText = ''
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk)
-    fullText += chunk
-  }
-  console.log()
-
-  return fullText
-}
-
-// Build a streaming conversation
-const conversation: Message[] = [
-  { role: 'system', content: 'You are a helpful assistant.' },
-  { role: 'user', content: 'What is recursion in programming?' },
-]
-
-const response1 = await streamConversation(conversation)
-conversation.push({ role: 'assistant', content: response1 })
-
-conversation.push({ role: 'user', content: 'Give me a simple example in TypeScript.' })
-const response2 = await streamConversation(conversation)
+async function streamConversation(messages: Message[]): Promise<string>
 ```
+
+Build a function that takes a messages array, passes it to `streamText`, iterates over the text stream (writing to stdout and accumulating the full text), and returns the complete text. Then use it in a multi-turn pattern: create a conversation array, call `streamConversation`, push the assistant response back into the array, add a new user message, and call again. How does this differ from the `generateText` conversation pattern in Module 4?
 
 ### Callbacks
 
@@ -257,9 +168,6 @@ for await (const chunk of result.textStream) {
 Measure token generation speed and timing:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface StreamMetrics {
   ttft: number // Time to first token (ms)
   totalTime: number // Total generation time (ms)
@@ -268,42 +176,10 @@ interface StreamMetrics {
   chunks: Array<{ text: string; timestamp: number }>
 }
 
-async function measureStream(prompt: string): Promise<StreamMetrics> {
-  const startTime = performance.now()
-  let firstTokenTime = 0
-  const chunks: Array<{ text: string; timestamp: number }> = []
-
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    prompt,
-  })
-
-  for await (const chunk of result.textStream) {
-    const now = performance.now()
-    if (chunks.length === 0) {
-      firstTokenTime = now - startTime
-    }
-    chunks.push({ text: chunk, timestamp: now - startTime })
-  }
-
-  const totalTime = performance.now() - startTime
-
-  return {
-    ttft: firstTokenTime,
-    totalTime,
-    tokenCount: chunks.length,
-    tokensPerSecond: (chunks.length / totalTime) * 1000,
-    chunks,
-  }
-}
-
-const metrics = await measureStream('List 10 programming languages and their primary use cases.')
-
-console.log(`TTFT: ${metrics.ttft.toFixed(0)}ms`)
-console.log(`Total time: ${metrics.totalTime.toFixed(0)}ms`)
-console.log(`Chunks received: ${metrics.tokenCount}`)
-console.log(`Speed: ${metrics.tokensPerSecond.toFixed(1)} chunks/sec`)
+async function measureStream(prompt: string): Promise<StreamMetrics>
 ```
+
+Build a function that measures detailed stream timing. Record `performance.now()` at the start. For each chunk, record a timestamp relative to start. Set `firstTokenTime` on the first chunk. After iteration, compute `tokensPerSecond` as `(chunks.length / totalTime) * 1000`. Return all metrics. Test with a prompt that generates a moderate-length response and log the TTFT, total time, chunk count, and speed.
 
 > **Advanced Note:** Token generation speed varies by model, prompt complexity, and server load. Claude models typically generate 50-100 tokens per second. The first few tokens may be slower due to prefill computation (processing your input). After prefill, generation speed is relatively constant.
 
@@ -313,11 +189,12 @@ console.log(`Speed: ${metrics.tokensPerSecond.toFixed(1)} chunks/sec`)
 
 ### streamText with Output.object()
 
-`streamText` with `Output.object()` lets you stream structured data as it is generated. Instead of waiting for the complete JSON object, you get partial updates as each field is populated:
+`streamText` with `Output.object()` lets you stream structured data as it is generated. Instead of waiting for the complete JSON object, you get partial updates as each field is populated.
+
+The key API pattern: pass `output: Output.object({ schema })` to `streamText`, then iterate over `result.partialOutputStream` for progressive updates and `await result.output` for the final validated object.
 
 ```typescript
 import { streamText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
 const RecipeSchema = z.object({
@@ -325,66 +202,23 @@ const RecipeSchema = z.object({
   prepTime: z.string().describe('Preparation time'),
   cookTime: z.string().describe('Cooking time'),
   servings: z.number().describe('Number of servings'),
-  ingredients: z.array(
-    z.object({
-      item: z.string(),
-      amount: z.string(),
-    })
-  ),
+  ingredients: z.array(z.object({ item: z.string(), amount: z.string() })),
   steps: z.array(z.string()),
   tips: z.array(z.string()).optional(),
 })
 
 type Recipe = z.infer<typeof RecipeSchema>
 
-async function streamRecipe(dish: string): Promise<Recipe> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: RecipeSchema }),
-    prompt: `Create a detailed recipe for ${dish}.`,
-  })
-
-  // partialOutputStream yields the object as it's being built
-  for await (const partialObject of result.partialOutputStream) {
-    console.clear()
-    console.log('--- Recipe (streaming) ---')
-
-    if (partialObject.name) {
-      console.log(`Name: ${partialObject.name}`)
-    }
-    if (partialObject.prepTime) {
-      console.log(`Prep: ${partialObject.prepTime}`)
-    }
-    if (partialObject.cookTime) {
-      console.log(`Cook: ${partialObject.cookTime}`)
-    }
-    if (partialObject.ingredients) {
-      console.log(`Ingredients: ${partialObject.ingredients.length} items`)
-    }
-    if (partialObject.steps) {
-      console.log(`Steps: ${partialObject.steps.length} so far`)
-    }
-  }
-
-  // Get the final complete object
-  const finalObject = await result.output
-  return finalObject
-}
-
-const recipe = await streamRecipe('Thai green curry')
-console.log('\n--- Final Recipe ---')
-console.log(JSON.stringify(recipe, null, 2))
+async function streamRecipe(dish: string): Promise<Recipe>
 ```
+
+Build a function that streams a structured recipe. Call `streamText` with `output: Output.object({ schema: RecipeSchema })`. Iterate over `result.partialOutputStream` — each iteration yields a partial object where some fields may be populated and others still undefined. Display a live status showing which fields have arrived (name, prep time, ingredient count, step count). After iteration, `await result.output` gives the final complete, validated object. How should you handle fields that are still undefined in the partial object?
 
 > **Beginner Note:** The partial object may have missing or incomplete fields. A string field might contain only the first few words. An array might have only the first item. Your UI should handle these partial states gracefully.
 
 ### Progressive UI Updates
 
 ```typescript
-import { streamText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const AnalysisSchema = z.object({
   summary: z.string().describe('One paragraph summary'),
   sentiment: z.enum(['positive', 'negative', 'neutral', 'mixed']),
@@ -399,76 +233,21 @@ const AnalysisSchema = z.object({
   confidence: z.number().min(0).max(1),
 })
 
-async function streamAnalysis(text: string): Promise<void> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: AnalysisSchema }),
-    prompt: `Analyze the following text:\n\n${text}`,
-  })
-
-  for await (const partial of result.partialOutputStream) {
-    // In a real UI, you would update DOM elements or send state updates
-    const updates: string[] = []
-
-    if (partial.sentiment) {
-      updates.push(`Sentiment: ${partial.sentiment}`)
-    }
-    if (partial.keyTopics?.length) {
-      updates.push(`Topics: ${partial.keyTopics.join(', ')}`)
-    }
-    if (partial.entities?.length) {
-      updates.push(`Entities found: ${partial.entities.length}`)
-    }
-    if (partial.summary) {
-      updates.push(`Summary: ${partial.summary.slice(0, 80)}...`)
-    }
-    if (partial.confidence !== undefined) {
-      updates.push(`Confidence: ${(partial.confidence * 100).toFixed(0)}%`)
-    }
-
-    if (updates.length > 0) {
-      console.log(updates.join(' | '))
-    }
-  }
-}
-
-await streamAnalysis('The quarterly results exceeded expectations with a 15% revenue increase...')
+async function streamAnalysis(text: string): Promise<void>
 ```
+
+Build a function that streams a text analysis using `Output.object()`. For each partial object from `partialOutputStream`, check which fields are populated and build a status line showing: sentiment, topic count, entity count, summary preview (first 80 chars), and confidence percentage. Only include fields that are non-null/non-undefined. In a real UI, these updates would drive DOM changes or state updates.
 
 ### Handling Partial Objects Safely
 
 ```typescript
-import { z } from 'zod'
-
-/**
- * When working with partial objects from streamText with Output.object(),
- * fields may be undefined even if they are required in the schema.
- * Use type-safe accessors.
- */
 function safeDisplay<T extends Record<string, unknown>>(
   partial: Partial<T>,
   fields: Array<keyof T>
-): Record<string, string> {
-  const result: Record<string, string> = {}
-
-  for (const field of fields) {
-    const value = partial[field]
-    if (value !== undefined && value !== null) {
-      if (Array.isArray(value)) {
-        result[field as string] = `${value.length} items`
-      } else if (typeof value === 'object') {
-        result[field as string] = JSON.stringify(value)
-      } else {
-        result[field as string] = String(value)
-      }
-    } else {
-      result[field as string] = '(loading...)'
-    }
-  }
-
-  return result
-}
+): Record<string, string>
 ```
+
+Build a generic helper for safely displaying partial objects. Iterate over the requested fields. For each field, check if the value is defined: if it is an array, show the count; if it is an object, stringify it; if it is a primitive, convert to string. If undefined or null, show `'(loading...)'`. This pattern is essential for any UI that displays streaming structured data, since required schema fields may still be undefined in partial objects.
 
 ---
 
@@ -493,172 +272,38 @@ data: [DONE]
 Using Bun's built-in HTTP server:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const server = Bun.serve({
-  port: 3000,
-
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url)
-
-    if (url.pathname === '/api/chat' && request.method === 'POST') {
-      return handleChatStream(request)
-    }
-
-    if (url.pathname === '/') {
-      return new Response(HTML_PAGE, {
-        headers: { 'Content-Type': 'text/html' },
-      })
-    }
-
-    return new Response('Not found', { status: 404 })
-  },
-})
-
-async function handleChatStream(request: Request): Promise<Response> {
-  const body = await request.json()
-  const { messages } = body as { messages: Array<{ role: string; content: string }> }
-
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    messages: messages as any,
-  })
-
-  // Convert the AI SDK stream to an SSE response
-  const encoder = new TextEncoder()
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of result.textStream) {
-          const data = JSON.stringify({ type: 'text', content: chunk })
-          controller.enqueue(encoder.encode(`data: ${data}\n\n`))
-        }
-
-        // Send completion signal
-        const usage = await result.usage
-        const doneData = JSON.stringify({
-          type: 'done',
-          usage: {
-            inputTokens: usage?.inputTokens,
-            outputTokens: usage?.outputTokens,
-          },
-        })
-        controller.enqueue(encoder.encode(`data: ${doneData}\n\n`))
-        controller.close()
-      } catch (error) {
-        const errorData = JSON.stringify({
-          type: 'error',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        })
-        controller.enqueue(encoder.encode(`data: ${errorData}\n\n`))
-        controller.close()
-      }
-    },
-  })
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-    },
-  })
-}
-
-const HTML_PAGE = `<!DOCTYPE html>
-<html>
-<head><title>Streaming Chat</title></head>
-<body>
-  <div id="chat" style="white-space: pre-wrap; font-family: monospace;"></div>
-  <input id="input" type="text" placeholder="Type a message..." style="width: 80%;" />
-  <button onclick="sendMessage()">Send</button>
-  <script>
-    const chatDiv = document.getElementById('chat');
-    const input = document.getElementById('input');
-    const messages = [];
-
-    async function sendMessage() {
-      const text = input.value.trim();
-      if (!text) return;
-
-      messages.push({ role: 'user', content: text });
-      chatDiv.textContent += '\\nYou: ' + text + '\\n';
-      input.value = '';
-
-      chatDiv.textContent += 'Assistant: ';
-
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages }),
-      });
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let assistantText = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const text = decoder.decode(value);
-        const lines = text.split('\\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = JSON.parse(line.slice(6));
-            if (data.type === 'text') {
-              assistantText += data.content;
-              chatDiv.textContent += data.content;
-            }
-          }
-        }
-      }
-
-      messages.push({ role: 'assistant', content: assistantText });
-      chatDiv.textContent += '\\n';
-    }
-
-    input.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') sendMessage();
-    });
-  </script>
-</body>
-</html>`
-
-console.log(`Server running at http://localhost:${server.port}`)
+async function handleChatStream(request: Request): Promise<Response>
 ```
+
+Build an SSE streaming endpoint using Bun's HTTP server (`Bun.serve`). The server should handle `POST /api/chat` and serve a simple HTML page at `/`.
+
+The `handleChatStream` function should:
+
+1. Parse the request body to extract `messages`
+2. Call `streamText` with those messages
+3. Create a `new ReadableStream` with a `start(controller)` method
+4. Inside start, iterate over `result.textStream` and for each chunk, encode an SSE event: `data: ${JSON.stringify({ type: 'text', content: chunk })}\n\n`
+5. After iteration, send a final `done` event with usage stats
+6. Wrap error handling in a try/catch that sends an `error` event
+7. Return a `new Response(stream)` with headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`
+
+For the HTML client, use `fetch` with `response.body.getReader()` to consume the SSE stream. Read chunks in a loop, decode them, split on newlines, and parse lines starting with `data: ` as JSON events. How do you detect the end of the stream on the client side?
 
 ### Using the AI SDK's Built-in Stream Helpers
 
 The Vercel AI SDK provides utilities for converting streams to standard web responses:
 
+As a shortcut, the AI SDK can convert a stream directly to a web Response:
+
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function handleStreamRequest(request: Request): Promise<Response> {
-  const body = await request.json()
-
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    messages: body.messages,
-  })
-
-  // The AI SDK can convert directly to a Response
-  return result.toDataStreamResponse()
-}
-
-// This returns a response in the AI SDK's data stream format,
-// which is compatible with the useChat hook in Next.js / React
+return result.toUIMessageStreamResponse()
 ```
 
-> **Beginner Note:** The `toDataStreamResponse()` method creates a response in the Vercel AI SDK's own streaming protocol, which works seamlessly with its React hooks (`useChat`, `useCompletion`). If you are building a custom frontend, the manual SSE approach gives you full control.
+This returns a response in the AI SDK's own streaming protocol, compatible with its React hooks (`useChat`, `useCompletion`). Use the manual SSE approach when building custom frontends.
 
-> **Advanced Note:** The AI SDK data stream protocol encodes multiple data types (text deltas, tool calls, tool results, annotations) in a single stream. This is more capable than plain text SSE but requires the AI SDK client library to parse.
+> **Beginner Note:** The `toUIMessageStreamResponse()` method creates a response in the Vercel AI SDK's own streaming protocol, which works seamlessly with its React hooks (`useChat`, `useCompletion`). If you are building a custom frontend, the manual SSE approach gives you full control.
+
+> **Advanced Note:** The AI SDK UI message stream protocol encodes multiple data types (text deltas, tool calls, tool results, annotations) in a single stream. This is more capable than plain text SSE but requires the AI SDK client library to parse.
 
 ---
 
@@ -675,130 +320,30 @@ Backpressure occurs when the consumer (your code) processes data slower than the
 ### Handling Backpressure in Node.js/Bun Streams
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * Example: Stream tokens while writing each one to a file.
- * The file write might be slower than token generation.
- */
-async function streamToFile(prompt: string, outputPath: string): Promise<void> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    prompt,
-  })
-
-  const file = Bun.file(outputPath)
-  const writer = file.writer()
-
-  let tokenCount = 0
-
-  for await (const chunk of result.textStream) {
-    // The for-await-of loop naturally handles backpressure:
-    // it will not request the next chunk until the current iteration completes
-    writer.write(chunk)
-    tokenCount++
-
-    // Periodically flush to disk
-    if (tokenCount % 50 === 0) {
-      await writer.flush()
-    }
-  }
-
-  await writer.end()
-  console.log(`Wrote ${tokenCount} chunks to ${outputPath}`)
-}
-
-await streamToFile('Write a detailed guide to TypeScript generics.', './data/output/generics-guide.txt')
+async function streamToFile(prompt: string, outputPath: string): Promise<void>
 ```
+
+Build a function that streams LLM output directly to a file. Use `Bun.file(outputPath).writer()` to get a writer, then iterate over `result.textStream`. Write each chunk to the writer and periodically flush (e.g., every 50 chunks with `await writer.flush()`). Call `await writer.end()` after the loop. The `for await...of` loop naturally handles backpressure: it will not request the next chunk until the current iteration completes. Why is periodic flushing important rather than flushing every chunk?
 
 ### Rate-Limited Streaming
 
 Control the rate at which tokens are forwarded to the client:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * Buffer tokens and release them at a controlled rate.
- * Useful for creating consistent typewriter effects.
- */
-async function* rateLimit(stream: AsyncIterable<string>, minIntervalMs: number): AsyncGenerator<string> {
-  let lastEmit = 0
-
-  for await (const chunk of stream) {
-    const now = performance.now()
-    const elapsed = now - lastEmit
-
-    if (elapsed < minIntervalMs) {
-      await new Promise(resolve => setTimeout(resolve, minIntervalMs - elapsed))
-    }
-
-    yield chunk
-    lastEmit = performance.now()
-  }
-}
-
-// Usage: emit at most one chunk every 30ms (for smooth typewriter effect)
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Tell me about the history of computing.',
-})
-
-for await (const chunk of rateLimit(result.textStream, 30)) {
-  process.stdout.write(chunk)
-}
-console.log()
+async function* rateLimit(stream: AsyncIterable<string>, minIntervalMs: number): AsyncGenerator<string>
 ```
+
+Build an async generator that wraps a stream and enforces a minimum interval between emitted chunks. Track the last emit time. For each chunk, if less than `minIntervalMs` has elapsed since the last emit, `await` a `setTimeout` for the remaining time. Then `yield` the chunk and update the timestamp. This creates a smooth, consistent typewriter effect. Test with a 30ms interval.
 
 ### Buffered Streaming
 
 Accumulate tokens into larger chunks before processing:
 
 ```typescript
-/**
- * Buffer stream chunks into sentences or larger units.
- * Useful when downstream processing works better with complete sentences.
- */
-async function* bufferBySentence(stream: AsyncIterable<string>): AsyncGenerator<string> {
-  let buffer = ''
-  const sentenceEnders = /[.!?]\s/
-
-  for await (const chunk of stream) {
-    buffer += chunk
-
-    // Check if buffer contains a complete sentence
-    const match = buffer.match(sentenceEnders)
-    if (match && match.index !== undefined) {
-      const endIndex = match.index + match[0].length
-      const sentence = buffer.slice(0, endIndex)
-      buffer = buffer.slice(endIndex)
-      yield sentence
-    }
-  }
-
-  // Flush remaining buffer
-  if (buffer.trim()) {
-    yield buffer
-  }
-}
-
-// Usage: process complete sentences
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Explain photosynthesis in detail.',
-})
-
-let sentenceCount = 0
-for await (const sentence of bufferBySentence(result.textStream)) {
-  sentenceCount++
-  console.log(`[Sentence ${sentenceCount}] ${sentence.trim()}`)
-}
+async function* bufferBySentence(stream: AsyncIterable<string>): AsyncGenerator<string>
 ```
+
+Build an async generator that accumulates stream chunks into a buffer and yields complete sentences. Use a regex like `/[.!?]\s/` to detect sentence boundaries. When a match is found, yield everything up to and including the boundary, and keep the remainder in the buffer. After the stream ends, flush any remaining buffer content. This is useful when downstream processing (e.g., translation, text-to-speech) works better with complete sentences than individual tokens.
 
 > **Advanced Note:** The `for await...of` loop over an async iterable provides natural backpressure. The producer (AI SDK stream) only generates the next value when the consumer is ready for it. This is built into the JavaScript async iteration protocol. You do not need explicit backpressure mechanisms unless you are bridging to a different streaming system.
 
@@ -810,181 +355,44 @@ for await (const sentence of bufferBySentence(result.textStream)) {
 
 Remove or modify tokens as they stream through:
 
-````typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+```typescript
+async function* stripMarkdown(stream: AsyncIterable<string>): AsyncGenerator<string>
+```
 
-/**
- * Filter out specific patterns from the stream.
- * Example: remove markdown formatting for plain-text output.
- */
-async function* stripMarkdown(stream: AsyncIterable<string>): AsyncGenerator<string> {
-  let buffer = ''
-
-  for await (const chunk of stream) {
-    buffer += chunk
-
-    // Process complete patterns in the buffer
-    // Remove bold markers
-    buffer = buffer.replace(/\*\*/g, '')
-    // Remove italic markers (single *)
-    buffer = buffer.replace(/(?<!\*)\*(?!\*)/g, '')
-    // Remove headers
-    buffer = buffer.replace(/^#{1,6}\s/gm, '')
-    // Remove code block markers
-    buffer = buffer.replace(/```\w*\n?/g, '')
-
-    // Emit everything except the last few characters (might be partial pattern)
-    if (buffer.length > 5) {
-      const toEmit = buffer.slice(0, -5)
-      buffer = buffer.slice(-5)
-      yield toEmit
-    }
-  }
-
-  // Flush remaining buffer
-  if (buffer) {
-    yield buffer
-  }
-}
-
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Explain TypeScript interfaces with code examples.',
-})
-
-for await (const chunk of stripMarkdown(result.textStream)) {
-  process.stdout.write(chunk)
-}
-console.log()
-````
+Build an async generator that removes markdown formatting from a stream. Accumulate chunks into a buffer and apply regex replacements: remove `**` (bold), single `*` (italic), `#` headers, and triple-backtick code markers. The key challenge: a pattern like `**` might be split across two chunks. To handle this, always keep the last 5 characters in the buffer (they might be a partial pattern) and only emit content before that threshold. Flush the remaining buffer when the stream ends.
 
 ### Mapping Tokens
 
 Transform each token in the stream:
 
 ```typescript
-/**
- * Transform stream tokens — for example, convert to uppercase
- * or apply text processing.
- */
-async function* mapStream(stream: AsyncIterable<string>, transform: (chunk: string) => string): AsyncGenerator<string> {
-  for await (const chunk of stream) {
-    yield transform(chunk)
-  }
-}
+async function* mapStream(
+  stream: AsyncIterable<string>,
+  transform: (chunk: string) => string
+): AsyncGenerator<string>
 
-/**
- * Add annotations or metadata to the stream.
- */
 async function* annotateStream(
   stream: AsyncIterable<string>
-): AsyncGenerator<{ text: string; timestamp: number; index: number }> {
-  let index = 0
-  const startTime = performance.now()
-
-  for await (const chunk of stream) {
-    yield {
-      text: chunk,
-      timestamp: performance.now() - startTime,
-      index: index++,
-    }
-  }
-}
-
-// Usage
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Write a short poem about coding.',
-})
-
-for await (const annotated of annotateStream(result.textStream)) {
-  process.stdout.write(annotated.text)
-  // Could log timing data to analytics
-}
+): AsyncGenerator<{ text: string; timestamp: number; index: number }>
 ```
+
+Build two general-purpose stream transformers. `mapStream` is the simplest: for each chunk, yield the result of applying `transform`. `annotateStream` enriches each chunk with metadata: the original text, a timestamp relative to stream start, and a sequential index. These are composable — you can pipe `annotateStream` into `mapStream` or chain multiple transforms. What other metadata might be useful to annotate in a production system?
 
 ### Tee: Split a Stream
 
 Send the same stream to multiple consumers:
 
 ```typescript
-/**
- * Split a stream into two independent streams.
- * Both consumers receive all chunks.
- */
-function teeStream<T>(stream: AsyncIterable<T>): [AsyncGenerator<T>, AsyncGenerator<T>] {
-  const buffer1: T[] = []
-  const buffer2: T[] = []
-  let done = false
-  let resolve1: (() => void) | null = null
-  let resolve2: (() => void) | null = null
-
-  // Start consuming the source stream
-  ;(async () => {
-    for await (const chunk of stream) {
-      buffer1.push(chunk)
-      buffer2.push(chunk)
-      resolve1?.()
-      resolve2?.()
-    }
-    done = true
-    resolve1?.()
-    resolve2?.()
-  })()
-
-  async function* consumer(buffer: T[]): AsyncGenerator<T> {
-    while (true) {
-      if (buffer.length > 0) {
-        yield buffer.shift()!
-      } else if (done) {
-        return
-      } else {
-        await new Promise<void>(resolve => {
-          if (buffer === buffer1) resolve1 = resolve
-          else resolve2 = resolve
-        })
-      }
-    }
-  }
-
-  return [consumer(buffer1), consumer(buffer2)]
-}
-
-// Usage: stream to both console and file simultaneously
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Explain WebSockets.',
-})
-
-const [displayStream, logStream] = teeStream(result.textStream)
-
-// Consumer 1: Display to console
-const displayPromise = (async () => {
-  for await (const chunk of displayStream) {
-    process.stdout.write(chunk)
-  }
-})()
-
-// Consumer 2: Log to buffer
-const logPromise = (async () => {
-  let fullLog = ''
-  for await (const chunk of logStream) {
-    fullLog += chunk
-  }
-  return fullLog
-})()
-
-await displayPromise
-const log = await logPromise
-console.log(`\n\nLogged ${log.length} characters`)
+function teeStream<T>(stream: AsyncIterable<T>): [AsyncGenerator<T>, AsyncGenerator<T>]
 ```
+
+Build a function that splits a single async iterable into two independent consumers. Both consumers receive all chunks. The implementation needs:
+
+1. Two separate buffers (one per consumer) and a `done` flag
+2. An immediately-invoked async function that iterates the source stream, pushing each chunk to both buffers and resolving any waiting consumers
+3. A `consumer` async generator that yields from its buffer, or waits (via a stored promise resolver) when the buffer is empty
+
+The tricky part is coordinating the two consumers: each one may read at different speeds. When a consumer's buffer is empty and the stream is not done, it should `await` a promise that gets resolved when the next chunk arrives. Use this to stream to both console and a log file simultaneously.
 
 ---
 
@@ -1003,9 +411,6 @@ Streams can fail at several points:
 ### Comprehensive Error Handling
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface StreamResult {
   text: string
   completed: boolean
@@ -1013,167 +418,26 @@ interface StreamResult {
   tokensGenerated: number
 }
 
-async function safeStream(prompt: string): Promise<StreamResult> {
-  let text = ''
-  let tokensGenerated = 0
-
-  try {
-    const result = streamText({
-      model: mistral('mistral-small-latest'),
-      prompt,
-      maxOutputTokens: 4096,
-      abortSignal: AbortSignal.timeout(30_000), // 30 second timeout
-    })
-
-    for await (const chunk of result.textStream) {
-      text += chunk
-      tokensGenerated++
-      process.stdout.write(chunk)
-    }
-
-    return { text, completed: true, error: null, tokensGenerated }
-  } catch (error) {
-    if (error instanceof Error) {
-      if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-        console.error('\n[Stream timed out]')
-        return {
-          text,
-          completed: false,
-          error: 'Timeout: stream exceeded 30 seconds',
-          tokensGenerated,
-        }
-      }
-
-      if (error.message.includes('rate_limit')) {
-        console.error('\n[Rate limited]')
-        return {
-          text,
-          completed: false,
-          error: 'Rate limited. Retry after delay.',
-          tokensGenerated,
-        }
-      }
-
-      console.error(`\n[Stream error: ${error.message}]`)
-      return { text, completed: false, error: error.message, tokensGenerated }
-    }
-
-    return {
-      text,
-      completed: false,
-      error: 'Unknown error',
-      tokensGenerated,
-    }
-  }
-}
-
-const result = await safeStream('Write a comprehensive guide to error handling.')
-console.log(`\n\nCompleted: ${result.completed}`)
-console.log(`Tokens: ${result.tokensGenerated}`)
-if (result.error) {
-  console.log(`Error: ${result.error}`)
-}
+async function safeStream(prompt: string): Promise<StreamResult>
 ```
+
+Build a function that wraps streaming with comprehensive error handling. Pass `abortSignal: AbortSignal.timeout(30_000)` to `streamText` for a 30-second timeout. Wrap the entire iteration in a try/catch. On success, return `{ completed: true, error: null }`. In the catch block, check `error.name` for `'AbortError'` or `'TimeoutError'` (timeout), check `error.message` for `'rate_limit'` (throttled), and handle unknown errors. Always return whatever text was accumulated before the error — partial results are still useful. What should the caller do with a partial result?
 
 ### Retry with Partial Recovery
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * If a stream fails mid-generation, retry with the partial output
- * included as context so the model continues from where it left off.
- */
-async function resilientStream(prompt: string, maxRetries: number = 3): Promise<string> {
-  let fullText = ''
-  let retries = 0
-
-  while (retries <= maxRetries) {
-    try {
-      const currentPrompt =
-        retries === 0 ? prompt : `${prompt}\n\nNote: Continue from where this partial response left off:\n${fullText}`
-
-      const result = streamText({
-        model: mistral('mistral-small-latest'),
-        prompt: currentPrompt,
-        abortSignal: AbortSignal.timeout(30_000),
-      })
-
-      for await (const chunk of result.textStream) {
-        fullText += chunk
-        process.stdout.write(chunk)
-      }
-
-      return fullText // Completed successfully
-    } catch (error) {
-      retries++
-      if (retries > maxRetries) {
-        console.error(`\nFailed after ${maxRetries} retries.`)
-        return fullText // Return what we have
-      }
-
-      console.error(`\n[Retry ${retries}/${maxRetries} after error]`)
-      // Wait before retrying (exponential backoff)
-      await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries)))
-    }
-  }
-
-  return fullText
-}
+async function resilientStream(prompt: string, maxRetries: number = 3): Promise<string>
 ```
+
+Build a function that retries on failure with partial recovery. Track `fullText` across retries. On the first attempt, use the original prompt. On retries, append the partial output to the prompt with a continuation instruction so the model picks up where it left off. Use exponential backoff between retries (`1000 * Math.pow(2, retries)` ms). After `maxRetries`, return whatever text was accumulated. Why is exponential backoff important for rate limit errors?
 
 ### Cancellation
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * Cancel a stream if it generates unwanted content
- * or exceeds a length threshold.
- */
-async function streamWithCancellation(prompt: string, maxChars: number = 1000): Promise<string> {
-  const abortController = new AbortController()
-
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    prompt,
-    abortSignal: abortController.signal,
-  })
-
-  let text = ''
-
-  try {
-    for await (const chunk of result.textStream) {
-      text += chunk
-      process.stdout.write(chunk)
-
-      // Cancel if response is too long
-      if (text.length > maxChars) {
-        console.log('\n[Cancelling: max length reached]')
-        abortController.abort()
-        break
-      }
-
-      // Cancel if response contains unwanted content
-      if (text.includes('[CONFIDENTIAL]')) {
-        console.log('\n[Cancelling: sensitive content detected]')
-        abortController.abort()
-        break
-      }
-    }
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      // Expected when we abort — not a real error
-    } else {
-      throw error
-    }
-  }
-
-  return text
-}
+async function streamWithCancellation(prompt: string, maxChars: number = 1000): Promise<string>
 ```
+
+Build a function that cancels a stream based on content conditions. Create an `AbortController` and pass its `signal` to `streamText`. During iteration, check two conditions: (1) accumulated text exceeds `maxChars`, (2) text contains unwanted patterns like `[CONFIDENTIAL]`. When either triggers, call `abortController.abort()` and break. Wrap the iteration in a try/catch that silently handles `AbortError` (expected when we abort) but rethrows other errors. Why is calling `abort()` important rather than just breaking out of the loop?
 
 > **Beginner Note:** Always use `AbortController` for cancellation rather than simply stopping iteration. Stopping iteration without aborting leaves the underlying HTTP connection open, wasting server resources and potentially accruing costs for tokens you are not using.
 
@@ -1186,105 +450,26 @@ async function streamWithCancellation(prompt: string, maxChars: number = 1000): 
 The classic pattern where text appears character by character:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * Typewriter effect with configurable speed.
- * The stream provides chunks at model speed;
- * this function spaces them out for visual effect.
- */
-async function typewriter(stream: AsyncIterable<string>, charDelayMs: number = 20): Promise<string> {
-  let fullText = ''
-
-  for await (const chunk of stream) {
-    // Each chunk might contain multiple characters
-    for (const char of chunk) {
-      process.stdout.write(char)
-      fullText += char
-      await new Promise(resolve => setTimeout(resolve, charDelayMs))
-    }
-  }
-
-  return fullText
-}
-
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Write a dramatic opening paragraph for a novel.',
-})
-
-const text = await typewriter(result.textStream, 15)
-console.log(`\n\nGenerated ${text.length} characters`)
+async function typewriter(stream: AsyncIterable<string>, charDelayMs: number = 20): Promise<string>
 ```
+
+Build a function that creates a typewriter effect. Each stream chunk might contain multiple characters, so iterate over each character individually. For each character, write it to stdout, accumulate it into `fullText`, and `await` a `setTimeout` of `charDelayMs`. Return the full text when done. Test with a 15-20ms delay for a smooth visual effect. How does this differ from the `rateLimit` generator in Section 5?
 
 ### Progressive Disclosure
 
 Show content section by section as it is generated:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-/**
- * Group streamed content into sections (split by double newline)
- * and reveal each section with a visual transition.
- */
-async function progressiveDisclosure(stream: AsyncIterable<string>): Promise<string[]> {
-  let buffer = ''
-  const sections: string[] = []
-
-  for await (const chunk of stream) {
-    buffer += chunk
-
-    // Check for section breaks (double newline)
-    const parts = buffer.split('\n\n')
-
-    if (parts.length > 1) {
-      // We have at least one complete section
-      for (let i = 0; i < parts.length - 1; i++) {
-        const section = parts[i].trim()
-        if (section) {
-          sections.push(section)
-          console.log(`\n${'='.repeat(60)}`)
-          console.log(`Section ${sections.length}:`)
-          console.log('='.repeat(60))
-          console.log(section)
-        }
-      }
-      buffer = parts[parts.length - 1] // Keep the incomplete part
-    }
-  }
-
-  // Handle the last section
-  if (buffer.trim()) {
-    sections.push(buffer.trim())
-    console.log(`\n${'='.repeat(60)}`)
-    console.log(`Section ${sections.length}:`)
-    console.log('='.repeat(60))
-    console.log(buffer.trim())
-  }
-
-  return sections
-}
-
-const result = streamText({
-  model: mistral('mistral-small-latest'),
-  prompt: 'Write a 5-section guide to learning TypeScript. Use double newlines between sections.',
-})
-
-const sections = await progressiveDisclosure(result.textStream)
-console.log(`\nTotal sections: ${sections.length}`)
+async function progressiveDisclosure(stream: AsyncIterable<string>): Promise<string[]>
 ```
+
+Build a function that groups streamed content into sections and reveals each one with a visual separator. Accumulate chunks into a buffer. Split the buffer on `\n\n` (double newline). When the split produces more than one part, all parts except the last are complete sections — display each with a header and separator. Keep the last part (potentially incomplete) in the buffer. After the stream ends, flush the remaining buffer as the final section. Return an array of all sections.
 
 ### Streaming Status Indicators
 
 Show progress information alongside the streaming content:
 
 ```typescript
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 interface StreamStatus {
   state: 'connecting' | 'streaming' | 'complete' | 'error'
   charsReceived: number
@@ -1292,68 +477,137 @@ interface StreamStatus {
   speed: number // chars per second
 }
 
-async function streamWithStatus(prompt: string, onStatus: (status: StreamStatus) => void): Promise<string> {
-  const startTime = performance.now()
-  let text = ''
-
-  onStatus({
-    state: 'connecting',
-    charsReceived: 0,
-    elapsed: 0,
-    speed: 0,
-  })
-
-  try {
-    const result = streamText({
-      model: mistral('mistral-small-latest'),
-      prompt,
-    })
-
-    for await (const chunk of result.textStream) {
-      text += chunk
-      const elapsed = performance.now() - startTime
-
-      onStatus({
-        state: 'streaming',
-        charsReceived: text.length,
-        elapsed,
-        speed: (text.length / elapsed) * 1000,
-      })
-    }
-
-    const elapsed = performance.now() - startTime
-    onStatus({
-      state: 'complete',
-      charsReceived: text.length,
-      elapsed,
-      speed: (text.length / elapsed) * 1000,
-    })
-
-    return text
-  } catch (error) {
-    const elapsed = performance.now() - startTime
-    onStatus({
-      state: 'error',
-      charsReceived: text.length,
-      elapsed,
-      speed: text.length > 0 ? (text.length / elapsed) * 1000 : 0,
-    })
-    throw error
-  }
-}
-
-// Usage with a status bar
-const text = await streamWithStatus('Explain the concept of monads in functional programming.', status => {
-  const statusLine = `[${status.state}] ${status.charsReceived} chars | ${status.elapsed.toFixed(0)}ms | ${status.speed.toFixed(0)} chars/sec`
-  process.stderr.write(`\r${statusLine}`)
-})
-
-console.log(`\n\n${text}`)
+async function streamWithStatus(prompt: string, onStatus: (status: StreamStatus) => void): Promise<string>
 ```
+
+Build a function that reports progress through a callback. Call `onStatus` with `'connecting'` before starting, `'streaming'` on each chunk (with chars received, elapsed time, and chars/sec), `'complete'` after iteration, and `'error'` if an exception occurs. Compute speed as `(text.length / elapsed) * 1000`. The caller can use `process.stderr.write('\r' + statusLine)` to display a self-updating status bar on a separate stream from the content output.
 
 > **Advanced Note:** In browser-based UIs, consider implementing a "thinking" indicator that appears during the TTFT gap (before the first token arrives). This gives users immediate feedback that their request is being processed. Combine this with streaming text display for the best perceived performance.
 
 > **Local Alternative (Ollama):** All streaming patterns in this module (`streamText`, `streamText` with `Output.object()`, backpressure, AbortController) work identically with `ollama('qwen3.5')`. Local models actually benefit more from streaming since inference is slower — streaming lets users see output immediately rather than waiting for full generation. SSE endpoints work the same regardless of provider.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: NDJSON Streaming
+
+### Newline-Delimited JSON for Programmatic Consumers
+
+SSE is designed for browser clients, but many LLM applications are consumed by other programs — CLIs, SDKs, CI pipelines, or backend services. For these consumers, NDJSON (newline-delimited JSON) is simpler and more natural. Each line is a complete, self-contained JSON object:
+
+```
+{"type":"text_delta","content":"Hello"}
+{"type":"text_delta","content":" world"}
+{"type":"tool_call","name":"search","args":{"query":"TypeScript"}}
+{"type":"tool_result","name":"search","content":"..."}
+{"type":"done","usage":{"input":150,"output":42}}
+```
+
+The consumer reads line by line, parses each line as JSON, and processes events incrementally — no buffering the entire response, no SSE protocol overhead, no event type headers. This is the format production CLIs and SDK modes use for structured streaming output.
+
+### NDJSON vs SSE
+
+| Feature      | SSE                           | NDJSON                           |
+| ------------ | ----------------------------- | -------------------------------- |
+| Protocol     | HTTP with `text/event-stream` | HTTP with `application/x-ndjson` |
+| Client       | Browser `EventSource`         | Line-by-line reader              |
+| Reconnection | Built-in                      | Manual                           |
+| Best for     | Web UIs                       | CLIs, SDKs, pipelines            |
+
+Both formats carry the same typed events — the difference is the transport encoding. A well-designed streaming system can emit either format based on the client's `Accept` header.
+
+---
+
+## Section 10: Abort Controller Trees
+
+### Hierarchical Cancellation
+
+The AbortController from Section 7 handles single-operation cancellation. Production streaming systems need hierarchical cancellation — aborting a parent operation should abort all its children (streaming, tool execution, sub-queries), and aborting a child should not affect the parent.
+
+The pattern uses a parent-child relationship between AbortControllers:
+
+```typescript
+const parentController = new AbortController()
+const childController = new AbortController()
+
+// When parent aborts, abort the child
+parentController.signal.addEventListener('abort', () => childController.abort())
+```
+
+In a streaming pipeline with tool calls, the hierarchy looks like:
+
+1. **Session controller** — user presses Ctrl+C or cancel
+2. **Request controller** — child of session, scoped to one `streamText` call
+3. **Tool controller** — child of request, scoped to one tool execution
+
+When the user cancels, the session controller aborts, which cascades to the request controller (stopping the stream) and the tool controller (stopping any in-progress tool execution). Each level cleans up its own resources.
+
+### Why Not a Single Controller?
+
+A single global AbortController means any cancellation aborts everything. With a hierarchy, you can cancel one tool execution without aborting the entire stream, or cancel the current request without ending the session.
+
+---
+
+## Section 11: Enhanced Backpressure with Buffered Writer
+
+### Buffering Output Writes
+
+Section 5 covered backpressure at the token level. A buffered writer is the concrete implementation: instead of writing every token immediately (which can block on I/O), batch small writes into larger chunks and flush them on a schedule or when the buffer is full.
+
+```typescript
+// Instead of writing each token individually:
+for await (const chunk of result.textStream) {
+  process.stdout.write(chunk) // blocks on I/O for each token
+}
+
+// Buffer and flush in batches:
+let buffer = ''
+for await (const chunk of result.textStream) {
+  buffer += chunk
+  if (buffer.length >= 256) {
+    process.stdout.write(buffer)
+    buffer = ''
+  }
+}
+if (buffer.length > 0) process.stdout.write(buffer) // flush remainder
+```
+
+This prevents I/O from blocking the LLM processing loop. In terminal UIs, the batch size controls the visual "chunkiness" of output — smaller batches look smoother, larger batches are more efficient. Production systems tune this based on the output target (terminal, file, network socket).
+
+---
+
+## Section 12: Headless/CI Streaming Mode
+
+### Non-Interactive Execution
+
+Production streaming applications support a headless mode for CI/CD pipelines and programmatic use. Instead of an interactive terminal UI, the application accepts a prompt via command-line arguments or stdin, emits structured output (NDJSON or simplified text), and exits with a status code.
+
+The key differences from interactive mode:
+
+- **Input:** Prompt from CLI args or stdin pipe, not a REPL
+- **Output:** NDJSON events or plain text, not cursor-controlled terminal UI
+- **TTY detection:** Check `process.stdout.isTTY` to auto-switch between interactive and headless
+- **Exit codes:** `0` for success, non-zero for errors — enables CI integration
+- **No user prompts:** Actions that would require confirmation in interactive mode either auto-approve or fail, controlled by a policy flag
+
+```typescript
+const isHeadless = !process.stdout.isTTY || process.argv.includes('--headless')
+
+if (isHeadless) {
+  // Emit NDJSON events
+  for await (const chunk of result.textStream) {
+    console.log(JSON.stringify({ type: 'text_delta', content: chunk }))
+  }
+} else {
+  // Interactive terminal display
+  for await (const chunk of result.textStream) {
+    process.stdout.write(chunk)
+  }
+}
+```
+
+This pattern lets the same streaming application serve both human users and automated pipelines.
 
 ---
 
@@ -1368,6 +622,10 @@ In this module, you learned:
 5. **Backpressure and flow control:** How to handle slow consumers, implement rate-limited streaming, and buffer tokens to prevent overwhelming downstream systems.
 6. **Stream transformation:** How to filter, map, and split streams using transform streams and the tee pattern for parallel processing.
 7. **Error handling:** How to detect and recover from mid-stream errors, implement timeouts, and provide fallback behavior when streaming connections fail.
+8. **NDJSON streaming:** A simpler alternative to SSE for programmatic consumers — each event is a complete JSON object on one line, ideal for CLIs and pipelines.
+9. **Abort controller trees:** Hierarchical cancellation that propagates abort signals from parent to child operations, enabling granular cancellation in complex streaming pipelines.
+10. **Buffered writers:** Batching streaming output writes for efficiency without blocking the LLM processing loop.
+11. **Headless mode:** Non-interactive execution with structured output for CI/CD integration and programmatic use.
 
 In Module 7, you will learn how tools transform LLMs from text generators into agents that can take action in the real world.
 
@@ -1447,6 +705,32 @@ D) MQTT (pub/sub messaging)
 **Answer: B**
 
 SSE uses standard HTTP with a `Content-Type: text/event-stream` header. Data flows in one direction: server to client. Each event is a text line prefixed with `data: `. SSE is simpler than WebSockets (no upgrade handshake, automatic reconnection, works through proxies) and is ideal for streaming LLM responses where the data flow is inherently unidirectional.
+
+---
+
+### Question 6 (Medium)
+
+What is the primary advantage of NDJSON over SSE for streaming LLM output?
+
+- A) NDJSON supports bidirectional communication
+- B) NDJSON is simpler for programmatic consumers (CLIs, SDKs, pipelines) — each line is a self-contained JSON object with no protocol overhead
+- C) NDJSON is faster because it uses binary encoding
+- D) NDJSON has built-in automatic reconnection
+
+**Answer: B** — NDJSON (newline-delimited JSON) is designed for programmatic consumers. Each line is a complete, parseable JSON object — no SSE protocol headers, no event type prefixes, no buffering the entire response. This makes it ideal for CLIs, SDKs, and CI pipelines where a line-by-line JSON reader is simpler than an SSE client.
+
+---
+
+### Question 7 (Hard)
+
+In an abort controller tree with session, request, and tool controllers, what happens when the request controller is aborted?
+
+- A) The session controller is also aborted, ending the entire session
+- B) Only the current stream and its child tool executions are cancelled; the session controller remains active for future requests
+- C) All controllers in the tree are aborted simultaneously
+- D) The tool controller continues running to completion before the request is cancelled
+
+**Answer: B** — In a hierarchical abort controller tree, aborting a parent cascades to its children, but not upward. Aborting the request controller stops the current `streamText` call and any in-progress tool executions (child controllers), but the session controller remains active. This allows the user to cancel one request without ending the session, and cancel a tool without aborting the stream.
 
 ---
 
@@ -1543,3 +827,49 @@ const ExtractionSchema = z.object({
 - Progress indicator accurately reflects completion percentage
 - Missing fields are clearly flagged after completion
 - The pipeline handles both short and long input texts gracefully
+
+### Exercise 3: Cancellation with Abort Controllers
+
+Build a streaming pipeline with hierarchical cancellation that properly cleans up all in-progress operations.
+
+**What to build:** Create `src/streaming/exercises/cancellation.ts`
+
+**Requirements:**
+
+1. Create a `CancellableStream` class that wraps a `streamText` call with a parent AbortController
+2. Support spawning child operations (simulated tool calls) that each get their own child AbortController linked to the parent
+3. When the parent is aborted, all children should be aborted and resources cleaned up
+4. When a child is aborted, the parent and other children should continue unaffected
+5. Track the state of each operation: `'running' | 'completed' | 'aborted'`
+6. Expose a `cancel()` method on the parent and individual `cancelChild(id)` on children
+
+**Expected behavior:**
+
+- Starting a stream with 3 child tool operations and calling `cancel()` should abort all 4 operations and set all states to `'aborted'`
+- Calling `cancelChild('tool-2')` should abort only that child; the stream and other children remain `'running'`
+- After all operations complete or are cancelled, no abort listeners remain active (no memory leaks)
+
+**File:** `src/streaming/exercises/cancellation.ts`
+
+### Exercise 4: Streaming Tool Calls
+
+Build a streaming handler that processes tool call parameters as they arrive, beginning preparation before the complete tool call is available.
+
+**What to build:** Create `src/streaming/exercises/streaming-tools.ts`
+
+**Requirements:**
+
+1. Use `streamText` with tools defined (reuse tools from Module 7 or define simple ones)
+2. Listen for `toolCallStreaming` events that provide partial tool call arguments as they stream in
+3. Implement a `ToolPreparer` that begins setup work (e.g., validating a file path, resolving a URL) as soon as enough of the arguments are available — before the full tool call arrives
+4. When the complete tool call arrives (`toolCall` event), execute using the pre-prepared state
+5. Log the timeline: when streaming started, when preparation began, when the full call arrived, when execution completed
+6. Measure the time saved by early preparation vs waiting for the complete call
+
+**Expected behavior:**
+
+- For a file-reading tool, preparation begins as soon as the `path` argument is partially streamed (e.g., path validation starts)
+- The timeline log shows preparation starting before the tool call is fully specified
+- Total latency is reduced compared to a baseline that waits for the complete call before doing any work
+
+**File:** `src/streaming/exercises/streaming-tools.ts`

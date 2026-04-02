@@ -8,7 +8,7 @@ describe('loadPreferences', () => {
     expect(prefs.background.level).toBe('intermediate')
     expect(prefs.provider.default).toBe('anthropic')
     expect(prefs.provider.ollama_model).toBe('qwen3.5')
-    expect(prefs.data.vector_store).toBe('chroma')
+    expect(prefs.data.vector_store).toBe('lancedb')
   })
 
   test('loads and merges with defaults', () => {

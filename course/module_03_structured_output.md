@@ -229,13 +229,9 @@ const result = await generateText({
 
 ### Your First Structured Output Call
 
+Define a `CitySchema` with these fields and descriptions:
+
 ```typescript
-// src/examples/structured-first.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const CitySchema = z.object({
   name: z.string().describe('Name of the city'),
   country: z.string().describe('Country the city is in'),
@@ -245,78 +241,30 @@ const CitySchema = z.object({
 })
 
 type City = z.infer<typeof CitySchema>
-
-async function main(): Promise<void> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: CitySchema }),
-    prompt: 'Tell me about Tokyo.',
-  })
-
-  const city: City = result.output
-
-  console.log(`City: ${city.name}`)
-  console.log(`Country: ${city.country}`)
-  console.log(`Population: ${city.population.toLocaleString()}`)
-  console.log(`Known for: ${city.knownFor.join(', ')}`)
-  console.log(`Capital: ${city.isCapital ? 'Yes' : 'No'}`)
-  console.log(`\nTokens used: ${result.usage.totalTokens}`)
-}
-
-main().catch(console.error)
 ```
+
+Now write a `main()` function that calls `generateText` with `Output.object({ schema: CitySchema })` and the prompt `'Tell me about Tokyo.'`. The result comes back on `result.output`, which is fully typed as `City`. Log each field to the console, and also log `result.usage.totalTokens` to see how many tokens the call consumed.
+
+What type does `result.output` have? How does TypeScript know the shape without you writing a type assertion?
 
 ### System Prompts with Output.object()
 
 You can combine system prompts with structured output. The system prompt guides _how_ the model fills in the schema:
 
 ```typescript
-// src/examples/structured-with-system.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const SentimentSchema = z.object({
   sentiment: z.enum(['positive', 'negative', 'neutral', 'mixed']),
   confidence: z.number().min(0).max(1),
   reasoning: z.string().describe('Brief explanation of why this sentiment was chosen'),
   keyPhrases: z.array(z.string()).describe('Phrases from the text that indicate the sentiment'),
 })
-
-async function analyzeSentiment(text: string) {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: SentimentSchema }),
-    system: `You are a sentiment analysis expert.
-Analyze the given text carefully.
-Consider both explicit statements and implied tone.
-For mixed sentiment, lean toward the dominant emotion.`,
-    prompt: text,
-    temperature: 0,
-  })
-
-  return result.output
-}
-
-async function main(): Promise<void> {
-  const reviews = [
-    'Absolutely incredible experience! Best restaurant in the city.',
-    'The food was good but the wait was over an hour. Would not return.',
-    'Ordered the special. It arrived. I ate it.',
-  ]
-
-  for (const review of reviews) {
-    const analysis = await analyzeSentiment(review)
-    console.log(`\nReview: "${review}"`)
-    console.log(`Sentiment: ${analysis.sentiment} (${(analysis.confidence * 100).toFixed(0)}% confidence)`)
-    console.log(`Reasoning: ${analysis.reasoning}`)
-    console.log(`Key phrases: ${analysis.keyPhrases.join(', ')}`)
-  }
-}
-
-main().catch(console.error)
 ```
+
+Write an `analyzeSentiment(text: string)` function that calls `generateText` with this schema. Pass a `system` prompt that instructs the model to act as a sentiment analysis expert, consider both explicit statements and implied tone, and lean toward the dominant emotion for mixed sentiment. Set `temperature: 0` for deterministic results.
+
+Then write a `main()` that loops over a few test reviews — one clearly positive, one mixed, one deadpan neutral — and logs the sentiment, confidence percentage, reasoning, and key phrases for each.
+
+Think about: why does `temperature: 0` matter for classification tasks? What would happen with a higher temperature?
 
 > **Beginner Note:** The `temperature: 0` setting is important for structured output. You want deterministic, consistent results — not creative variation. Always use temperature 0 for classification, extraction, and analysis tasks.
 
@@ -332,13 +280,9 @@ Real-world data is rarely flat. A product review might contain multiple aspects,
 
 ### Basic Nesting
 
+Schemas can reference other schemas as fields. Define a `CompanySchema` and then use it inside a larger schema:
+
 ```typescript
-// src/examples/structured-nested.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const CompanySchema = z.object({
   name: z.string(),
   industry: z.string(),
@@ -364,44 +308,19 @@ const JobPostingSchema = z.object({
 })
 
 type JobPosting = z.infer<typeof JobPostingSchema>
-
-async function extractJobPosting(text: string): Promise<JobPosting> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: JobPostingSchema }),
-    system: 'Extract job posting information from the given text. Infer reasonable values if not explicitly stated.',
-    prompt: text,
-    temperature: 0,
-  })
-
-  return result.output
-}
-
-async function main(): Promise<void> {
-  const posting = await extractJobPosting(`
-    TechCorp (established 2015, fintech industry) is hiring a Senior TypeScript Developer
-    in San Francisco, CA. Remote-friendly. Salary range: $150k-$200k.
-    Must have 5+ years TypeScript, React, and Node.js experience.
-    We offer health insurance, 401k matching, unlimited PTO, and equity.
-  `)
-
-  console.log(JSON.stringify(posting, null, 2))
-}
-
-main().catch(console.error)
 ```
+
+Notice how `company: CompanySchema` embeds one schema inside another, and the inline `z.object(...)` for `location` and `salary` creates anonymous nested structures.
+
+Write an `extractJobPosting(text: string): Promise<JobPosting>` function that uses `generateText` with `Output.object()` to extract job posting data from free text. Use a system prompt that tells the model to infer reasonable values when details are not explicitly stated. Test it with a paragraph describing a job posting that includes company info, location, salary range, requirements, and benefits.
+
+What type does `z.infer<typeof JobPostingSchema>` produce? How deep does the nesting go?
 
 ### Arrays of Nested Objects
 
-When you need to extract multiple instances of a complex structure:
+When you need to extract multiple instances of a complex structure, combine `z.array()` with nested objects:
 
 ```typescript
-// src/examples/structured-array-nested.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const AspectSchema = z.object({
   aspect: z.string().describe('The product aspect being discussed (e.g., battery, screen, performance)'),
   sentiment: z.enum(['positive', 'negative', 'neutral']),
@@ -415,40 +334,13 @@ const DetailedReviewSchema = z.object({
   wouldRecommend: z.boolean(),
   summary: z.string().max(100),
 })
-
-async function analyzeReview(review: string) {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: DetailedReviewSchema }),
-    prompt: review,
-    temperature: 0,
-  })
-
-  return result.output
-}
-
-async function main(): Promise<void> {
-  const review = `
-    This laptop is a mixed bag. The M3 chip is incredibly fast — compiling my TypeScript
-    project takes half the time compared to my old machine. The display is stunning, easily
-    the best I've used. However, the battery barely lasts 4 hours with my workload, which
-    is disappointing for a $2000 machine. The keyboard feels great though. I'd recommend
-    it for desk work but not for travel.
-  `
-
-  const analysis = await analyzeReview(review)
-
-  console.log(`Overall: ${analysis.overallSentiment} (${analysis.overallScore}/5)`)
-  console.log(`Would recommend: ${analysis.wouldRecommend}`)
-  console.log(`Summary: ${analysis.summary}`)
-  console.log('\nAspects:')
-  for (const aspect of analysis.aspects) {
-    console.log(`  ${aspect.aspect}: ${aspect.sentiment} — "${aspect.quote}"`)
-  }
-}
-
-main().catch(console.error)
 ```
+
+The key pattern here is `z.array(AspectSchema).min(1)` — an array of complex objects with a minimum length constraint. The model will produce one `AspectSchema` object per product aspect it finds in the review.
+
+Write an `analyzeReview(review: string)` function that uses this schema with `generateText` + `Output.object()`. Test it with a multi-aspect review (e.g., a laptop review that discusses performance, display, battery, and keyboard). Log the overall sentiment and score, then loop through the `aspects` array and log each one.
+
+How many aspects does the model find? Does each `quote` field actually appear in the original text?
 
 > **Advanced Note:** Deeply nested schemas (3+ levels) can sometimes confuse smaller models. If you encounter quality issues, flatten the schema or break the extraction into multiple `generateText` with `Output.object()` calls. Claude Sonnet handles 3-4 levels of nesting reliably; smaller open-source models may struggle beyond 2 levels.
 
@@ -476,14 +368,9 @@ sentiment: z.enum(['positive', 'negative', 'neutral', 'mixed'])
 
 ### Practical Enum Patterns
 
+Here is a schema that uses multiple enums for support ticket triage:
+
 ```typescript
-// src/examples/structured-enums.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-// Priority classification
 const TicketSchema = z.object({
   title: z.string(),
   priority: z
@@ -497,44 +384,13 @@ const TicketSchema = z.object({
     .enum(['frontend', 'backend', 'devops', 'security', 'product'])
     .describe('Team best suited to handle this ticket'),
 })
-
-async function classifyTicket(description: string) {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: TicketSchema }),
-    system: `You are a support ticket triage system.
-Classify tickets based on their description.
-For priority:
-- critical: system down, data loss, security breach
-- high: major feature broken, affecting many users
-- medium: minor feature issue, workaround available
-- low: cosmetic, nice-to-have, minor improvement`,
-    prompt: description,
-    temperature: 0,
-  })
-
-  return result.output
-}
-
-async function main(): Promise<void> {
-  const tickets = [
-    'Users cannot log in. The authentication service is returning 500 errors.',
-    'The dark mode toggle does not update the sidebar color.',
-    'Can we add an export-to-CSV button on the reports page?',
-  ]
-
-  for (const ticket of tickets) {
-    const classified = await classifyTicket(ticket)
-    console.log(`\nTicket: "${ticket.substring(0, 60)}..."`)
-    console.log(`  Priority: ${classified.priority}`)
-    console.log(`  Category: ${classified.category}`)
-    console.log(`  Effort: ${classified.estimatedEffort}`)
-    console.log(`  Assign: ${classified.assignTo}`)
-  }
-}
-
-main().catch(console.error)
 ```
+
+Every field except `title` is an enum, which means every output value is one of a known finite set. This is what makes structured output so powerful for classification — there is zero ambiguity in the result.
+
+Write a `classifyTicket(description: string)` function that uses this schema. In your system prompt, define what each priority level means (e.g., critical = system down or data loss, low = cosmetic issue). Then test it with three tickets: an authentication outage, a minor UI bug, and a feature request.
+
+What priority does the model assign to each? Does the `assignTo` field make sense for each ticket? What happens if you change the enum values in the system prompt description but not in the schema itself?
 
 ### Enum with Descriptions
 
@@ -561,12 +417,6 @@ const IntentSchema = z.object({
 Not every piece of information is always present. Optional fields let the schema handle missing data gracefully instead of forcing the model to fabricate values.
 
 ```typescript
-// src/examples/structured-optional.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const ContactSchema = z.object({
   name: z.string().describe('Full name'),
   email: z.email().optional().describe('Email address if mentioned'),
@@ -577,42 +427,13 @@ const ContactSchema = z.object({
 })
 
 type Contact = z.infer<typeof ContactSchema>
-
-async function extractContact(text: string): Promise<Contact> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ContactSchema }),
-    system: `Extract contact information from the text.
-Only fill in fields that are explicitly mentioned.
-Do not infer or fabricate missing information.
-Use "unknown" for preferredContact if not stated.`,
-    prompt: text,
-    temperature: 0,
-  })
-
-  return result.output
-}
-
-async function main(): Promise<void> {
-  const texts = [
-    "Hi, I'm Sarah Chen from Acme Corp. Reach me at sarah@acme.com.",
-    "Call me at 555-0123. Name's Bob. I prefer phone.",
-    'My name is Alex.',
-  ]
-
-  for (const text of texts) {
-    const contact = await extractContact(text)
-    console.log(`\nInput: "${text}"`)
-    console.log(`Name: ${contact.name}`)
-    console.log(`Email: ${contact.email ?? '(not provided)'}`)
-    console.log(`Phone: ${contact.phone ?? '(not provided)'}`)
-    console.log(`Company: ${contact.company ?? '(not provided)'}`)
-    console.log(`Preferred: ${contact.preferredContact}`)
-  }
-}
-
-main().catch(console.error)
 ```
+
+Write an `extractContact(text: string): Promise<Contact>` function using `generateText` with `Output.object()`. Your system prompt should instruct the model to only fill in fields that are explicitly mentioned — not infer or fabricate missing data — and to use `"unknown"` for `preferredContact` when not stated.
+
+Test with three inputs of varying completeness: one with full details (name, company, email), one with just a name and phone, and one with only a name. For each result, log the fields using `?? '(not provided)'` for missing optional values.
+
+What type does TypeScript give `contact.email`? Why does the nullish coalescing operator (`??`) work here?
 
 ### Default Values
 
@@ -773,63 +594,25 @@ if (result.success) {
 
 ### Handling Structured Output Failures
 
-`generateText` with `Output.object()` validates the model's output against your schema. If validation fails, it throws. Here is how to handle it gracefully:
+`generateText` with `Output.object()` validates the model's output against your schema. If validation fails, it throws. You need to handle this gracefully.
 
 ```typescript
-// src/examples/structured-error-handling.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const StrictSchema = z.object({
   rating: z.int().min(1).max(5),
   category: z.enum(['electronics', 'clothing', 'food', 'other']),
   verified: z.boolean(),
 })
-
-async function safeExtract(text: string) {
-  try {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      output: Output.object({ schema: StrictSchema }),
-      prompt: text,
-      temperature: 0,
-    })
-
-    return { success: true as const, data: result.output }
-  } catch (error) {
-    if (error instanceof Error) {
-      return { success: false as const, error: error.message }
-    }
-    return { success: false as const, error: 'Unknown error' }
-  }
-}
-
-async function main(): Promise<void> {
-  // Good input — should succeed
-  const good = await safeExtract('Great wireless headphones, 5 stars! Verified purchase.')
-  console.log('Good input:', good)
-
-  // Ambiguous input — model may struggle
-  const ambiguous = await safeExtract('Hmm.')
-  console.log('Ambiguous input:', ambiguous)
-}
-
-main().catch(console.error)
 ```
+
+Write a `safeExtract(text: string)` function that wraps `generateText` + `Output.object()` in a try/catch. On success, return `{ success: true as const, data: result.output }`. On failure, catch the error and return `{ success: false as const, error: error.message }`. This pattern gives the caller a discriminated union — they can check `result.success` and TypeScript narrows the type.
+
+Test with a clear input ("Great wireless headphones, 5 stars! Verified purchase.") and an ambiguous one ("Hmm."). Does the ambiguous input succeed or fail? What does the error message tell you?
 
 ### Post-Validation: Additional Business Logic
 
-Even when `generateText` with `Output.object()` succeeds, you may want additional validation:
+Even when `generateText` with `Output.object()` succeeds, you may want additional validation beyond what Zod checks. Consider an order extraction schema:
 
 ```typescript
-// src/examples/structured-post-validation.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const OrderSchema = z.object({
   items: z.array(
     z.object({
@@ -844,99 +627,33 @@ const OrderSchema = z.object({
 })
 
 type Order = z.infer<typeof OrderSchema>
-
-function validateOrderMath(order: Order): string[] {
-  const errors: string[] = []
-
-  // Check subtotal
-  const calculatedSubtotal = order.items.reduce((sum, item) => sum + item.quantity * item.pricePerUnit, 0)
-
-  if (Math.abs(calculatedSubtotal - order.subtotal) > 0.01) {
-    errors.push(`Subtotal mismatch: calculated ${calculatedSubtotal.toFixed(2)}, got ${order.subtotal.toFixed(2)}`)
-  }
-
-  // Check total
-  const calculatedTotal = order.subtotal + order.tax
-  if (Math.abs(calculatedTotal - order.total) > 0.01) {
-    errors.push(`Total mismatch: calculated ${calculatedTotal.toFixed(2)}, got ${order.total.toFixed(2)}`)
-  }
-
-  return errors
-}
-
-async function extractOrder(text: string): Promise<Order> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: OrderSchema }),
-    system: 'Extract order details. Calculate subtotal, tax (8%), and total accurately.',
-    prompt: text,
-    temperature: 0,
-  })
-
-  const order = result.output
-  const mathErrors = validateOrderMath(order)
-
-  if (mathErrors.length > 0) {
-    console.warn('Math validation warnings:', mathErrors)
-    // In production, you might retry or correct the values
-  }
-
-  return order
-}
-
-async function main(): Promise<void> {
-  const order = await extractOrder('I ordered 3 widgets at $12.99 each and 2 gadgets at $24.50 each.')
-  console.log(JSON.stringify(order, null, 2))
-}
-
-main().catch(console.error)
 ```
+
+Zod validates that all fields are present and have the right types, but it cannot verify that the `subtotal` actually equals the sum of `quantity * pricePerUnit` across items, or that `total` equals `subtotal + tax`.
+
+Write a `validateOrderMath(order: Order): string[]` function that computes the expected subtotal and total, compares them to the model's values (with a tolerance of 0.01 for floating-point), and returns an array of error strings for any mismatches.
+
+Then write an `extractOrder(text: string): Promise<Order>` function that calls `generateText` with `Output.object()`, runs `validateOrderMath` on the result, and logs warnings for any math errors. Test it with: "I ordered 3 widgets at $12.99 each and 2 gadgets at $24.50 each."
+
+Does the model get the math right? What would you do in production if it does not?
 
 > **Advanced Note:** LLMs are notoriously bad at precise arithmetic. Always validate calculated fields after extraction. For financial applications, use the model to identify the items and quantities, then compute totals in your application code rather than trusting the model's math.
 
 ### Retry on Validation Failure
 
-When structured output fails validation, retrying with a more explicit prompt often succeeds:
+When structured output fails validation, retrying with a more explicit prompt often succeeds. Write a generic retry wrapper:
 
 ```typescript
-// src/examples/structured-retry.ts
-
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 async function generateWithRetry<T extends z.ZodType>(
   schema: T,
   prompt: string,
   maxRetries: number = 2
-): Promise<z.infer<T>> {
-  const model = mistral('mistral-small-latest')
-  let lastError: Error | null = null
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const enhancedPrompt =
-        attempt === 0
-          ? prompt
-          : `${prompt}\n\nIMPORTANT: Your previous response did not match the required format. Please follow the schema exactly.`
-
-      const result = await generateText({
-        model,
-        output: Output.object({ schema }),
-        prompt: enhancedPrompt,
-        temperature: 0,
-      })
-
-      return result.output
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error))
-      console.warn(`Attempt ${attempt + 1} failed: ${lastError.message}`)
-    }
-  }
-
-  throw new Error(`Failed after ${maxRetries + 1} attempts: ${lastError?.message}`)
-}
+): Promise<z.infer<T>>
 ```
+
+This function should loop up to `maxRetries + 1` attempts. On the first attempt, use the prompt as-is. On subsequent attempts, append a note to the prompt like: `"\n\nIMPORTANT: Your previous response did not match the required format. Please follow the schema exactly."` Each attempt calls `generateText` with `Output.object({ schema })` inside a try/catch. Track the last error so you can throw a descriptive message if all attempts fail.
+
+What makes this generic? The `<T extends z.ZodType>` parameter means it works with any Zod schema — the return type is automatically `z.infer<T>`. Why might appending an error note to the prompt help on retries?
 
 ---
 
@@ -970,44 +687,15 @@ const ArticleSchema = z.object({
 })
 
 async function streamArticleAnalysis(text: string): Promise<void> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ArticleSchema }),
-    prompt: `Analyze this article:\n\n${text}`,
-    temperature: 0,
-  })
-
-  // Stream partial objects as they arrive
-  for await (const partialObject of result.partialOutputStream) {
-    console.clear()
-    console.log('=== Article Analysis (streaming) ===')
-
-    if (partialObject.title) console.log(`Title: ${partialObject.title}`)
-    if (partialObject.author) console.log(`Author: ${partialObject.author}`)
-    if (partialObject.publishDate) console.log(`Date: ${partialObject.publishDate}`)
-    if (partialObject.summary) console.log(`Summary: ${partialObject.summary}`)
-    if (partialObject.tags) console.log(`Tags: ${partialObject.tags.join(', ')}`)
-    if (partialObject.readingTime) console.log(`Reading time: ${partialObject.readingTime} min`)
-  }
-
-  // After streaming, get the final validated object
-  const finalResult = await result.output
-  console.log('\n=== Final (validated) ===')
-  console.log(JSON.stringify(finalResult, null, 2))
+  // Your implementation here
 }
 
-async function main(): Promise<void> {
-  await streamArticleAnalysis(`
-    "The Future of TypeScript" by Jane Developer, published March 1, 2025.
-    TypeScript continues to evolve with new features like the satisfies operator
-    and improved type inference. The language's adoption has grown 40% year over year,
-    making it the most popular transpiled language. This article explores upcoming
-    features and their implications for enterprise development.
-  `)
-}
-
-main().catch(console.error)
+streamArticleAnalysis('...sample article text...').catch(console.error)
 ```
+
+Build this function using `streamText` with `Output.object({ schema: ArticleSchema })`. Iterate over `result.partialOutputStream` with a `for await` loop and display each field as it arrives (check for `undefined` before logging each one). After the stream completes, call `await result.output` to get the final validated object and log it as JSON.
+
+Why do you need to check each field for `undefined` in the partial objects? What happens if you try to call `.join()` on `partialObject.tags` before the array has been populated?
 
 > **Beginner Note:** The `partialOutputStream` delivers incomplete objects — fields may be `undefined` even if they are required in the schema. Always check for field presence when rendering partial results. The final `result.output` is the fully validated output.
 
@@ -1033,40 +721,15 @@ const ExtractSchema = z.object({
 })
 
 async function streamWithCallbacks(text: string): Promise<void> {
-  let updateCount = 0
-
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: ExtractSchema }),
-    prompt: text,
-    temperature: 0,
-    onFinish(event) {
-      console.log(`\nStreaming complete. Updates: ${updateCount}`)
-      console.log(`Tokens: ${JSON.stringify(event.usage)}`)
-    },
-  })
-
-  for await (const partial of result.partialOutputStream) {
-    updateCount++
-    const entityCount = partial.entities?.length ?? 0
-    process.stdout.write(`\rEntities found so far: ${entityCount}`)
-  }
-
-  const final = await result.output
-  console.log('\n\nFinal result:')
-  console.log(JSON.stringify(final, null, 2))
+  // Your implementation here
 }
 
-async function main(): Promise<void> {
-  await streamWithCallbacks(`
-    Tim Cook, CEO of Apple, met with Satya Nadella from Microsoft
-    at the tech summit in San Francisco. They discussed AI partnerships
-    with Google's Sundar Pichai, who joined remotely from Mountain View.
-  `)
-}
-
-main().catch(console.error)
+streamWithCallbacks('...sample text with entities...').catch(console.error)
 ```
+
+Build this function using `streamText` with `Output.object({ schema: ExtractSchema })`. Add an `onFinish` callback that logs the total number of partial updates received and token usage from `event.usage`. In the `for await` loop over `partialOutputStream`, track an `updateCount` and use `process.stdout.write` to show a live entity count (using `\r` to overwrite the line). After the loop, call `await result.output` and log the final validated result as JSON.
+
+How does `onFinish` differ from awaiting `result.output`? What information is available in `onFinish` that is not available on the partial objects?
 
 ### When to Use streamText vs generateText with Output.object()
 
@@ -1078,6 +741,51 @@ main().catch(console.error)
 | Large schema (10+ fields) | `streamText` + `Output.object()`   | Show fields as they populate                  |
 | Pipeline step             | `generateText` + `Output.object()` | Need complete object for next step            |
 | With early abort logic    | `streamText` + `Output.object()`   | Can stop on bad partial results               |
+
+---
+
+## Section 10: Schema Descriptions as Prompt Engineering
+
+### .describe() Is Your Schema's Prompt
+
+Every `.describe()` annotation on a schema field is effectively a prompt instruction. The description text is sent to the model as part of the schema definition, and the model uses it to understand what each field should contain. This makes `.describe()` one of the most powerful yet underused tools in structured output.
+
+Compare these two schemas:
+
+```typescript
+// Weak: no descriptions — the model guesses from field names alone
+const WeakSchema = z.object({
+  file_path: z.string(),
+  limit: z.number().optional(),
+})
+
+// Strong: descriptions guide the model precisely
+const StrongSchema = z.object({
+  file_path: z.string().describe('The absolute path to the file to read'),
+  limit: z.number().optional().describe('Max lines to read. Only provide if the file is too large'),
+})
+```
+
+The weak schema relies on the model inferring meaning from field names. The strong schema tells the model exactly what to provide, including edge case behavior. Production tool systems annotate _every_ schema field with a `.describe()` — it is not optional, it is part of the interface contract.
+
+### Guidelines for Good Descriptions
+
+1. **Be specific about format** — "ISO 8601 date string" not just "date"
+2. **Describe edge cases** — "Only provide if the file is too large to read at once"
+3. **State constraints in words** — "A rating from 1 to 5 where 1 is worst" complements `.min(1).max(5)`
+4. **Keep them concise** — one sentence is ideal, two at most
+
+> **Looking Ahead: Tool Schemas in Module 7** — The Zod schemas you are learning here are the same pattern used to define tool interfaces in Module 7. Every tool has an input schema (what arguments it accepts) and the LLM reads `.describe()` annotations to decide how to call the tool. A 2-line preview:
+>
+> ```typescript
+> const params = z.object({
+>   query: z.string().describe('The search query to find relevant documents'),
+> })
+> ```
+>
+> When you get to tool definitions, you will already know how to write schemas that guide the model effectively.
+
+> **Production Validation: Custom Tool Schemas** — Production coding agents let users define custom tools as TypeScript files using Zod for argument schemas and the AI SDK's `tool()` function for type safety. The filename becomes the tool name, `.describe()` annotations serve as documentation for the LLM, and `safeParse` validates arguments before execution. This is the exact same pattern you are learning in this module — your Zod skills transfer directly to building real tool systems.
 
 ---
 
@@ -1145,6 +853,32 @@ You have a schema with a `total` field that should equal the sum of item prices.
 - D) Add a post-validation step that corrects the model's total based on the extracted items
 
 **Answer: C** — LLMs are unreliable at precise arithmetic. The most robust approach is to extract the raw data (items, quantities, prices) and compute derived values like totals in deterministic application code. Option D is acceptable but option C eliminates the error entirely.
+
+---
+
+### Question 6 (Medium)
+
+When streaming structured output with `streamText` + `Output.object()`, what is true about the objects delivered via `partialOutputStream`?
+
+- A) Each partial object is fully validated against the Zod schema
+- B) Fields may be `undefined` even if they are required in the schema
+- C) The stream only delivers the final complete object
+- D) Partial objects contain error messages for missing fields
+
+**Answer: B** — The `partialOutputStream` delivers incomplete objects as the model generates them. Required fields may still be `undefined` in early partial objects because the model has not generated them yet. You must check for field presence when rendering partial results. Only the final `result.output` is fully validated against the schema.
+
+---
+
+### Question 7 (Hard)
+
+A schema field is defined as `z.string()` with no `.describe()` annotation. A second version adds `.describe('The absolute path to the file to read')`. How does this affect the model's output?
+
+- A) It has no effect — the model only reads field names
+- B) The description is sent to the model as part of the schema definition, guiding it to produce more precise and correctly formatted values
+- C) The description is only used for TypeScript documentation and does not reach the model
+- D) Adding `.describe()` changes the Zod validation rules for the field
+
+**Answer: B** — Every `.describe()` annotation is included in the schema sent to the model and acts as a prompt instruction for that specific field. Without it, the model must guess the field's purpose from its name alone. With a good description, the model knows exactly what format and content to produce, significantly improving output accuracy.
 
 ---
 
@@ -1220,6 +954,63 @@ You have a schema with a `total` field that should equal the sum of item prices.
 
 ---
 
+### Exercise 5: Schema Composition Library
+
+**Objective:** Build a reusable schema library where complex schemas compose from simpler building blocks, mirroring how production tool systems share schema fragments across tool definitions.
+
+**Specification:**
+
+1. Create a file `src/exercises/m03/ex05-schema-composition.ts`
+2. Define the following base schemas (each with `.describe()` annotations on every field):
+   - `AddressSchema` — street, city, state, postalCode, country
+   - `ContactSchema` — email, phone (optional), website (optional)
+3. Compose these into higher-level schemas:
+   - `PersonSchema` — fullName, age, address (uses `AddressSchema`), contact (uses `ContactSchema`)
+   - `CompanySchema` — name, industry (enum), headquarters (uses `AddressSchema`), contact (uses `ContactSchema`), employeeCount
+4. Export all schemas and an async function `extractPerson(text: string): Promise<Person>` and `extractCompany(text: string): Promise<Company>` that use `generateText` with `Output.object()`
+5. Verify that changes to `AddressSchema` propagate to both `PersonSchema` and `CompanySchema`
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m03/ex05-schema-composition.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 5: Schema Composition', () => {
+  it('PersonSchema should include address fields from AddressSchema', () => {
+    const shape = PersonSchema.shape
+    expect(shape.address).toBeDefined()
+    expect(shape.contact).toBeDefined()
+  })
+
+  it('CompanySchema should include the same address structure', () => {
+    const shape = CompanySchema.shape
+    expect(shape.headquarters).toBeDefined()
+    expect(shape.contact).toBeDefined()
+  })
+
+  it('should extract a person from unstructured text', async () => {
+    const person = await extractPerson(
+      'Jane Smith, age 32, lives at 123 Main St, Springfield, IL 62704, USA. Email: jane@example.com'
+    )
+    expect(person.fullName).toBeTruthy()
+    expect(person.address.city).toBeTruthy()
+    expect(person.contact.email).toContain('@')
+  })
+
+  it('should extract a company from unstructured text', async () => {
+    const company = await extractCompany(
+      'Acme Corp is a technology company headquartered at 456 Oak Ave, San Francisco, CA 94102. They have 500 employees. Contact: info@acme.com'
+    )
+    expect(company.name).toBeTruthy()
+    expect(company.headquarters.city).toBeTruthy()
+    expect(company.employeeCount).toBeGreaterThan(0)
+  })
+})
+```
+
+---
+
 ## Summary
 
 In this module, you learned:
@@ -1233,5 +1024,6 @@ In this module, you learned:
 7. **Schema design patterns:** Classification, extraction, multi-step analysis, comparison, and error reporting patterns.
 8. **Validation and error handling:** How to use parse/safeParse, post-validate computed fields, and retry on failure.
 9. **Streaming structured output:** How to use `streamText` with `Output.object()` for progressive display and early abort.
+10. **Schema descriptions as prompt engineering:** How `.describe()` annotations act as prompt instructions for each field, guiding the model toward precise, correctly formatted output.
 
 In Module 4, you will combine structured output with conversation management to build multi-turn applications that maintain state across interactions.

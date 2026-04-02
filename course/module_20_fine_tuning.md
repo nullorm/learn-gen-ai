@@ -46,7 +46,6 @@ import { generateText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
-// Decision framework: should you fine-tune?
 interface RequirementAnalysis {
   requirement: string
   promptEngineeringViable: boolean
@@ -54,89 +53,34 @@ interface RequirementAnalysis {
   fineTuningNeeded: boolean
   reasoning: string
 }
+```
 
-const requirements: RequirementAnalysis[] = [
-  {
-    requirement: 'Model should know about our internal product catalog',
-    promptEngineeringViable: false,
-    ragViable: true,
-    fineTuningNeeded: false,
-    reasoning:
-      'External knowledge is best handled by RAG. Fine-tuning for knowledge is expensive and the knowledge becomes stale.',
-  },
-  {
-    requirement: 'Model should always respond in a specific JSON format',
-    promptEngineeringViable: true,
-    ragViable: false,
-    fineTuningNeeded: false,
-    reasoning:
-      'Structured output with Zod schemas (Module 3) handles this well. Fine-tune only if the model consistently fails to follow the format.',
-  },
-  {
-    requirement: "Model should write in our brand's distinctive voice",
-    promptEngineeringViable: true, // partially
-    ragViable: false,
-    fineTuningNeeded: true,
-    reasoning:
-      'Style is difficult to fully capture in a prompt. Fine-tuning on examples of your brand voice is highly effective.',
-  },
-  {
-    requirement: 'Model should classify medical documents using ICD-10 codes',
-    promptEngineeringViable: false,
-    ragViable: true, // partially
-    fineTuningNeeded: true,
-    reasoning:
-      'Domain-specific classification with hundreds of categories benefits enormously from fine-tuning on labeled examples.',
-  },
-  {
-    requirement: 'Model should handle 10,000 requests per minute cheaply',
-    promptEngineeringViable: false,
-    ragViable: false,
-    fineTuningNeeded: true,
-    reasoning:
-      'Fine-tuning a smaller model to replace a larger one with long prompts can dramatically reduce per-request cost at scale.',
-  },
-]
+Consider five common requirements and decide which approach fits each:
 
-// Automated decision helper
+1. "Model should know about our internal product catalog" -- Is this a knowledge problem or a behavior problem? Which approach adds external knowledge at inference time?
+2. "Model should always respond in a specific JSON format" -- Can structured output with Zod schemas (Module 3) handle this? When would fine-tuning be needed instead?
+3. "Model should write in our brand's distinctive voice" -- Can you fully capture style in a prompt, or does the model need to internalize it?
+4. "Model should classify medical documents using ICD-10 codes" -- With hundreds of categories and domain-specific terminology, how much can a prompt do?
+5. "Model should handle 10,000 requests per minute cheaply" -- How does fine-tuning a smaller model reduce per-request cost?
+
+Build a `RequirementAnalysis` array that captures your reasoning for each case.
+
+Then build an automated decision helper:
+
+```typescript
 async function analyzeFineTuningNeed(description: string): Promise<{
-  recommendation: 'prompt_engineering' | 'rag' | 'fine_tuning' | 'combination'
+  recommendation: 'prompt_engineering' | 'prompt_caching' | 'rag' | 'fine_tuning' | 'combination'
   confidence: number
   reasoning: string
   prerequisites: string[]
-}> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        recommendation: z.enum(['prompt_engineering', 'rag', 'fine_tuning', 'combination']),
-        confidence: z.number().min(0).max(1),
-        reasoning: z.string(),
-        prerequisites: z.array(z.string()),
-      }),
-    }),
-    system: `You are an ML engineering advisor. Analyze whether a use case requires fine-tuning.
-
-Decision hierarchy (try in order):
-1. Prompt engineering — cheapest, fastest iteration
-2. RAG — when external/dynamic knowledge is needed
-3. Fine-tuning — when behavior/style must change fundamentally
-4. Combination — complex cases requiring multiple approaches
-
-Fine-tuning is justified when:
-- Prompt engineering alone cannot achieve the required quality
-- You need to reduce prompt size for cost/latency
-- Consistent style/format is critical and prompt-based approaches are unreliable
-- Domain-specific performance requires specialized training
-- You have at least 50-100 high-quality training examples`,
-    prompt: description,
-  })
-
-  return output!
-}
+}>
 ```
 
+Use `Output.object` with a Zod schema to get structured output. The system prompt should define the decision hierarchy: try prompt engineering first (cheapest, fastest), then prompt caching, then RAG (when external knowledge is needed), then fine-tuning (when behavior must change fundamentally), then a combination for complex cases. What criteria would you include in the system prompt to help the model decide?
+
 > **Beginner Note:** Think of it this way — prompt engineering tells the model what to do each time, RAG gives it information to work with, and fine-tuning changes what the model is. You prompt-engineer a model to write like Shakespeare; you fine-tune a model to be a Shakespeare-writing model.
+
+> **Prompt Caching as Middle Ground:** Before jumping to fine-tuning to reduce long system prompt costs, consider prompt caching. Providers like Anthropic and OpenAI cache repeated system prompt prefixes, so the same 2,000-token system prompt is only billed once and reused across requests. This achieves some of the same cost and latency benefits as fine-tuning (shorter effective prompt, faster responses) without any training. Prompt caching is the right choice when your system prompt is stable and your main cost concern is repeatedly sending the same instructions.
 
 ### Cost-Benefit Analysis
 
@@ -159,7 +103,11 @@ interface FineTuningCostBenefit {
   dailySavings: number
   breakEvenDays: number
 }
+```
 
+Build a `computeFineTuningROI` function:
+
+```typescript
 function computeFineTuningROI(params: {
   currentPromptTokens: number
   currentRequestsPerDay: number
@@ -170,54 +118,19 @@ function computeFineTuningROI(params: {
   epochs: number
   fineTunedPromptTokens: number
   fineTunedCostPerMillionTokens: number
-}): FineTuningCostBenefit {
-  const currentCostPerToken = params.currentCostPerMillionTokens / 1_000_000
-  const fineTunedCostPerToken = params.fineTunedCostPerMillionTokens / 1_000_000
-
-  const currentDailyCost = params.currentPromptTokens * params.currentRequestsPerDay * currentCostPerToken
-
-  const fineTunedDailyCost = params.fineTunedPromptTokens * params.currentRequestsPerDay * fineTunedCostPerToken
-
-  const trainingTokens = params.trainingExamples * params.avgExampleTokens * params.epochs
-  const trainingCost = trainingTokens * (params.trainingCostPerMillionTokens / 1_000_000)
-
-  const dailySavings = currentDailyCost - fineTunedDailyCost
-  const breakEvenDays = dailySavings > 0 ? Math.ceil(trainingCost / dailySavings) : Infinity
-
-  return {
-    currentPromptTokens: params.currentPromptTokens,
-    currentRequestsPerDay: params.currentRequestsPerDay,
-    currentCostPerToken,
-    trainingDataSize: params.trainingExamples,
-    trainingCost,
-    fineTunedPromptTokens: params.fineTunedPromptTokens,
-    fineTunedCostPerToken,
-    currentDailyCost,
-    fineTunedDailyCost,
-    dailySavings,
-    breakEvenDays,
-  }
-}
-
-// Example calculation
-const roi = computeFineTuningROI({
-  currentPromptTokens: 2000, // Long system prompt with examples
-  currentRequestsPerDay: 5000,
-  currentCostPerMillionTokens: 3.0, // Claude Sonnet input pricing
-  trainingExamples: 500,
-  avgExampleTokens: 500,
-  trainingCostPerMillionTokens: 25.0, // Training is more expensive
-  epochs: 3,
-  fineTunedPromptTokens: 200, // Much shorter prompt after fine-tuning
-  fineTunedCostPerMillionTokens: 3.0,
-})
-
-console.log(`Current daily cost: $${roi.currentDailyCost.toFixed(2)}`)
-console.log(`Fine-tuned daily cost: $${roi.fineTunedDailyCost.toFixed(2)}`)
-console.log(`Daily savings: $${roi.dailySavings.toFixed(2)}`)
-console.log(`Training cost: $${roi.trainingCost.toFixed(2)}`)
-console.log(`Break-even: ${roi.breakEvenDays} days`)
+}): FineTuningCostBenefit
 ```
+
+The key calculations are:
+
+- Convert cost-per-million-tokens to cost-per-token by dividing by 1,000,000
+- Current daily cost = prompt tokens x requests per day x cost per token
+- Fine-tuned daily cost = fine-tuned prompt tokens x requests per day x fine-tuned cost per token
+- Training tokens = training examples x avg tokens per example x epochs
+- Training cost = training tokens x training cost per token
+- Break-even days = training cost / daily savings (or `Infinity` if savings <= 0)
+
+Try it with a realistic scenario: 2,000-token system prompt, 5,000 requests/day, $3/million tokens, 500 training examples at 500 tokens each, 3 epochs at $25/million training tokens, and a fine-tuned prompt of only 200 tokens. How many days until the training investment pays for itself?
 
 > **Advanced Note:** Fine-tuning ROI calculations should also include engineering time for data preparation, training iteration, and ongoing maintenance. A model that costs less to run but requires a week of engineering time per update may not be worth it for a low-traffic application.
 
@@ -241,137 +154,25 @@ interface FineTuningMessage {
 interface FineTuningExample {
   messages: FineTuningMessage[]
 }
-
-// Example: customer support fine-tuning data
-const trainingExamples: FineTuningExample[] = [
-  {
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a helpful customer support agent for TechCorp.',
-      },
-      {
-        role: 'user',
-        content: 'My laptop screen is flickering after the latest update.',
-      },
-      {
-        role: 'assistant',
-        content: `I understand how frustrating a flickering screen can be. Let me help you resolve this.
-
-This is a known issue with the recent display driver update. Here are the steps to fix it:
-
-1. Right-click on the desktop and select "Display Settings"
-2. Scroll down to "Advanced display settings"
-3. Click "Display adapter properties"
-4. Go to the "Driver" tab and select "Roll Back Driver"
-
-If rolling back the driver does not resolve the flickering, please contact us at support@techcorp.com with your device model number, and we will arrange a remote diagnostic session.
-
-Is there anything else I can help you with?`,
-      },
-    ],
-  },
-  {
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a helpful customer support agent for TechCorp.',
-      },
-      {
-        role: 'user',
-        content: 'I want to cancel my subscription. This product is terrible.',
-      },
-      {
-        role: 'assistant',
-        content: `I'm sorry to hear you're not satisfied with your experience. I want to make sure we handle this properly for you.
-
-I can process your cancellation right away. Before I do, would you mind sharing what specifically was not working well? Your feedback helps us improve.
-
-To cancel your subscription:
-- Your service will remain active until the end of your current billing period
-- You will receive a confirmation email within 24 hours
-- Any data you've stored will be available for download for 30 days after cancellation
-
-Would you like me to proceed with the cancellation?`,
-      },
-    ],
-  },
-]
-
-// Write to JSONL format
-function writeTrainingData(examples: FineTuningExample[], outputPath: string): void {
-  const lines = examples.map(ex => JSON.stringify(ex))
-  writeFileSync(outputPath, lines.join('\n') + '\n')
-  console.log(`Wrote ${examples.length} examples to ${outputPath}`)
-}
-
-writeTrainingData(trainingExamples, 'data/training-data/support-v1.jsonl')
 ```
+
+Each training example is a conversation with a system prompt, one or more user messages, and one or more assistant messages. Build a `trainingExamples` array with at least two customer support examples. Each should have a system prompt establishing the agent's role, a customer question, and a high-quality assistant response that demonstrates the tone and structure you want the model to learn.
+
+What makes a good training example? Think about: does the response acknowledge the customer's situation? Does it provide clear, actionable steps? Does it end by inviting further questions?
+
+Then build a `writeTrainingData` function:
+
+```typescript
+function writeTrainingData(examples: FineTuningExample[], outputPath: string): void
+```
+
+Convert each example to a JSON string using `JSON.stringify`, join them with newlines, and write to the output path using `writeFileSync`. Why must each line be a complete JSON object rather than using a single JSON array for the whole file?
 
 ### Multi-Turn Conversation Data
 
-Fine-tuning on multi-turn conversations teaches the model how to handle context and follow-ups.
+Fine-tuning on multi-turn conversations teaches the model how to handle context and follow-ups. A multi-turn example simply has more alternating user/assistant messages after the system prompt.
 
-```typescript
-const multiTurnExample: FineTuningExample = {
-  messages: [
-    {
-      role: 'system',
-      content: 'You are a helpful customer support agent for TechCorp.',
-    },
-    {
-      role: 'user',
-      content: 'How do I reset my password?',
-    },
-    {
-      role: 'assistant',
-      content: `You can reset your password by following these steps:
-
-1. Go to techcorp.com/login
-2. Click "Forgot Password" below the login form
-3. Enter the email address associated with your account
-4. Check your email for a reset link (it may take up to 5 minutes)
-5. Click the link and create a new password
-
-Your new password must be at least 12 characters and include a number and special character.
-
-Would you like help with anything else?`,
-    },
-    {
-      role: 'user',
-      content: 'I did that but I never got the email.',
-    },
-    {
-      role: 'assistant',
-      content: `Let me help you troubleshoot the missing reset email.
-
-Please check the following:
-
-1. **Spam/Junk folder** — Reset emails sometimes get filtered
-2. **Correct email address** — Make sure you entered the email associated with your TechCorp account
-3. **Wait a few minutes** — Sometimes emails take up to 10 minutes to arrive
-
-If you still have not received it after checking these, it is possible your account uses a different email address. I can look up your account if you provide your username or the last 4 digits of the payment method on file.
-
-Which would you like to try?`,
-    },
-    {
-      role: 'user',
-      content: 'My username is john_doe_42',
-    },
-    {
-      role: 'assistant',
-      content: `Thank you. I have located your account under username john_doe_42.
-
-I can see that your account is associated with a different email than you may have tried. For security, I can only share that it ends in "...@gmail.com".
-
-I have resent the password reset link to your registered email address. Please check that inbox, including spam folders.
-
-If you no longer have access to that email, I will need to verify your identity through our account recovery process. Would you like me to start that process?`,
-    },
-  ],
-}
-```
+Build a `multiTurnExample` that demonstrates a 3-turn support conversation (e.g., a password reset flow). The first turn handles the initial question, the second handles a follow-up complication, and the third resolves the issue. What makes multi-turn examples valuable for fine-tuning that single-turn examples cannot capture?
 
 ### Data Conversion Utilities
 
@@ -390,53 +191,22 @@ interface CSVRow {
   category?: string
 }
 
-// Convert Q&A pairs to fine-tuning format
-function qaToFineTuning(pairs: RawQAPair[], systemPrompt: string): FineTuningExample[] {
-  return pairs.map(pair => ({
-    messages: [
-      { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: pair.context ? `Context: ${pair.context}\n\nQuestion: ${pair.question}` : pair.question,
-      },
-      { role: 'assistant', content: pair.answer },
-    ],
-  }))
-}
-
-// Convert CSV-style data to fine-tuning format
-function csvToFineTuning(rows: CSVRow[], systemPrompt: string): FineTuningExample[] {
-  return rows.map(row => ({
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: row.input },
-      { role: 'assistant', content: row.output },
-    ],
-  }))
-}
-
-// Convert chat logs to fine-tuning format
 interface ChatLog {
   messages: { sender: 'customer' | 'agent'; text: string; timestamp: string }[]
 }
-
-function chatLogToFineTuning(logs: ChatLog[], systemPrompt: string): FineTuningExample[] {
-  return logs.map(log => {
-    const messages: FineTuningMessage[] = [{ role: 'system', content: systemPrompt }]
-
-    for (const msg of log.messages) {
-      messages.push({
-        role: msg.sender === 'customer' ? 'user' : 'assistant',
-        content: msg.text,
-      })
-    }
-
-    return { messages }
-  })
-}
 ```
 
+Build three conversion functions:
+
+1. `qaToFineTuning(pairs: RawQAPair[], systemPrompt: string): FineTuningExample[]` — Map each Q&A pair to the messages format. If a pair has `context`, how should you include it in the user message? Consider prefixing with `"Context: ..."`.
+
+2. `csvToFineTuning(rows: CSVRow[], systemPrompt: string): FineTuningExample[]` — Map each row's `input` to a user message and `output` to an assistant message. Straightforward, but what about the `category` field — should it influence the system prompt?
+
+3. `chatLogToFineTuning(logs: ChatLog[], systemPrompt: string): FineTuningExample[]` — Map each chat log to a conversation. The `sender` field needs role mapping: `'customer'` becomes `'user'`, `'agent'` becomes `'assistant'`. What should the first message in each example always be?
+
 > **Beginner Note:** JSONL is just regular JSON objects, one per line. Each line is a complete, valid JSON object. This format is efficient for streaming processing — you can process one example at a time without loading the entire file into memory.
+
+> **Production Insight: Implicit Training Data from Sessions.** Production AI tools generate high-quality fine-tuning data as a byproduct of normal operation. Every multi-turn session is a conversation with tool calls, results, and user approvals or denials baked in. Session summaries extract key patterns, and user feedback (approvals, rejections, edits) provides preference signals. If you run a production AI assistant, your logs are a potential fine-tuning dataset — the data you need may already exist.
 
 ---
 
@@ -454,84 +224,28 @@ interface QualityFilter {
     reason?: string
   }
 }
+```
 
-const qualityFilters: QualityFilter[] = [
-  {
-    name: 'minimum_length',
-    check: ex => {
-      const assistantMsg = ex.messages.find(m => m.role === 'assistant')
-      if (!assistantMsg) return { passed: false, reason: 'No assistant message' }
-      return {
-        passed: assistantMsg.content.length >= 50,
-        reason:
-          assistantMsg.content.length < 50
-            ? `Assistant response too short: ${assistantMsg.content.length} chars`
-            : undefined,
-      }
-    },
-  },
-  {
-    name: 'maximum_length',
-    check: ex => {
-      const totalTokens = ex.messages.reduce((sum, m) => sum + estimateTokenCount(m.content), 0)
-      return {
-        passed: totalTokens <= 4096,
-        reason: totalTokens > 4096 ? `Total tokens (${totalTokens}) exceeds maximum` : undefined,
-      }
-    },
-  },
-  {
-    name: 'has_system_prompt',
-    check: ex => {
-      const hasSystem = ex.messages.some(m => m.role === 'system')
-      return {
-        passed: hasSystem,
-        reason: hasSystem ? undefined : 'Missing system prompt',
-      }
-    },
-  },
-  {
-    name: 'valid_turn_order',
-    check: ex => {
-      const nonSystem = ex.messages.filter(m => m.role !== 'system')
-      for (let i = 0; i < nonSystem.length - 1; i++) {
-        if (nonSystem[i].role === nonSystem[i + 1].role) {
-          return {
-            passed: false,
-            reason: `Consecutive ${nonSystem[i].role} messages at position ${i}`,
-          }
-        }
-      }
-      return { passed: true }
-    },
-  },
-  {
-    name: 'no_empty_messages',
-    check: ex => {
-      const emptyMsg = ex.messages.find(m => m.content.trim().length === 0)
-      return {
-        passed: !emptyMsg,
-        reason: emptyMsg ? `Empty ${emptyMsg.role} message found` : undefined,
-      }
-    },
-  },
-  {
-    name: 'assistant_ends_conversation',
-    check: ex => {
-      const lastMsg = ex.messages[ex.messages.length - 1]
-      return {
-        passed: lastMsg.role === 'assistant',
-        reason: lastMsg.role !== 'assistant' ? 'Conversation must end with assistant message' : undefined,
-      }
-    },
-  },
-]
+Build an array of `QualityFilter` objects that catch common data problems. Each filter's `check` function examines a single training example and returns whether it passed. Think about what makes a training example invalid:
 
-function estimateTokenCount(text: string): number {
-  // Rough estimation: ~4 characters per token for English text
-  return Math.ceil(text.length / 4)
-}
+1. **minimum_length** — Is there an assistant message? Is it at least 50 characters? Responses shorter than that are unlikely to be helpful training signals.
+2. **maximum_length** — Do the total tokens across all messages exceed 4,096? Use a rough estimate of ~4 characters per token.
+3. **has_system_prompt** — Does at least one message have `role: 'system'`?
+4. **valid_turn_order** — After filtering out system messages, do user and assistant messages alternate? What happens if two consecutive messages have the same role?
+5. **no_empty_messages** — Does any message have empty content after trimming?
+6. **assistant_ends_conversation** — Is the last message from the assistant? Why does this matter for training?
 
+Also build a token estimation helper:
+
+```typescript
+function estimateTokenCount(text: string): number
+```
+
+A rough approximation of ~4 characters per token works for English text.
+
+Then build the filtering function:
+
+```typescript
 interface FilterReport {
   total: number
   passed: number
@@ -540,36 +254,10 @@ interface FilterReport {
   examples: FineTuningExample[]
 }
 
-function filterTrainingData(examples: FineTuningExample[], filters: QualityFilter[]): FilterReport {
-  const filterBreakdown: Record<string, number> = {}
-  const passed: FineTuningExample[] = []
-
-  for (const ex of examples) {
-    let passedAll = true
-
-    for (const filter of filters) {
-      const result = filter.check(ex)
-      if (!result.passed) {
-        filterBreakdown[filter.name] = (filterBreakdown[filter.name] ?? 0) + 1
-        passedAll = false
-        break // Fail fast
-      }
-    }
-
-    if (passedAll) {
-      passed.push(ex)
-    }
-  }
-
-  return {
-    total: examples.length,
-    passed: passed.length,
-    filtered: examples.length - passed.length,
-    filterBreakdown,
-    examples: passed,
-  }
-}
+function filterTrainingData(examples: FineTuningExample[], filters: QualityFilter[]): FilterReport
 ```
+
+For each example, run all filters. If any filter fails, increment its count in `filterBreakdown` and exclude the example. Should you fail fast (stop at the first failing filter) or run all filters? What are the trade-offs?
 
 ### Diversity and Balance
 
@@ -588,157 +276,53 @@ interface DatasetStats {
     long: number // > 500 tokens
   }
 }
+```
 
-function analyzeDataset(examples: FineTuningExample[]): DatasetStats {
-  const categories: Record<string, number> = {}
-  let totalAssistantLength = 0
-  let totalUserLength = 0
-  let totalTurns = 0
-  const lengthDistribution = { short: 0, medium: 0, long: 0 }
+Build an `analyzeDataset` function:
 
-  for (const ex of examples) {
-    // Count categories based on system prompt or extract from metadata
-    const systemMsg = ex.messages.find(m => m.role === 'system')
-    const category = systemMsg?.content.substring(0, 50) ?? 'unknown'
-    categories[category] = (categories[category] ?? 0) + 1
+```typescript
+function analyzeDataset(examples: FineTuningExample[]): DatasetStats
+```
 
-    // Analyze message lengths
-    for (const msg of ex.messages) {
-      const tokens = estimateTokenCount(msg.content)
-      if (msg.role === 'assistant') {
-        totalAssistantLength += tokens
-        if (tokens < 100) lengthDistribution.short++
-        else if (tokens < 500) lengthDistribution.medium++
-        else lengthDistribution.long++
-      } else if (msg.role === 'user') {
-        totalUserLength += tokens
-      }
-    }
+Iterate through all examples, counting categories (you can derive category from the system prompt or first 50 characters), computing average message lengths for assistant and user roles, counting non-system turns per example, and bucketing assistant message lengths into short/medium/long. What does a heavily skewed length distribution tell you about your training data?
 
-    totalTurns += ex.messages.filter(m => m.role !== 'system').length
-  }
+Then build a `balanceDataset` function:
 
-  const assistantMsgCount = examples.reduce(
-    (sum, ex) => sum + ex.messages.filter(m => m.role === 'assistant').length,
-    0
-  )
-  const userMsgCount = examples.reduce((sum, ex) => sum + ex.messages.filter(m => m.role === 'user').length, 0)
-
-  return {
-    totalExamples: examples.length,
-    categoryDistribution: categories,
-    avgAssistantLength: assistantMsgCount > 0 ? totalAssistantLength / assistantMsgCount : 0,
-    avgUserLength: userMsgCount > 0 ? totalUserLength / userMsgCount : 0,
-    avgTurns: examples.length > 0 ? totalTurns / examples.length : 0,
-    lengthDistribution,
-  }
-}
-
-// Balance dataset across categories
+```typescript
 function balanceDataset(
   examples: FineTuningExample[],
   categoryExtractor: (ex: FineTuningExample) => string,
   targetPerCategory?: number
-): FineTuningExample[] {
-  // Group by category
-  const groups = new Map<string, FineTuningExample[]>()
-  for (const ex of examples) {
-    const cat = categoryExtractor(ex)
-    const group = groups.get(cat) ?? []
-    group.push(ex)
-    groups.set(cat, group)
-  }
-
-  // Determine target count per category
-  const minCount = Math.min(...Array.from(groups.values()).map(g => g.length))
-  const target = targetPerCategory ?? minCount
-
-  // Sample from each category
-  const balanced: FineTuningExample[] = []
-  for (const [, group] of groups) {
-    const shuffled = [...group].sort(() => Math.random() - 0.5)
-    balanced.push(...shuffled.slice(0, target))
-  }
-
-  return balanced
-}
+): FineTuningExample[]
 ```
+
+Group examples by category using the extractor function. If no `targetPerCategory` is given, use the minimum group size to avoid overrepresentation. Shuffle each group and take up to `target` examples. Why is balancing important? What happens when 80% of your training data is one category?
 
 ### LLM-Assisted Data Enhancement
 
 Use an LLM to improve or augment your training data.
 
+Build an `enhanceTrainingExample` function:
+
 ```typescript
-async function enhanceTrainingExample(example: FineTuningExample): Promise<FineTuningExample> {
-  const assistantMsg = example.messages.find(m => m.role === 'assistant')
-  const userMsg = example.messages.find(m => m.role === 'user')
+async function enhanceTrainingExample(example: FineTuningExample): Promise<FineTuningExample>
+```
 
-  if (!assistantMsg || !userMsg) return example
+Extract the user and assistant messages. Use `generateText` with a system prompt that instructs the model to improve the assistant response: make it more helpful, add structure (bullet points, numbered steps), maintain a professional tone, and keep a similar length. Return the example with the assistant message replaced by the improved version. How do you handle examples that have no assistant or user message?
 
-  const { text } = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a training data quality improver. Given a user question and an existing assistant response, improve the response by:
-1. Making it more helpful and comprehensive
-2. Adding appropriate structure (bullet points, numbered steps)
-3. Maintaining a professional, empathetic tone
-4. Ensuring factual accuracy
-5. Keeping a similar length (do not make it much longer)
+Then build a synthetic data generator:
 
-Return ONLY the improved response, nothing else.`,
-    prompt: `User question: ${userMsg.content}\n\nExisting response: ${assistantMsg.content}`,
-  })
-
-  return {
-    messages: example.messages.map(m => (m.role === 'assistant' ? { ...m, content: text } : m)),
-  }
-}
-
-// Generate synthetic training examples from a seed set
+```typescript
 async function generateSyntheticExamples(
   seedExamples: FineTuningExample[],
   count: number,
   systemPrompt: string
-): Promise<FineTuningExample[]> {
-  const seedDescriptions = seedExamples
-    .map(ex => {
-      const user = ex.messages.find(m => m.role === 'user')
-      return user?.content ?? ''
-    })
-    .join('\n- ')
-
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        examples: z.array(
-          z.object({
-            userMessage: z.string(),
-            assistantMessage: z.string(),
-          })
-        ),
-      }),
-    }),
-    system: `Generate realistic training examples for a customer support chatbot.
-The examples should be similar in style and domain to the seed examples but cover NEW scenarios.
-Each assistant response should be helpful, structured, and empathetic.
-Do NOT repeat any of the seed examples.`,
-    prompt: `System prompt for the chatbot: ${systemPrompt}
-
-Seed examples (generate similar but different ones):
-- ${seedDescriptions}
-
-Generate ${count} new examples.`,
-  })
-
-  return output!.examples.map(ex => ({
-    messages: [
-      { role: 'system' as const, content: systemPrompt },
-      { role: 'user' as const, content: ex.userMessage },
-      { role: 'assistant' as const, content: ex.assistantMessage },
-    ],
-  }))
-}
+): Promise<FineTuningExample[]>
 ```
+
+Use `Output.object` to generate structured output with a schema containing an array of `{ userMessage, assistantMessage }` objects. The prompt should include the seed examples (extract their user messages) so the model can generate similar but new scenarios. The system prompt should emphasize covering NEW scenarios, not repeating seeds.
+
+Map the generated objects back to `FineTuningExample` format by wrapping each in the standard messages array with system, user, and assistant roles. What risks does synthetic data generation introduce? How would you validate that synthetic examples are not duplicates of seeds?
 
 > **Advanced Note:** Synthetic data generation is powerful but comes with risks. Models can introduce subtle biases, generate plausible-but-wrong examples, and produce overly uniform data. Always have a human review a sample of synthetic examples before including them in your training set.
 
@@ -748,17 +332,10 @@ Generate ${count} new examples.`,
 
 ### OpenAI Fine-tuning with Vercel AI SDK
 
-OpenAI provides the most accessible fine-tuning API. After training, you use the fine-tuned model through the Vercel AI SDK just like any other model.
+OpenAI provides the most accessible fine-tuning API. After training, you use the fine-tuned model through the Vercel AI SDK just like any other model. Fine-tuning management (uploading files, starting jobs) uses the OpenAI SDK directly, while inference uses the Vercel AI SDK.
 
 ```typescript
-// Note: Fine-tuning API calls use the OpenAI client directly
-// The Vercel AI SDK is used for inference with the fine-tuned model
-
 import { openai as openaiProvider } from '@ai-sdk/openai'
-
-// Step 1: Upload training file (using OpenAI SDK)
-// This step uses the OpenAI SDK directly as the Vercel AI SDK
-// does not wrap fine-tuning management APIs
 
 interface FineTuningJob {
   id: string
@@ -772,47 +349,24 @@ interface FineTuningJob {
     learningRateMultiplier: number | 'auto'
   }
 }
+```
 
-// Prepare and validate training data before upload
+The workflow has three steps:
+
+**Step 1: Prepare and validate.** Build a `prepareForFineTuning` function:
+
+```typescript
 async function prepareForFineTuning(
   examples: FineTuningExample[],
   outputPath: string
-): Promise<{
-  valid: boolean
-  stats: DatasetStats
-  warnings: string[]
-}> {
-  const warnings: string[] = []
+): Promise<{ valid: boolean; stats: DatasetStats; warnings: string[] }>
+```
 
-  // Filter for quality
-  const filtered = filterTrainingData(examples, qualityFilters)
-  if (filtered.filtered > 0) {
-    warnings.push(`Filtered ${filtered.filtered} examples: ${JSON.stringify(filtered.filterBreakdown)}`)
-  }
+Filter examples using your quality filters, analyze the filtered dataset, and check for critical issues. OpenAI requires at least 10 examples and recommends 50-100. What other checks should generate warnings? Think about average response length — very short assistant responses may not provide enough signal for training.
 
-  // Analyze the dataset
-  const stats = analyzeDataset(filtered.examples)
+**Step 2: Start fine-tuning.** Build a `startFineTuning` function:
 
-  // Validation checks
-  if (filtered.examples.length < 10) {
-    warnings.push('CRITICAL: Less than 10 examples. OpenAI requires at least 10, recommends 50-100.')
-  }
-
-  if (stats.avgAssistantLength < 20) {
-    warnings.push('Assistant responses are very short. Consider adding more detail.')
-  }
-
-  // Write JSONL file
-  writeTrainingData(filtered.examples, outputPath)
-
-  return {
-    valid: filtered.examples.length >= 10,
-    stats,
-    warnings,
-  }
-}
-
-// Step 2: Start fine-tuning (conceptual — actual API call)
+```typescript
 async function startFineTuning(params: {
   trainingFilePath: string
   baseModel: string
@@ -820,113 +374,33 @@ async function startFineTuning(params: {
   batchSize?: number
   learningRateMultiplier?: number
   suffix?: string
-}): Promise<FineTuningJob> {
-  // In production, you would use the OpenAI SDK:
-  // const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  //
-  // const file = await openai.files.create({
-  //   file: fs.createReadStream(params.trainingFilePath),
-  //   purpose: "fine-tune",
-  // });
-  //
-  // const job = await openai.fineTuning.jobs.create({
-  //   training_file: file.id,
-  //   model: params.baseModel,
-  //   hyperparameters: {
-  //     n_epochs: params.epochs ?? "auto",
-  //     batch_size: params.batchSize ?? "auto",
-  //     learning_rate_multiplier: params.learningRateMultiplier ?? "auto",
-  //   },
-  //   suffix: params.suffix,
-  // });
-
-  // Placeholder return for illustration
-  return {
-    id: 'ftjob-abc123',
-    model: params.baseModel,
-    status: 'queued',
-    fineTunedModel: null,
-    trainingFile: 'file-xyz789',
-    hyperparameters: {
-      nEpochs: params.epochs ?? 'auto',
-      batchSize: params.batchSize ?? 'auto',
-      learningRateMultiplier: params.learningRateMultiplier ?? 'auto',
-    },
-  }
-}
-
-// Step 3: Use the fine-tuned model via Vercel AI SDK
-async function useFineTunedModel(fineTunedModelId: string, prompt: string): Promise<string> {
-  const { text } = await generateText({
-    // Use the fine-tuned model ID directly
-    model: openaiProvider(fineTunedModelId),
-    prompt,
-    // Note: fine-tuned models often need shorter (or no) system prompts
-    system: 'You are a helpful customer support agent.',
-  })
-
-  return text
-}
-
-// Example: using a fine-tuned model
-const response = await useFineTunedModel(
-  'ft:gpt-5-mini-2026-01-15:my-org:support-v1:abc123',
-  'My order has not arrived yet. What should I do?'
-)
-console.log(response)
+}): Promise<FineTuningJob>
 ```
+
+In production, you would use the OpenAI SDK to upload the file (`openai.files.create`) and create a job (`openai.fineTuning.jobs.create`). For this exercise, return a placeholder `FineTuningJob` with `status: 'queued'`. What does the `suffix` parameter do? It helps you identify your fine-tuned model later (e.g., `ft:gpt-5-mini:my-org:support-v1:abc123`).
+
+**Step 3: Use the fine-tuned model.** The key insight is that using a fine-tuned model through the Vercel AI SDK is identical to using a base model — you just change the model ID:
+
+```typescript
+const { text } = await generateText({
+  model: openaiProvider('ft:gpt-5-mini-2026-01-15:my-org:support-v1:abc123'),
+  system: 'You are a helpful customer support agent.',
+  prompt: userQuestion,
+})
+```
+
+Build a `useFineTunedModel` function that takes a model ID and prompt, calls `generateText`, and returns the text. Note that fine-tuned models often need shorter system prompts — why?
 
 ### Anthropic's Approach to Customization
 
-Anthropic offers different approaches to model customization. As of this writing, Anthropic provides fine-tuning through their API for enterprise customers.
+Anthropic offers fine-tuning through their API for enterprise customers. The Vercel AI SDK abstracts away provider differences for inference, so fine-tuned Anthropic models are used identically to base models.
 
-```typescript
-// Using Anthropic models with the Vercel AI SDK
-// Anthropic fine-tuned models are used just like base models
+Build a `compareBaseVsCustomized` function that demonstrates the key benefit of fine-tuning: prompt size reduction. Use the same question with two different configurations:
 
-async function compareBaseVsCustomized(): Promise<void> {
-  const prompt = 'Draft a response to a customer who received a damaged product.'
+1. A base model with a long system prompt (~150 words) specifying tone, format, and rules
+2. A fine-tuned model (simulated with the same base model for now) with a short system prompt (~10 words)
 
-  // Base model with detailed prompt
-  const baseResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a customer support agent for TechCorp.
-
-TONE: Empathetic, professional, solution-oriented
-FORMAT:
-1. Acknowledge the issue
-2. Apologize sincerely
-3. Offer specific resolution steps
-4. Provide timeline
-5. Offer additional help
-
-RULES:
-- Never blame the customer
-- Always offer a replacement OR refund
-- Include order lookup instructions
-- Keep response under 200 words`,
-    prompt,
-  })
-
-  console.log('Base model (with long prompt):')
-  console.log(baseResult.text)
-  console.log(`Input tokens: ${baseResult.usage?.inputTokens}`)
-
-  // After fine-tuning, the model has internalized the style
-  // and you need a much shorter prompt
-  // (Using same model for illustration — in practice this would be
-  // a fine-tuned model ID)
-  const customResult = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: 'You are a TechCorp support agent.',
-    prompt,
-  })
-
-  console.log('\nCustomized model (short prompt):')
-  console.log(customResult.text)
-  console.log(`Input tokens: ${customResult.usage?.inputTokens}`)
-}
-```
+Compare the `usage.inputTokens` between the two calls. How many tokens does the long system prompt add? At 100,000 requests per day, what would that cost difference be?
 
 > **Beginner Note:** The Vercel AI SDK abstracts away provider differences for inference. Whether you are using a base model or a fine-tuned model, the code is nearly identical — you just change the model ID. This makes it easy to swap between base and fine-tuned models for comparison.
 
@@ -952,83 +426,33 @@ interface HyperparameterGuide {
   recommendedRange: string
   datasetSizeGuidance: Record<string, string>
 }
+```
 
-const hyperparameterGuides: HyperparameterGuide[] = [
-  {
-    parameter: 'epochs',
-    description:
-      'Number of complete passes through the training dataset. More epochs mean the model sees each example more times.',
-    defaultValue: 'auto (typically 3-4)',
-    recommendedRange: '1-10',
-    datasetSizeGuidance: {
-      'small (<100)': '4-8 epochs — small datasets need more passes',
-      'medium (100-1000)': '2-4 epochs — balanced approach',
-      'large (>1000)': '1-2 epochs — large datasets risk overfitting with more',
-    },
-  },
-  {
-    parameter: 'batchSize',
-    description:
-      'Number of examples processed together in one training step. Larger batches are more stable but may generalize less well.',
-    defaultValue: 'auto (typically 1-8)',
-    recommendedRange: '1-32',
-    datasetSizeGuidance: {
-      'small (<100)': '1-2 — small batches for small datasets',
-      'medium (100-1000)': '4-8 — moderate batch sizes',
-      'large (>1000)': '8-32 — larger batches for efficiency',
-    },
-  },
-  {
-    parameter: 'learningRateMultiplier',
-    description: 'Scales the base learning rate. Higher values learn faster but risk overshooting optimal weights.',
-    defaultValue: 'auto (typically 1.0-2.0)',
-    recommendedRange: '0.1-5.0',
-    datasetSizeGuidance: {
-      'small (<100)': '0.5-1.0 — lower rates to avoid overfitting',
-      'medium (100-1000)': '1.0-2.0 — standard range',
-      'large (>1000)': '1.0-3.0 — can be more aggressive with more data',
-    },
-  },
-]
+Build a `hyperparameterGuides` array that documents the three key parameters:
 
-// Suggest hyperparameters based on dataset characteristics
+1. **Epochs** — Number of complete passes through the training dataset. More epochs mean the model sees each example more times. Default is auto (typically 3-4), range is 1-10. How does dataset size affect the ideal number? Small datasets (<100) need more passes (4-8), while large datasets (>1000) risk overfitting with more than 1-2.
+
+2. **Batch size** — Number of examples processed together in one training step. Larger batches are more stable but may generalize less well. Default is auto (typically 1-8), range is 1-32. Why would you use smaller batches for smaller datasets?
+
+3. **Learning rate multiplier** — Scales the base learning rate. Higher values learn faster but risk overshooting optimal weights. Default is auto (typically 1.0-2.0), range is 0.1-5.0. How does example complexity affect the ideal learning rate?
+
+Then build a `suggestHyperparameters` function:
+
+```typescript
 function suggestHyperparameters(
   datasetSize: number,
   avgExampleTokens: number,
   taskComplexity: 'simple' | 'moderate' | 'complex'
-): HyperparameterConfig {
-  // Epochs: inversely related to dataset size
-  let epochs: number
-  if (datasetSize < 100) epochs = 6
-  else if (datasetSize < 500) epochs = 4
-  else if (datasetSize < 2000) epochs = 3
-  else epochs = 2
-
-  // Adjust for complexity
-  if (taskComplexity === 'complex') epochs = Math.min(epochs + 2, 10)
-  if (taskComplexity === 'simple') epochs = Math.max(epochs - 1, 1)
-
-  // Batch size: related to dataset size
-  let batchSize: number
-  if (datasetSize < 50) batchSize = 1
-  else if (datasetSize < 200) batchSize = 4
-  else if (datasetSize < 1000) batchSize = 8
-  else batchSize = 16
-
-  // Learning rate: inversely related to example complexity
-  let learningRateMultiplier: number
-  if (avgExampleTokens > 1000) learningRateMultiplier = 0.5
-  else if (avgExampleTokens > 500) learningRateMultiplier = 1.0
-  else learningRateMultiplier = 1.8
-
-  return { epochs, batchSize, learningRateMultiplier }
-}
-
-// Example usage
-const suggested = suggestHyperparameters(300, 400, 'moderate')
-console.log('Suggested hyperparameters:', suggested)
-// { epochs: 4, batchSize: 8, learningRateMultiplier: 1.0 }
+): HyperparameterConfig
 ```
+
+The logic follows these principles:
+
+- **Epochs** are inversely related to dataset size: fewer examples need more passes. Start with size-based ranges (<100: 6, <500: 4, <2000: 3, else 2), then adjust for complexity (complex tasks add epochs, simple tasks subtract). Clamp to [1, 10].
+- **Batch size** scales with dataset size: <50 examples use batch 1, <200 use 4, <1000 use 8, else 16.
+- **Learning rate** is inversely related to example complexity (token count): longer examples (>1000 tokens) use 0.5, medium (>500) use 1.0, short use 1.8.
+
+What would `suggestHyperparameters(300, 400, 'moderate')` return?
 
 ### Hyperparameter Search
 
@@ -1049,74 +473,28 @@ interface SearchResult {
   evalScore: number
   overfitting: boolean
 }
+```
 
+Build a `hyperparameterSearch` function:
+
+```typescript
 async function hyperparameterSearch(
   searchConfig: HyperparameterSearchConfig,
   evalTestCases: { input: string; expected: string }[]
-): Promise<SearchResult[]> {
-  const results: SearchResult[] = []
-
-  for (const config of searchConfig.configurations) {
-    console.log(`Training with epochs=${config.epochs}, batch=${config.batchSize}, lr=${config.learningRateMultiplier}`)
-
-    // Start fine-tuning job with these hyperparameters
-    const job = await startFineTuning({
-      trainingFilePath: searchConfig.trainingFile,
-      baseModel: searchConfig.baseModel,
-      epochs: config.epochs,
-      batchSize: config.batchSize,
-      learningRateMultiplier: config.learningRateMultiplier,
-    })
-
-    // In production, you would poll for job completion
-    // and then evaluate the fine-tuned model
-    console.log(`Job ${job.id} started. Poll for completion...`)
-
-    // After job completes, evaluate on test cases
-    // (Placeholder — actual implementation would wait for training)
-    const evalScore = await evaluateModel(job.fineTunedModel ?? searchConfig.baseModel, evalTestCases)
-
-    results.push({
-      config,
-      trainingLoss: 0, // Would come from training metrics
-      validationLoss: 0, // Would come from training metrics
-      evalScore,
-      overfitting: false, // Would be determined from loss curves
-    })
-  }
-
-  // Sort by eval score, descending
-  results.sort((a, b) => b.evalScore - a.evalScore)
-
-  return results
-}
-
-async function evaluateModel(modelId: string, testCases: { input: string; expected: string }[]): Promise<number> {
-  let totalScore = 0
-
-  for (const tc of testCases) {
-    const { text } = await generateText({
-      model: openaiProvider(modelId as any),
-      prompt: tc.input,
-    })
-
-    // Simple similarity-based scoring
-    const score = text.toLowerCase().includes(tc.expected.toLowerCase()) ? 1.0 : 0.5
-    totalScore += score
-  }
-
-  return totalScore / testCases.length
-}
-
-// Define search space
-const searchSpace: HyperparameterConfig[] = [
-  { epochs: 2, batchSize: 4, learningRateMultiplier: 1.0 },
-  { epochs: 4, batchSize: 4, learningRateMultiplier: 1.0 },
-  { epochs: 4, batchSize: 8, learningRateMultiplier: 1.0 },
-  { epochs: 4, batchSize: 4, learningRateMultiplier: 2.0 },
-  { epochs: 6, batchSize: 4, learningRateMultiplier: 0.5 },
-]
+): Promise<SearchResult[]>
 ```
+
+For each configuration in the search space, start a fine-tuning job, wait for completion (in production you would poll), then evaluate the resulting model on the test cases. Sort results by eval score descending. How do you detect overfitting from the training and validation loss values?
+
+Also build an `evaluateModel` helper:
+
+```typescript
+async function evaluateModel(modelId: string, testCases: { input: string; expected: string }[]): Promise<number>
+```
+
+For each test case, generate output and compute a simple score (e.g., does the output contain the expected text?). Return the average score across all test cases.
+
+Define a search space that varies one parameter at a time from a baseline. For example, start with `{epochs: 4, batchSize: 4, learningRateMultiplier: 1.0}` and create variants that change epochs (2, 6), batch size (8), or learning rate (0.5, 2.0). Why is it important to vary one parameter at a time rather than trying random combinations?
 
 > **Advanced Note:** Overfitting in fine-tuning manifests as the model memorizing training examples rather than learning generalizable behavior. Signs include: perfect performance on training examples but poor performance on new inputs, generating responses that are verbatim copies of training data, and training loss continuing to decrease while validation loss increases.
 
@@ -1139,7 +517,11 @@ interface ModelComparisonResult {
   byCategory: Record<string, { baseMean: number; fineTunedMean: number; improvement: number }>
   verdict: 'improved' | 'no_change' | 'degraded'
 }
+```
 
+Build a `compareBaseVsFineTuned` function:
+
+```typescript
 async function compareBaseVsFineTuned(
   baseModelId: string,
   fineTunedModelId: string,
@@ -1150,73 +532,20 @@ async function compareBaseVsFineTuned(
     expectedOutput?: string
   }[],
   judge: (input: string, output: string) => Promise<number>
-): Promise<ModelComparisonResult> {
-  const baseScores: number[] = []
-  const ftScores: number[] = []
-  const categoryScores: Record<string, { base: number[]; ft: number[] }> = {}
-
-  for (const tc of testCases) {
-    // Generate outputs from both models
-    const [baseOutput, ftOutput] = await Promise.all([
-      generateText({
-        model: openaiProvider(baseModelId as any),
-        system: tc.systemPrompt,
-        prompt: tc.input,
-      }),
-      generateText({
-        model: openaiProvider(fineTunedModelId as any),
-        // Fine-tuned model may need shorter prompt
-        prompt: tc.input,
-      }),
-    ])
-
-    // Score both outputs
-    const [baseScore, ftScore] = await Promise.all([judge(tc.input, baseOutput.text), judge(tc.input, ftOutput.text)])
-
-    baseScores.push(baseScore)
-    ftScores.push(ftScore)
-
-    // Track per-category
-    if (!categoryScores[tc.category]) {
-      categoryScores[tc.category] = { base: [], ft: [] }
-    }
-    categoryScores[tc.category].base.push(baseScore)
-    categoryScores[tc.category].ft.push(ftScore)
-  }
-
-  const baseMean = baseScores.reduce((a, b) => a + b, 0) / baseScores.length
-  const ftMean = ftScores.reduce((a, b) => a + b, 0) / ftScores.length
-  const improvement = ftMean - baseMean
-
-  // Per-category analysis
-  const byCategory: ModelComparisonResult['byCategory'] = {}
-  for (const [cat, scores] of Object.entries(categoryScores)) {
-    const catBaseMean = scores.base.reduce((a, b) => a + b, 0) / scores.base.length
-    const catFtMean = scores.ft.reduce((a, b) => a + b, 0) / scores.ft.length
-    byCategory[cat] = {
-      baseMean: catBaseMean,
-      fineTunedMean: catFtMean,
-      improvement: catFtMean - catBaseMean,
-    }
-  }
-
-  let verdict: 'improved' | 'no_change' | 'degraded'
-  if (improvement > 0.05) verdict = 'improved'
-  else if (improvement < -0.05) verdict = 'degraded'
-  else verdict = 'no_change'
-
-  return {
-    baseModelScores: baseScores,
-    fineTunedModelScores: ftScores,
-    baseMean,
-    fineTunedMean: ftMean,
-    improvement,
-    improvementPercent: baseMean > 0 ? (improvement / baseMean) * 100 : 0,
-    byCategory,
-    verdict,
-  }
-}
+): Promise<ModelComparisonResult>
 ```
+
+For each test case, generate outputs from both models in parallel using `Promise.all`. Note that the base model uses `tc.systemPrompt` while the fine-tuned model may need no system prompt (or a much shorter one) — why?
+
+Score both outputs using the `judge` function. Track scores per category using a `Record<string, { base: number[], ft: number[] }>`. After processing all test cases:
+
+- Compute the mean score for each model
+- Compute the improvement (fine-tuned mean minus base mean)
+- Compute improvement as a percentage: `(improvement / baseMean) * 100`
+- Compute per-category means and improvements
+- Determine the verdict: improvement > 0.05 means "improved", < -0.05 means "degraded", otherwise "no_change"
+
+Why is 0.05 a reasonable threshold rather than 0? What role does noise play in small score differences?
 
 ### Held-Out Test Set Management
 
@@ -1228,53 +557,27 @@ interface DataSplit {
   validation: FineTuningExample[]
   test: FineTuningExample[]
 }
+```
 
+Build a `splitDataset` function:
+
+```typescript
 function splitDataset(
   examples: FineTuningExample[],
   trainRatio: number = 0.8,
   validationRatio: number = 0.1,
   testRatio: number = 0.1,
   seed: number = 42
-): DataSplit {
-  // Validate ratios
-  const totalRatio = trainRatio + validationRatio + testRatio
-  if (Math.abs(totalRatio - 1.0) > 0.01) {
-    throw new Error(`Ratios must sum to 1.0, got ${totalRatio}`)
-  }
-
-  // Deterministic shuffle using seed
-  const shuffled = [...examples]
-  let currentSeed = seed
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    // Simple seeded random
-    currentSeed = (currentSeed * 1664525 + 1013904223) & 0x7fffffff
-    const j = currentSeed % (i + 1)
-    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
-  }
-
-  const trainEnd = Math.floor(examples.length * trainRatio)
-  const validationEnd = trainEnd + Math.floor(examples.length * validationRatio)
-
-  return {
-    training: shuffled.slice(0, trainEnd),
-    validation: shuffled.slice(trainEnd, validationEnd),
-    test: shuffled.slice(validationEnd),
-  }
-}
-
-// Usage
-const allData = trainingExamples // Your full dataset
-const split = splitDataset(allData, 0.8, 0.1, 0.1)
-
-console.log(`Training: ${split.training.length} examples`)
-console.log(`Validation: ${split.validation.length} examples`)
-console.log(`Test: ${split.test.length} examples`)
-
-// Write each split to a file
-writeTrainingData(split.training, 'data/train.jsonl')
-writeTrainingData(split.validation, 'data/validation.jsonl')
-writeTrainingData(split.test, 'data/test.jsonl')
+): DataSplit
 ```
+
+First, validate that the ratios sum to 1.0 (within a small tolerance like 0.01). Then shuffle the examples deterministically using the seed — why is a deterministic shuffle important? Without it, running the split twice would give different splits, making experiments non-reproducible.
+
+For the seeded shuffle, implement a Fisher-Yates shuffle using a linear congruential generator: `seed = (seed * 1664525 + 1013904223) & 0x7fffffff`, and use `seed % (i + 1)` for the swap index.
+
+Split the shuffled array at the computed boundaries using `slice`. Write each split to a separate JSONL file using your `writeTrainingData` function.
+
+What is the purpose of each split? The training set is what the model learns from. The validation set detects overfitting during training. The test set provides an unbiased estimate after training is complete. Why should you never look at test set results during the training iteration cycle?
 
 > **Beginner Note:** The training set is what the model learns from. The validation set is used during training to detect overfitting. The test set is used only after training is complete to get an unbiased estimate of real-world performance. Never peek at test set results during the training iteration cycle.
 
@@ -1301,138 +604,43 @@ interface IterationAction {
   priority: 'high' | 'medium' | 'low'
   effort: 'low' | 'medium' | 'high'
 }
-
-function planIteration(evalResults: ModelComparisonResult, targetScore: number): IterationPlan {
-  const actions: IterationAction[] = []
-
-  // Identify weak categories
-  const weakCategories = Object.entries(evalResults.byCategory)
-    .filter(([, scores]) => scores.fineTunedMean < targetScore)
-    .map(([cat]) => cat)
-
-  // If overall fine-tuned is worse than base, data quality is the issue
-  if (evalResults.verdict === 'degraded') {
-    actions.push({
-      type: 'remove_bad_examples',
-      description: 'Review and remove low-quality training examples. Fine-tuning degraded performance.',
-      priority: 'high',
-      effort: 'medium',
-    })
-    actions.push({
-      type: 'adjust_hyperparameters',
-      description: 'Reduce epochs and learning rate to prevent overfitting on bad data.',
-      priority: 'high',
-      effort: 'low',
-    })
-  }
-
-  // If specific categories are weak, add more examples for those
-  if (weakCategories.length > 0) {
-    actions.push({
-      type: 'add_examples',
-      description: `Add more training examples for weak categories: ${weakCategories.join(', ')}`,
-      priority: 'high',
-      effort: 'medium',
-    })
-  }
-
-  // If scores are close to target, try data augmentation
-  if (evalResults.fineTunedMean > targetScore * 0.9 && evalResults.fineTunedMean < targetScore) {
-    actions.push({
-      type: 'augment_data',
-      description: 'Use paraphrasing and synthetic generation to increase dataset diversity.',
-      priority: 'medium',
-      effort: 'medium',
-    })
-  }
-
-  return {
-    currentScore: evalResults.fineTunedMean,
-    targetScore,
-    weakCategories,
-    actions,
-    estimatedImpact:
-      actions.length > 0
-        ? `${actions.length} actions identified to improve score from ${evalResults.fineTunedMean.toFixed(3)} to ${targetScore}`
-        : 'No clear improvement actions identified. Consider a larger base model.',
-  }
-}
 ```
+
+Build a `planIteration` function:
+
+```typescript
+function planIteration(evalResults: ModelComparisonResult, targetScore: number): IterationPlan
+```
+
+This function analyzes evaluation results and recommends specific actions. The logic follows a diagnostic pattern:
+
+1. **Identify weak categories** — Which categories in `evalResults.byCategory` have a fine-tuned mean below `targetScore`?
+2. **If the model degraded** (verdict is `'degraded'`), the top priority is data quality: recommend removing bad examples and reducing epochs/learning rate. Why is data quality the most likely culprit when fine-tuning makes things worse?
+3. **If specific categories are weak**, recommend adding more training examples for those categories. What priority should this have?
+4. **If scores are close to target** (within 90%), recommend data augmentation to push past the plateau. Why might augmentation help when you are close but not there?
+5. **If no actions are identified**, suggest considering a larger base model.
+
+Generate an `estimatedImpact` string summarizing the plan. What information would be most useful to include?
 
 ### Data Augmentation Techniques
 
+Build two augmentation functions:
+
 ```typescript
-// Paraphrase existing examples to increase diversity
-async function paraphraseExamples(examples: FineTuningExample[], variations: number = 2): Promise<FineTuningExample[]> {
-  const augmented: FineTuningExample[] = [...examples]
-
-  for (const ex of examples) {
-    const userMsg = ex.messages.find(m => m.role === 'user')
-    if (!userMsg) continue
-
-    const { output } = await generateText({
-      model: mistral('mistral-small-latest'),
-      output: Output.object({
-        schema: z.object({
-          paraphrases: z.array(z.string()),
-        }),
-      }),
-      system:
-        'Generate paraphrased versions of the given text. Keep the meaning identical but vary the wording, structure, and style. Each paraphrase should be clearly different from the others.',
-      prompt: `Generate ${variations} paraphrases of: "${userMsg.content}"`,
-    })
-
-    for (const paraphrase of output!.paraphrases) {
-      augmented.push({
-        messages: ex.messages.map(m => (m.role === 'user' ? { ...m, content: paraphrase } : m)),
-      })
-    }
-  }
-
-  return augmented
-}
-
-// Add difficulty variations to existing examples
-async function addDifficultyVariations(examples: FineTuningExample[]): Promise<FineTuningExample[]> {
-  const augmented: FineTuningExample[] = [...examples]
-
-  for (const ex of examples) {
-    const userMsg = ex.messages.find(m => m.role === 'user')
-    const assistantMsg = ex.messages.find(m => m.role === 'assistant')
-    if (!userMsg || !assistantMsg) continue
-
-    // Generate a harder version of the same scenario
-    const { output } = await generateText({
-      model: mistral('mistral-small-latest'),
-      output: Output.object({
-        schema: z.object({
-          harderInput: z.string(),
-          appropriateResponse: z.string(),
-        }),
-      }),
-      system: `Given a customer support interaction, create a HARDER version of the same scenario.
-Make the customer's question:
-- More ambiguous or complex
-- Include emotional language
-- Combine multiple issues
-- Include misspellings or informal language
-
-Then write the appropriate response maintaining the same quality and style.`,
-      prompt: `Original question: ${userMsg.content}\nOriginal response: ${assistantMsg.content}`,
-    })
-
-    augmented.push({
-      messages: [
-        ...ex.messages.filter(m => m.role === 'system'),
-        { role: 'user', content: output!.harderInput },
-        { role: 'assistant', content: output!.appropriateResponse },
-      ],
-    })
-  }
-
-  return augmented
-}
+async function paraphraseExamples(examples: FineTuningExample[], variations: number = 2): Promise<FineTuningExample[]>
 ```
+
+For each example, extract the user message and use `Output.object` to generate `variations` paraphrased versions. The system prompt should instruct the model to keep meaning identical while varying wording, structure, and style. For each paraphrase, create a new `FineTuningExample` with the user message replaced but the assistant message preserved. Start with the original examples in the result array and append paraphrased versions.
+
+Why do you keep the same assistant message when paraphrasing the user message? What would happen if different phrasings of the same question got different responses?
+
+```typescript
+async function addDifficultyVariations(examples: FineTuningExample[]): Promise<FineTuningExample[]>
+```
+
+For each example, generate a harder version of the same scenario using `Output.object` with a schema containing `{ harderInput, appropriateResponse }`. The system prompt should instruct the model to make the customer's question more ambiguous, emotional, complex, or informal. Both the input and the response change in this case.
+
+Create the augmented example by combining the original system messages with the new user and assistant messages. Why is it important to train on harder variations, not just paraphrases?
 
 > **Advanced Note:** Each iteration cycle should follow this loop: train, evaluate, analyze failures, plan improvements, update data, retrain. Track your iterations in a spreadsheet or experiment tracker. Most successful fine-tuning projects go through 3-5 iterations before reaching their target quality.
 
@@ -1446,23 +654,18 @@ Fine-tuning costs extend beyond the training API call. A complete analysis inclu
 
 ```typescript
 interface FineTuningCostModel {
-  // Data preparation costs
   dataPrep: {
     humanAnnotationHours: number
     hourlyRate: number
     llmAugmentationCost: number
     totalDataPrepCost: number
   }
-
-  // Training costs
   training: {
     trainingTokens: number
     costPerMillionTrainingTokens: number
     iterations: number
     totalTrainingCost: number
   }
-
-  // Inference costs (monthly)
   inference: {
     requestsPerMonth: number
     baseModelPromptTokens: number
@@ -1472,15 +675,11 @@ interface FineTuningCostModel {
     fineTunedCostPerMonth: number
     monthlySavings: number
   }
-
-  // Maintenance costs (annual)
   maintenance: {
     retrainingFrequency: 'monthly' | 'quarterly' | 'annual'
     retrainingCostPerCycle: number
     annualMaintenanceCost: number
   }
-
-  // Summary
   summary: {
     upfrontCost: number
     monthlyRunningCost: number
@@ -1489,22 +688,21 @@ interface FineTuningCostModel {
     firstYearROI: number
   }
 }
+```
 
+Build a `buildCostModel` function:
+
+```typescript
 function buildCostModel(params: {
-  // Data prep
   annotationHours: number
   hourlyRate: number
   augmentationApiCalls: number
   augmentationCostPerCall: number
-
-  // Training
   trainingExamples: number
   avgTokensPerExample: number
   epochs: number
   trainingCostPerMillionTokens: number
   expectedIterations: number
-
-  // Inference
   requestsPerMonth: number
   basePromptTokens: number
   fineTunedPromptTokens: number
@@ -1513,118 +711,23 @@ function buildCostModel(params: {
   baseCostPerMillionOutputTokens: number
   fineTunedCostPerMillionInputTokens: number
   fineTunedCostPerMillionOutputTokens: number
-
-  // Maintenance
   retrainingFrequency: 'monthly' | 'quarterly' | 'annual'
-}): FineTuningCostModel {
-  // Data preparation
-  const totalDataPrepCost =
-    params.annotationHours * params.hourlyRate + params.augmentationApiCalls * params.augmentationCostPerCall
-
-  // Training
-  const trainingTokens = params.trainingExamples * params.avgTokensPerExample * params.epochs
-  const singleTrainingCost = (trainingTokens / 1_000_000) * params.trainingCostPerMillionTokens
-  const totalTrainingCost = singleTrainingCost * params.expectedIterations
-
-  // Inference (monthly)
-  const baseInputCost =
-    ((params.basePromptTokens * params.requestsPerMonth) / 1_000_000) * params.baseCostPerMillionInputTokens
-  const baseOutputCost =
-    ((params.outputTokens * params.requestsPerMonth) / 1_000_000) * params.baseCostPerMillionOutputTokens
-  const baseModelCostPerMonth = baseInputCost + baseOutputCost
-
-  const ftInputCost =
-    ((params.fineTunedPromptTokens * params.requestsPerMonth) / 1_000_000) * params.fineTunedCostPerMillionInputTokens
-  const ftOutputCost =
-    ((params.outputTokens * params.requestsPerMonth) / 1_000_000) * params.fineTunedCostPerMillionOutputTokens
-  const fineTunedCostPerMonth = ftInputCost + ftOutputCost
-
-  const monthlySavings = baseModelCostPerMonth - fineTunedCostPerMonth
-
-  // Maintenance
-  const retrainingMultiplier =
-    params.retrainingFrequency === 'monthly' ? 12 : params.retrainingFrequency === 'quarterly' ? 4 : 1
-  const annualMaintenanceCost = singleTrainingCost * retrainingMultiplier
-
-  // Summary
-  const upfrontCost = totalDataPrepCost + totalTrainingCost
-  const monthlyRunningCost = fineTunedCostPerMonth + annualMaintenanceCost / 12
-  const breakEvenMonths = monthlySavings > 0 ? Math.ceil(upfrontCost / monthlySavings) : Infinity
-  const firstYearROI =
-    upfrontCost > 0 ? ((monthlySavings * 12 - upfrontCost - annualMaintenanceCost) / upfrontCost) * 100 : 0
-
-  return {
-    dataPrep: {
-      humanAnnotationHours: params.annotationHours,
-      hourlyRate: params.hourlyRate,
-      llmAugmentationCost: params.augmentationApiCalls * params.augmentationCostPerCall,
-      totalDataPrepCost,
-    },
-    training: {
-      trainingTokens,
-      costPerMillionTrainingTokens: params.trainingCostPerMillionTokens,
-      iterations: params.expectedIterations,
-      totalTrainingCost,
-    },
-    inference: {
-      requestsPerMonth: params.requestsPerMonth,
-      baseModelPromptTokens: params.basePromptTokens,
-      fineTunedPromptTokens: params.fineTunedPromptTokens,
-      outputTokensPerRequest: params.outputTokens,
-      baseModelCostPerMonth,
-      fineTunedCostPerMonth,
-      monthlySavings,
-    },
-    maintenance: {
-      retrainingFrequency: params.retrainingFrequency,
-      retrainingCostPerCycle: singleTrainingCost,
-      annualMaintenanceCost,
-    },
-    summary: {
-      upfrontCost,
-      monthlyRunningCost,
-      monthlySavings,
-      breakEvenMonths,
-      firstYearROI,
-    },
-  }
-}
-
-// Example cost analysis
-const costModel = buildCostModel({
-  annotationHours: 40,
-  hourlyRate: 50,
-  augmentationApiCalls: 500,
-  augmentationCostPerCall: 0.02,
-
-  trainingExamples: 500,
-  avgTokensPerExample: 500,
-  epochs: 4,
-  trainingCostPerMillionTokens: 25.0,
-  expectedIterations: 3,
-
-  requestsPerMonth: 100_000,
-  basePromptTokens: 2000,
-  fineTunedPromptTokens: 200,
-  outputTokens: 300,
-  baseCostPerMillionInputTokens: 3.0,
-  baseCostPerMillionOutputTokens: 15.0,
-  fineTunedCostPerMillionInputTokens: 3.0,
-  fineTunedCostPerMillionOutputTokens: 15.0,
-
-  retrainingFrequency: 'quarterly',
-})
-
-console.log('\n=== Fine-tuning Cost Analysis ===')
-console.log(`\nData Prep: $${costModel.dataPrep.totalDataPrepCost.toFixed(2)}`)
-console.log(`Training: $${costModel.training.totalTrainingCost.toFixed(2)}`)
-console.log(`Upfront Total: $${costModel.summary.upfrontCost.toFixed(2)}`)
-console.log(`\nMonthly base cost: $${costModel.inference.baseModelCostPerMonth.toFixed(2)}`)
-console.log(`Monthly fine-tuned cost: $${costModel.inference.fineTunedCostPerMonth.toFixed(2)}`)
-console.log(`Monthly savings: $${costModel.summary.monthlySavings.toFixed(2)}`)
-console.log(`Break-even: ${costModel.summary.breakEvenMonths} months`)
-console.log(`First-year ROI: ${costModel.summary.firstYearROI.toFixed(1)}%`)
+}): FineTuningCostModel
 ```
+
+The calculations break down into four cost centers:
+
+1. **Data preparation** — Human annotation cost (hours x rate) plus LLM augmentation cost (API calls x cost per call). These are one-time upfront costs.
+
+2. **Training** — Training tokens = examples x tokens per example x epochs. Multiply by cost per million training tokens. Then multiply by expected iterations (most projects need 3-5). Why do multiple iterations multiply the training cost?
+
+3. **Inference (monthly)** — Compute monthly cost for both base and fine-tuned models. For each: input cost = (prompt tokens x requests / 1M) x cost per million input tokens; output cost follows the same pattern. Monthly savings = base cost minus fine-tuned cost. Where do the savings come from — shorter prompts, cheaper models, or both?
+
+4. **Maintenance (annual)** — Retraining cost = single training cost x frequency multiplier (monthly=12, quarterly=4, annual=1). This is an ongoing cost that many teams forget.
+
+5. **Summary** — Upfront cost = data prep + training. Monthly running cost = fine-tuned inference + maintenance/12. Break-even months = upfront cost / monthly savings (or `Infinity` if no savings). First-year ROI = `(savings*12 - upfront - maintenance) / upfront * 100`.
+
+Try it with realistic numbers: 40 annotation hours at $50/hr, 500 training examples, 100K requests/month, base prompt of 2,000 tokens vs. fine-tuned prompt of 200 tokens. How many months until break-even?
 
 > **Beginner Note:** Fine-tuning is most cost-effective when you have high request volume and long system prompts. If you are making 100 requests per day with a 200-token prompt, the savings from fine-tuning will likely never offset the training cost. If you are making 100,000 requests per day with a 2,000-token prompt, fine-tuning can pay for itself within weeks.
 
@@ -1703,6 +806,28 @@ C) Set up a training infrastructure pipeline
 D) Switch to the largest available model
 
 **Answer: B** — Fine-tuning should be considered only after prompt engineering has been tried and found insufficient. Prompt engineering is faster, cheaper, and more flexible. Many tasks that seem to require fine-tuning can actually be solved with better prompts, few-shot examples, or structured output schemas. Fine-tune only when you have evidence that prompting is not enough.
+
+---
+
+**Question 6 (Medium):** A fine-tuned model performs well on the training set but poorly on the validation set. Which hyperparameter adjustment is most likely to help?
+
+A) Increase the number of epochs to give the model more training time
+B) Reduce the number of epochs or decrease the learning rate to prevent overfitting
+C) Increase the batch size to process more examples at once
+D) Add more duplicate examples to the training set
+
+**Answer: B** — When training performance is good but validation performance is poor, the model is overfitting — memorizing training examples rather than learning generalizable patterns. Reducing epochs (fewer passes over the data) or decreasing the learning rate (smaller weight updates) both reduce the risk of overfitting. Increasing epochs (A) would worsen overfitting. Adding duplicates (D) would reinforce memorization.
+
+---
+
+**Question 7 (Hard):** You have 50 high-quality training examples and need 200 more. You use an LLM to generate synthetic examples based on the originals. What is the most critical quality check for the synthetic data?
+
+A) Verify that synthetic examples are longer than the originals
+B) Ensure synthetic examples do not duplicate originals and cover underrepresented categories while maintaining consistent quality
+C) Check that all synthetic examples use the same response format
+D) Confirm the LLM generated exactly 200 examples
+
+**Answer: B** — Synthetic data generation risks two main problems: duplicating existing examples (which causes overfitting) and reinforcing category imbalances in the original set. The quality check should verify uniqueness (no near-duplicates of originals), diversity (coverage of underrepresented categories), and consistent quality (synthetic examples should match the quality bar of the hand-written ones). Format consistency (C) matters but is secondary to diversity and uniqueness.
 
 ---
 

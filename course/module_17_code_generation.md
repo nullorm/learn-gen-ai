@@ -54,37 +54,19 @@ LLMs also have systematic weaknesses:
 - **Security blind spots**: Generated code may have injection vulnerabilities, unsafe deserialization, or missing input validation
 - **Context limits**: Large codebases cannot fit in the context window, leading to inconsistent imports or styles
 
+The difference between good and bad code generation comes down to prompt specificity. Compare these two approaches:
+
 ```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-// Demonstrate the difference between good and bad code generation prompts
-
-// BAD: Vague prompt that produces unreliable code
+// BAD: Vague prompt — might return Python, JavaScript, or anything
 const badResult = await generateText({
   model: mistral('mistral-small-latest'),
   prompt: 'Write a function to process data',
 })
-// This might return anything — Python? TypeScript? What kind of data?
-
-// GOOD: Specific prompt with constraints
-const goodResult = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt: `Write a TypeScript function that:
-- Name: parseCSVLine
-- Input: a single CSV line as a string
-- Output: an array of strings (the fields)
-- Must handle quoted fields (fields containing commas wrapped in double quotes)
-- Must handle escaped quotes (double-double quotes inside quoted fields)
-- Do NOT use external libraries
-- Include JSDoc comment with examples
-- Include edge case handling for empty input
-
-Return ONLY the function — no explanation, no tests.`,
-})
-
-console.log(goodResult.text)
 ```
+
+A good code generation prompt specifies the language, function name, input/output types, edge cases, constraints, and output format. When you tell the model exactly what to produce — including what NOT to include — the results improve dramatically.
+
+Your task: build a function `generateCodeWithPrompt` in `src/codegen/basics.ts` that takes a detailed specification string and calls `generateText` with it. The function should accept a prompt string and return the LLM's text response. Think about: what happens if the model wraps the code in markdown fences? How would you strip those from the response?
 
 > **Beginner Note:** LLMs generate code by pattern matching against their training data. They are very good at writing code that looks like code they have seen before. They are less reliable when the task requires novel logic or deep reasoning about edge cases.
 
@@ -105,11 +87,9 @@ The quality of generated code depends heavily on the prompt. Include these eleme
 5. **Constraints**: No external libraries, must be pure, must handle errors
 6. **Examples**: Input/output pairs that define expected behavior
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+Build a prompt template function that assembles these elements into a structured prompt. The function signature should be:
 
-// Template for code generation prompts
+```typescript
 function codePrompt(spec: {
   language: string
   functionName: string
@@ -119,140 +99,24 @@ function codePrompt(spec: {
   examples: Array<{ input: string; output: string }>
   constraints: string[]
   edgeCases: string[]
-}): string {
-  const params = spec.parameters.map(p => `  - ${p.name}: ${p.type} — ${p.description}`).join('\n')
-
-  const examples = spec.examples.map(e => `  ${spec.functionName}(${e.input}) => ${e.output}`).join('\n')
-
-  const constraints = spec.constraints.map(c => `- ${c}`).join('\n')
-
-  const edgeCases = spec.edgeCases.map(e => `- ${e}`).join('\n')
-
-  return `Write a ${spec.language} function with the following specification:
-
-Function: ${spec.functionName}
-Description: ${spec.description}
-
-Parameters:
-${params}
-
-Return type: ${spec.returnType}
-
-Examples:
-${examples}
-
-Constraints:
-${constraints}
-
-Edge cases to handle:
-${edgeCases}
-
-Return ONLY the function code with a JSDoc comment. No tests, no explanation, no markdown fences.`
-}
-
-// Usage
-const prompt = codePrompt({
-  language: 'TypeScript',
-  functionName: 'deepMerge',
-  description:
-    'Recursively merge two objects. Arrays are concatenated. Nested objects are merged recursively. Primitive values from the second object overwrite the first.',
-  parameters: [
-    { name: 'target', type: 'Record<string, unknown>', description: 'The base object' },
-    {
-      name: 'source',
-      type: 'Record<string, unknown>',
-      description: 'The object to merge into target',
-    },
-  ],
-  returnType: 'Record<string, unknown>',
-  examples: [
-    {
-      input: '{ a: 1 }, { b: 2 }',
-      output: '{ a: 1, b: 2 }',
-    },
-    {
-      input: '{ a: { x: 1 } }, { a: { y: 2 } }',
-      output: '{ a: { x: 1, y: 2 } }',
-    },
-    {
-      input: '{ a: [1, 2] }, { a: [3, 4] }',
-      output: '{ a: [1, 2, 3, 4] }',
-    },
-  ],
-  constraints: [
-    'Do NOT mutate the input objects',
-    'Do NOT use any external libraries',
-    'Must handle nested objects to arbitrary depth',
-    'Must be type-safe with TypeScript generics',
-  ],
-  edgeCases: [
-    'Empty objects: deepMerge({}, {}) returns {}',
-    'Null values: null overwrites existing values',
-    'Undefined values: undefined is ignored (does not overwrite)',
-    'Mixed types: if target has an array and source has a primitive for the same key, source wins',
-  ],
-})
-
-const result = await generateText({
-  model: mistral('mistral-small-latest'),
-  prompt,
-})
-
-console.log(result.text)
+}): string
 ```
+
+The function should combine all the spec fields into a clear, structured prompt string. Think about the ordering: which sections should come first to give the model the most context? How do you format the examples so the model understands input/output pairs?
+
+The prompt should end with an instruction like: "Return ONLY the function code with a JSDoc comment. No tests, no explanation, no markdown fences."
 
 ### System Prompts for Code Generation
 
-Use system prompts to set global coding standards:
+Beyond per-request prompts, a system prompt sets global coding standards. A good code generation system prompt covers:
 
-```typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+1. **Style rules** — ES2022+, const over let, arrow functions for callbacks, early returns over nesting
+2. **Type discipline** — explicit annotations, interfaces for object shapes, no `any` (use `unknown` instead)
+3. **Error handling** — validate inputs at function boundaries, custom error classes, never swallow errors
+4. **Documentation** — JSDoc comments, parameter/return docs, `@example` tags
+5. **Output format** — no markdown fences, no test code, no explanation unless asked
 
-const codeGenSystemPrompt = `You are an expert TypeScript developer. When generating code:
-
-1. STYLE:
-   - Use modern TypeScript (ES2022+)
-   - Prefer const over let, never use var
-   - Use arrow functions for callbacks
-   - Use template literals for string interpolation
-   - Prefer early returns over deep nesting
-
-2. TYPES:
-   - Always include explicit type annotations for function parameters and return types
-   - Use interfaces for object shapes, types for unions/intersections
-   - Avoid \`any\` — use \`unknown\` when the type is truly unknown
-   - Use generics when the function works with multiple types
-
-3. ERROR HANDLING:
-   - Validate all inputs at function boundaries
-   - Use custom error classes for domain-specific errors
-   - Never swallow errors silently — always log or rethrow
-
-4. DOCUMENTATION:
-   - Include JSDoc comments for all exported functions
-   - Document parameters, return values, and thrown errors
-   - Include usage examples in JSDoc @example tags
-
-5. OUTPUT FORMAT:
-   - Return ONLY the requested code
-   - Do NOT include markdown code fences unless asked
-   - Do NOT include test code unless asked
-   - Do NOT include explanation text unless asked`
-
-const result = await generateText({
-  model: mistral('mistral-small-latest'),
-  system: codeGenSystemPrompt,
-  prompt: `Write a function called "retry" that:
-- Takes an async function and retry options (maxRetries, delayMs, backoffMultiplier)
-- Retries the function on failure with exponential backoff
-- Returns the result on success
-- Throws the last error after all retries are exhausted
-- Supports an optional AbortSignal for cancellation`,
-})
-
-console.log(result.text)
-```
+Build a `codeGenSystemPrompt` string constant that covers these areas. Then use it as the `system` parameter in a `generateText` call. How does the system prompt interact with the per-request prompt? What happens when they conflict?
 
 > **Beginner Note:** Specific prompts produce specific code. If you tell the model "write a sorting function," you will get something generic. If you specify the language, algorithm, input type, edge cases, and constraints, you will get exactly what you need.
 
@@ -262,13 +126,9 @@ console.log(result.text)
 
 ### Extracting Code from LLM Responses
 
-LLMs often wrap code in markdown fences or add explanations. Use structured output to extract clean code:
+LLMs often wrap code in markdown fences or add explanations. Use structured output to extract clean code reliably. Define a Zod schema that captures not just the code, but metadata about what was generated:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const codeOutputSchema = z.object({
   code: z.string().describe('The complete, executable code'),
   language: z.string().describe('The programming language'),
@@ -284,50 +144,17 @@ const codeOutputSchema = z.object({
     .describe('Exported symbols'),
   testHints: z.array(z.string()).describe('Suggested test cases for this code'),
 })
-
-type CodeOutput = z.infer<typeof codeOutputSchema>
-
-async function generateCode(spec: string): Promise<CodeOutput> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: codeOutputSchema }),
-    system: `You are a TypeScript code generator. Generate clean, well-typed code.
-The code field must contain complete, executable TypeScript — no markdown fences, no explanations.`,
-    prompt: spec,
-  })
-
-  return output!
-}
-
-// Usage
-const output = await generateCode(`
-Write a TypeScript module that provides a simple in-memory cache with:
-- get(key): Get a value by key
-- set(key, value, ttlMs): Set a value with a time-to-live in milliseconds
-- delete(key): Remove a key
-- clear(): Remove all keys
-- size(): Return the number of non-expired entries
-
-The cache should automatically expire entries when their TTL has passed.
-Use a Map internally. No external dependencies.
-`)
-
-console.log('Language:', output.language)
-console.log('Dependencies:', output.dependencies)
-console.log('Exports:', output.exports)
-console.log('Test hints:', output.testHints)
-console.log('\nCode:\n', output.code)
 ```
+
+Build an async function `generateCode(spec: string): Promise<CodeOutput>` that uses `generateText` with `Output.object({ schema: codeOutputSchema })` to extract structured output. The system prompt should instruct the model that the `code` field must contain complete, executable TypeScript with no markdown fences.
+
+Why is this better than parsing raw text? What happens when the model decides to add an explanation before the code block? How does structured output prevent that?
 
 ### Multi-File Code Generation
 
-For larger features, generate multiple files:
+For larger features, you need to generate multiple files that are consistent with each other. Define a schema for multi-file output:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const multiFileSchema = z.object({
   files: z.array(
     z.object({
@@ -339,37 +166,11 @@ const multiFileSchema = z.object({
   entryPoint: z.string().describe('Main file to run'),
   installCommand: z.string().optional().describe('Command to install dependencies, if any'),
 })
-
-async function generateMultiFile(spec: string) {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: multiFileSchema }),
-    system: `Generate a TypeScript project with multiple files.
-Each file should be complete and importable.
-Use relative imports between files.
-Follow standard project structure (src/ for code, types in separate files).`,
-    prompt: spec,
-  })
-
-  return output!
-}
-
-const project = await generateMultiFile(`
-Create a simple HTTP rate limiter module with:
-1. A RateLimiter class (src/rate-limiter.ts) that implements token bucket algorithm
-2. Type definitions (src/types.ts) for configuration and results
-3. A middleware function (src/middleware.ts) that wraps a request handler
-4. An example usage file (src/example.ts)
-
-No external dependencies. Use Bun's built-in HTTP server for the example.
-`)
-
-for (const file of project.files) {
-  console.log(`\n=== ${file.path} (${file.purpose}) ===`)
-  console.log(file.content)
-}
-console.log(`\nEntry point: ${project.entryPoint}`)
 ```
+
+Build a `generateMultiFile(spec: string)` function that uses this schema. The system prompt should instruct the model to use relative imports between files and follow standard project structure.
+
+What are the risks of multi-file generation compared to single-function generation? How would you validate that imports between generated files actually resolve correctly?
 
 > **Advanced Note:** Multi-file generation is less reliable than single-function generation because the model must maintain consistency across files (imports, types, naming). Always validate that generated imports resolve correctly and types match across files.
 
@@ -381,17 +182,9 @@ console.log(`\nEntry point: ${project.entryPoint}`)
 
 ### Running Generated Code Safely
 
-Never run LLM-generated code directly in your main process. Always isolate it in a subprocess:
+Never run LLM-generated code directly in your main process. Always isolate it in a subprocess. Build a `runInSandbox` function with this signature:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { spawn } from 'child_process'
-import { writeFile, mkdir, rm } from 'fs/promises'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-
 interface SandboxResult {
   stdout: string
   stderr: string
@@ -400,156 +193,28 @@ interface SandboxResult {
   timedOut: boolean
 }
 
-async function runInSandbox(
-  code: string,
-  options: {
-    timeoutMs?: number
-    workDir?: string
-  } = {}
-): Promise<SandboxResult> {
-  const timeoutMs = options.timeoutMs ?? 10000
-  const sandboxId = randomUUID().slice(0, 8)
-  const workDir = options.workDir ?? join('/tmp', `sandbox-${sandboxId}`)
-
-  try {
-    // Create temporary directory
-    await mkdir(workDir, { recursive: true })
-
-    // Write the code to a file
-    const filePath = join(workDir, 'generated.ts')
-    await writeFile(filePath, code)
-
-    // Run with Bun in a subprocess
-    const startTime = Date.now()
-
-    return await new Promise<SandboxResult>(resolve => {
-      const child = spawn('bun', ['run', filePath], {
-        cwd: workDir,
-        timeout: timeoutMs,
-        env: {
-          ...process.env,
-          // Remove sensitive environment variables
-          MISTRAL_API_KEY: '',
-          GROQ_API_KEY: '',
-          ANTHROPIC_API_KEY: '',
-          OPENAI_API_KEY: '',
-          DATABASE_URL: '',
-          HOME: workDir, // Prevent access to home directory
-        },
-      })
-
-      let stdout = ''
-      let stderr = ''
-      let timedOut = false
-
-      child.stdout.on('data', data => {
-        stdout += data.toString()
-      })
-
-      child.stderr.on('data', data => {
-        stderr += data.toString()
-      })
-
-      child.on('close', code => {
-        resolve({
-          stdout: stdout.trim(),
-          stderr: stderr.trim(),
-          exitCode: code ?? 1,
-          durationMs: Date.now() - startTime,
-          timedOut,
-        })
-      })
-
-      child.on('error', error => {
-        if (error.message.includes('ETIMEDOUT') || error.message.includes('killed')) {
-          timedOut = true
-        }
-        resolve({
-          stdout: stdout.trim(),
-          stderr: error.message,
-          exitCode: 1,
-          durationMs: Date.now() - startTime,
-          timedOut,
-        })
-      })
-    })
-  } finally {
-    // Clean up
-    try {
-      await rm(workDir, { recursive: true, force: true })
-    } catch {
-      // Ignore cleanup errors
-    }
-  }
-}
-
-// Usage: Generate code and run it safely
-const { output: generated } = await generateText({
-  model: mistral('mistral-small-latest'),
-  output: Output.object({
-    schema: z.object({
-      code: z.string(),
-    }),
-  }),
-  prompt: `Write a TypeScript script that:
-1. Generates the first 20 Fibonacci numbers
-2. Prints each on its own line in the format "F(n) = value"
-3. Calculates and prints the golden ratio approximation from the last two numbers
-
-The script should be self-contained and print to console.`,
-})
-
-console.log('Generated code:')
-console.log(generated!.code)
-
-console.log('\n--- Running in sandbox ---')
-const result = await runInSandbox(generated!.code, { timeoutMs: 5000 })
-
-console.log(`Exit code: ${result.exitCode}`)
-console.log(`Duration: ${result.durationMs}ms`)
-console.log(`Timed out: ${result.timedOut}`)
-console.log(`stdout:\n${result.stdout}`)
-if (result.stderr) {
-  console.log(`stderr:\n${result.stderr}`)
-}
+async function runInSandbox(code: string, options?: { timeoutMs?: number; workDir?: string }): Promise<SandboxResult>
 ```
+
+The function should create a temporary workspace, write the code there, run it in a subprocess, and clean up afterwards. You will need `spawn` from `child_process` and file system helpers from `fs/promises`.
+
+Think about these design questions:
+
+- What environment variables should the subprocess inherit? Which ones are dangerous to expose (API keys, database URLs)? What minimal set does code need to run?
+- Why would you set `HOME` to the sandbox directory instead of the real home directory?
+- How do you distinguish a timeout from a normal error? What happens to the subprocess when your timer fires?
+- When should cleanup happen -- only on success, or always? What language construct guarantees cleanup regardless of outcome?
 
 ### Sandbox Security Checklist
 
 When running generated code, always apply these protections:
 
-```typescript
-// Security practices for running generated code
-
-// 1. ALWAYS run in a subprocess with limited permissions — never in the main process
-
-// 2. Strip sensitive environment variables
-const safeEnv: Record<string, string> = {
-  PATH: process.env.PATH ?? '',
-  NODE_ENV: 'sandbox',
-  // Explicitly do NOT include API keys, database URLs, etc.
-}
-
-// 3. Set resource limits
-const resourceLimits = {
-  timeoutMs: 10_000, // Kill after 10 seconds
-  maxOutputBytes: 1_000_000, // 1MB max output
-}
-
-// 4. Use a temporary directory that gets cleaned up
-// const workDir = join('/tmp', `sandbox-${uuid}`);
-
-// 5. NEVER let generated code access the network in production
-// Use a container or VM for true network isolation
-
-// 6. Validate output before using it
-function validateOutput(output: string): boolean {
-  // Check for suspicious patterns
-  if (output.length > resourceLimits.maxOutputBytes) return false
-  // Add domain-specific validation
-  return true
-}
-```
+1. **ALWAYS** run in a subprocess — never in the main process
+2. **Strip sensitive env vars** — only pass PATH and NODE_ENV='sandbox'
+3. **Set resource limits** — timeout (10s), max output (1MB)
+4. **Use a temporary directory** that gets cleaned up
+5. **NEVER** let generated code access the network in production — use containers for network isolation
+6. **Validate output** before using it — check for suspicious patterns and size limits
 
 > **Beginner Note:** Think of sandboxing like putting an unknown substance in a sealed container before testing it. You do not know what the generated code will do, so you run it in an isolated environment where it cannot damage your system or access sensitive data.
 
@@ -559,17 +224,9 @@ function validateOutput(output: string): boolean {
 
 ### Generate Code to Pass Tests
 
-The most reliable code generation pattern: write the tests first, then have the LLM generate code that passes them.
+The most reliable code generation pattern: write the tests first, then have the LLM generate code that passes them. Build a system with these types:
 
-````typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import { writeFile, mkdir, rm } from 'fs/promises'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-import { spawn } from 'child_process'
-
+```typescript
 interface TestSpec {
   functionName: string
   testCode: string
@@ -582,165 +239,17 @@ interface GenerationResult {
   testOutput: string
   attempts: number
 }
+```
 
-async function runTests(
-  implCode: string,
-  testCode: string,
-  workDir: string
-): Promise<{ pass: boolean; output: string }> {
-  // Write the implementation
-  await writeFile(join(workDir, 'impl.ts'), implCode)
+You need two functions:
 
-  // Write the test that imports the implementation
-  const fullTestCode = `import { describe, it, expect } from "bun:test";
-// Import all exports from the implementation
-const impl = await import("./impl.ts");
+**`runTests(implCode, testCode, workDir)`** — Takes implementation code and test code as strings, writes them to files in a working directory, and runs the tests via `bun test`. The test file needs access to the implementation's exports. Return `{ pass: boolean; output: string }`.
 
-// Make exports available as globals for the test
-for (const [key, value] of Object.entries(impl)) {
-  (globalThis as any)[key] = value;
-}
+How do you make exports from the implementation file available to test code that references functions by name? Consider dynamic import and `globalThis`. What file naming convention does Bun's test runner expect?
 
-${testCode}`
+**`generateToPassTests(spec, maxAttempts)`** — The iterative loop. On the first attempt, the LLM gets the function description and test code. On subsequent attempts, it also gets its previous code and the error output. The loop terminates when tests pass or attempts run out.
 
-  await writeFile(join(workDir, 'test.test.ts'), fullTestCode)
-
-  return new Promise(resolve => {
-    const child = spawn('bun', ['test', 'test.test.ts'], {
-      cwd: workDir,
-      timeout: 15000,
-      env: { ...process.env, MISTRAL_API_KEY: '', ANTHROPIC_API_KEY: '' },
-    })
-
-    let output = ''
-    child.stdout.on('data', d => (output += d.toString()))
-    child.stderr.on('data', d => (output += d.toString()))
-
-    child.on('close', code => {
-      resolve({
-        pass: code === 0,
-        output: output.trim(),
-      })
-    })
-
-    child.on('error', err => {
-      resolve({ pass: false, output: err.message })
-    })
-  })
-}
-
-async function generateToPassTests(spec: TestSpec, maxAttempts: number = 3): Promise<GenerationResult> {
-  const workDir = join('/tmp', `tdd-${randomUUID().slice(0, 8)}`)
-  await mkdir(workDir, { recursive: true })
-
-  let lastCode = ''
-  let lastOutput = ''
-
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`\n[TDD] Attempt ${attempt}/${maxAttempts}`)
-
-      // Generate (or fix) the code
-      const prompt =
-        attempt === 1
-          ? `Write a TypeScript implementation for the following:
-
-Function: ${spec.functionName}
-Description: ${spec.description}
-
-The implementation must pass these tests:
-\`\`\`typescript
-${spec.testCode}
-\`\`\`
-
-Export the function. Return ONLY the implementation code, no test code.`
-          : `The previous implementation failed the tests.
-
-Previous code:
-\`\`\`typescript
-${lastCode}
-\`\`\`
-
-Test output (errors):
-${lastOutput}
-
-Fix the code so all tests pass. Return ONLY the corrected implementation code.`
-
-      const result = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: `You are a TypeScript developer. Generate ONLY implementation code.
-Do NOT include test code, markdown fences, or explanations.
-Export all functions that the tests import.`,
-        prompt,
-      })
-
-      // Clean up any markdown fences the model might add
-      lastCode = result.text
-        .replace(/^```(?:typescript|ts)?\n/gm, '')
-        .replace(/\n```$/gm, '')
-        .trim()
-
-      // Run tests
-      const testResult = await runTests(lastCode, spec.testCode, workDir)
-      lastOutput = testResult.output
-
-      console.log(`[TDD] Tests ${testResult.pass ? 'PASSED' : 'FAILED'}`)
-
-      if (testResult.pass) {
-        return {
-          code: lastCode,
-          testsPass: true,
-          testOutput: testResult.output,
-          attempts: attempt,
-        }
-      }
-
-      console.log('[TDD] Test output:', testResult.output.slice(0, 500))
-    }
-
-    return {
-      code: lastCode,
-      testsPass: false,
-      testOutput: lastOutput,
-      attempts: maxAttempts,
-    }
-  } finally {
-    await rm(workDir, { recursive: true, force: true }).catch(() => {})
-  }
-}
-
-// Usage
-const result = await generateToPassTests({
-  functionName: 'chunk',
-  description: 'Split an array into chunks of a specified size. The last chunk may be smaller.',
-  testCode: `
-describe("chunk", () => {
-  it("should split array into equal chunks", () => {
-    expect(chunk([1, 2, 3, 4], 2)).toEqual([[1, 2], [3, 4]]);
-  });
-
-  it("should handle last chunk being smaller", () => {
-    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
-  });
-
-  it("should handle chunk size larger than array", () => {
-    expect(chunk([1, 2], 5)).toEqual([[1, 2]]);
-  });
-
-  it("should return empty array for empty input", () => {
-    expect(chunk([], 3)).toEqual([]);
-  });
-
-  it("should handle chunk size of 1", () => {
-    expect(chunk([1, 2, 3], 1)).toEqual([[1], [2], [3]]);
-  });
-});`,
-})
-
-console.log(`\nTests passed: ${result.testsPass}`)
-console.log(`Attempts: ${result.attempts}`)
-console.log(`\nGenerated code:\n${result.code}`)
-````
+Think about: what information does the LLM need to fix failing code effectively? Why is including the previous code alongside the error output better than sending just the error? How does the prompt differ between "write this from scratch" and "fix this broken code"?
 
 > **Beginner Note:** Test-driven generation is the most reliable way to generate code with LLMs. The tests define exactly what the code should do, and the iterative loop ensures the code actually works. Without tests, you are trusting the model's output blindly.
 
@@ -750,16 +259,11 @@ console.log(`\nGenerated code:\n${result.code}`)
 
 ### The Generate-Run-Fix Loop
 
-The most powerful code generation pattern is iterative refinement: generate code, run it, check the output, and fix any issues:
+The most powerful code generation pattern is iterative refinement: generate code, run it, check the output, and fix any issues. This differs from test-driven generation in that you validate against expected output rather than test cases.
 
-````typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { writeFile, mkdir, rm } from 'fs/promises'
-import { join } from 'path'
-import { randomUUID } from 'crypto'
-import { spawn } from 'child_process'
+Build an `iterativeCodeGen` function:
 
+```typescript
 interface RefinementStep {
   attempt: number
   code: string
@@ -769,151 +273,25 @@ interface RefinementStep {
   action: 'initial' | 'fix_error' | 'improve_output'
 }
 
-async function executeCode(
-  code: string,
-  workDir: string
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const filePath = join(workDir, 'code.ts')
-  await writeFile(filePath, code)
-
-  return new Promise(resolve => {
-    const child = spawn('bun', ['run', filePath], {
-      cwd: workDir,
-      timeout: 10000,
-      env: { ...process.env, MISTRAL_API_KEY: '', ANTHROPIC_API_KEY: '' },
-    })
-
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', d => (stdout += d.toString()))
-    child.stderr.on('data', d => (stderr += d.toString()))
-
-    child.on('close', code => {
-      resolve({
-        exitCode: code ?? 1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-      })
-    })
-    child.on('error', err => {
-      resolve({ exitCode: 1, stdout: '', stderr: err.message })
-    })
-  })
-}
-
 async function iterativeCodeGen(
   task: string,
   expectedOutput: string | ((output: string) => boolean),
-  maxAttempts: number = 4
+  maxAttempts?: number
 ): Promise<{
   finalCode: string
   success: boolean
   steps: RefinementStep[]
-}> {
-  const workDir = join('/tmp', `refine-${randomUUID().slice(0, 8)}`)
-  await mkdir(workDir, { recursive: true })
+}>
+```
 
-  const steps: RefinementStep[] = []
-  let currentCode = ''
+The loop operates in three modes based on the previous step's outcome. Look at the `action` field in `RefinementStep` -- each mode needs a different prompt strategy. The first attempt generates from scratch; subsequent attempts either fix errors or adjust output depending on whether the code crashed or produced the wrong result.
 
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // Generate or fix code
-      let prompt: string
-      let action: RefinementStep['action']
+Consider these questions:
 
-      if (attempt === 1) {
-        action = 'initial'
-        prompt = `Write a TypeScript script for this task:
-${task}
-
-The script should print its output to console.
-Return ONLY the code, no markdown fences or explanations.`
-      } else {
-        const lastStep = steps[steps.length - 1]
-
-        if (lastStep.exitCode !== 0) {
-          action = 'fix_error'
-          prompt = `Fix this TypeScript code that has errors.
-
-Code:
-${currentCode}
-
-Error output:
-${lastStep.stderr || lastStep.stdout}
-
-Fix the errors and return ONLY the corrected code.`
-        } else {
-          action = 'improve_output'
-          prompt = `This TypeScript code runs but the output does not match expectations.
-
-Code:
-${currentCode}
-
-Current output:
-${lastStep.stdout}
-
-Expected: ${typeof expectedOutput === 'string' ? expectedOutput : 'Output did not pass validation'}
-
-Fix the code to produce the expected output. Return ONLY the corrected code.`
-        }
-      }
-
-      const result = await generateText({
-        model: mistral('mistral-small-latest'),
-        system: 'You are a TypeScript developer. Return ONLY executable code. No markdown fences, no explanations.',
-        prompt,
-      })
-
-      currentCode = result.text
-        .replace(/^```(?:typescript|ts)?\n/gm, '')
-        .replace(/\n```$/gm, '')
-        .trim()
-
-      // Run the code
-      const execution = await executeCode(currentCode, workDir)
-
-      steps.push({
-        attempt,
-        code: currentCode,
-        exitCode: execution.exitCode,
-        stdout: execution.stdout,
-        stderr: execution.stderr,
-        action,
-      })
-
-      console.log(`[Refine] Attempt ${attempt}: exit=${execution.exitCode}, action=${action}`)
-
-      // Check if output matches expectations
-      if (execution.exitCode === 0) {
-        const outputMatches =
-          typeof expectedOutput === 'string'
-            ? execution.stdout.trim() === expectedOutput.trim()
-            : expectedOutput(execution.stdout)
-
-        if (outputMatches) {
-          return { finalCode: currentCode, success: true, steps }
-        }
-      }
-    }
-
-    return { finalCode: currentCode, success: false, steps }
-  } finally {
-    await rm(workDir, { recursive: true, force: true }).catch(() => {})
-  }
-}
-
-// Usage
-const result = await iterativeCodeGen(
-  'Calculate the sum of all prime numbers below 100 and print the result',
-  '1060', // Expected sum of primes below 100
-  4
-)
-
-console.log(`\nSuccess: ${result.success}`)
-console.log(`Attempts: ${result.steps.length}`)
-console.log(`\nFinal code:\n${result.finalCode}`)
-````
+- How do you decide whether the previous step was an error (non-zero exit code) vs. a wrong-output situation? What drives the choice of prompt?
+- The `expectedOutput` parameter accepts either a string or a validation function. When would you prefer a function over an exact string match?
+- How does this approach compare to test-driven generation from Section 5? When would you choose one over the other?
+- Why record each attempt as a `RefinementStep`? What debugging value does the full step history provide?
 
 > **Advanced Note:** The iterative refinement loop is essentially an agent that generates code, tests it, and fixes errors. The difference from a general agent is that the steps are structured (generate, run, check, fix) rather than open-ended. This hybrid of chain structure and agent-like iteration produces the best results for code generation.
 
@@ -923,13 +301,9 @@ console.log(`\nFinal code:\n${result.finalCode}`)
 
 ### Automated Code Review
 
-LLMs can review code for bugs, style issues, and improvement opportunities:
+LLMs can review code for bugs, style issues, and improvement opportunities. Define a review schema:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 const reviewSchema = z.object({
   overallQuality: z.number().min(1).max(10).describe('Overall code quality score'),
   issues: z.array(
@@ -946,152 +320,35 @@ const reviewSchema = z.object({
 })
 
 type CodeReview = z.infer<typeof reviewSchema>
-
-async function reviewCode(code: string, context?: string): Promise<CodeReview> {
-  const { output: review } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: reviewSchema }),
-    system: `You are a senior TypeScript developer performing a code review.
-Be thorough but constructive. Focus on:
-1. Correctness: Does the code do what it should?
-2. Edge cases: Are there inputs that would cause failures?
-3. Security: Are there injection, validation, or access control issues?
-4. Performance: Are there obvious inefficiencies?
-5. Readability: Is the code clear and well-structured?
-6. TypeScript best practices: Are types used effectively?`,
-    prompt: `Review this TypeScript code:
-
-\`\`\`typescript
-${code}
-\`\`\`
-
-${context ? `Context: ${context}` : ''}`,
-  })
-
-  return review!
-}
-
-// Usage
-const codeToReview = `
-export async function fetchUserData(userId: string) {
-  const response = await fetch(\`https://api.example.com/users/\${userId}\`);
-  const data = await response.json();
-  return data;
-}
-
-export function formatUserName(user: any) {
-  return user.firstName + " " + user.lastName;
-}
-
-export async function deleteUser(userId: string) {
-  await fetch(\`https://api.example.com/users/\${userId}\`, {
-    method: "DELETE",
-  });
-  console.log("User deleted: " + userId);
-}
-`
-
-const review = await reviewCode(codeToReview, 'User management module for a web application')
-
-console.log(`Quality score: ${review.overallQuality}/10`)
-
-console.log('\nIssues:')
-for (const issue of review.issues) {
-  console.log(`  [${issue.severity}] ${issue.description}`)
-  if (issue.fix) console.log(`    Fix: ${issue.fix}`)
-}
-
-console.log('\nStrengths:', review.strengths)
-console.log('\nSecurity concerns:', review.securityConcerns)
-console.log('\nTest suggestions:', review.testSuggestions)
 ```
+
+Build an async function `reviewCode(code: string, context?: string): Promise<CodeReview>` that uses structured output with this schema. The system prompt should instruct the model to act as a senior TypeScript developer focusing on correctness, edge cases, security, performance, readability, and TypeScript best practices.
+
+What makes LLM code review different from a linter or type checker? What kinds of issues can an LLM catch that static analysis tools miss?
 
 ### Review-and-Fix Pipeline
 
-Combine review with automatic fixing:
+Now combine review with automated fixing. Build a `reviewAndFix` function:
 
-````typescript
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
+```typescript
 async function reviewAndFix(
   code: string,
-  maxRounds: number = 2
+  maxRounds?: number
 ): Promise<{
   code: string
   reviews: CodeReview[]
   rounds: number
-}> {
-  let currentCode = code
-  const reviews: CodeReview[] = []
+}>
+```
 
-  for (let round = 0; round < maxRounds; round++) {
-    // Review
-    const review = await reviewCode(currentCode)
-    reviews.push(review)
+The pipeline alternates between reviewing and fixing until quality is good enough or you run out of rounds. You need to define what "good enough" means -- think about both the numeric score and the presence of critical issues.
 
-    console.log(`[Round ${round + 1}] Quality: ${review.overallQuality}/10, Issues: ${review.issues.length}`)
+Consider these design questions:
 
-    // Check if quality is good enough
-    const criticalIssues = review.issues.filter(i => i.severity === 'critical')
-    if (criticalIssues.length === 0 && review.overallQuality >= 8) {
-      console.log('Code meets quality threshold.')
-      return { code: currentCode, reviews, rounds: round + 1 }
-    }
-
-    // Fix issues
-    const issueList = review.issues
-      .filter(i => i.severity !== 'suggestion')
-      .map(i => `- [${i.severity}] ${i.description}${i.fix ? ` (Suggested fix: ${i.fix})` : ''}`)
-      .join('\n')
-
-    const fixResult = await generateText({
-      model: mistral('mistral-small-latest'),
-      system: 'You are a TypeScript developer fixing code review issues. Return ONLY the fixed code.',
-      prompt: `Fix these issues in the code:
-
-Issues:
-${issueList}
-
-Security concerns:
-${review.securityConcerns.join('\n')}
-
-Original code:
-\`\`\`typescript
-${currentCode}
-\`\`\`
-
-Return the complete fixed code.`,
-    })
-
-    currentCode = fixResult.text
-      .replace(/^```(?:typescript|ts)?\n/gm, '')
-      .replace(/\n```$/gm, '')
-      .trim()
-  }
-
-  return { code: currentCode, reviews, rounds: maxRounds }
-}
-
-// Usage
-const result = await reviewAndFix(
-  `
-export async function fetchUserData(userId: string) {
-  const response = await fetch(\`https://api.example.com/users/\${userId}\`);
-  const data = await response.json();
-  return data;
-}
-
-export function formatUserName(user: any) {
-  return user.firstName + " " + user.lastName;
-}
-`,
-  2
-)
-
-console.log(`\nFinal code (after ${result.rounds} rounds):`)
-console.log(result.code)
-````
+- What quality threshold makes a reasonable stopping condition? Should it be score-based, issue-severity-based, or both?
+- How do you format review issues so the LLM can fix them effectively? What context does the fix prompt need?
+- What is the risk of over-fixing -- could the LLM introduce new issues while fixing old ones? How would you detect this?
+- Which issues should be auto-fixed vs. left as suggestions for the human?
 
 > **Beginner Note:** LLM code review catches different issues than a linter or type checker. Linters catch style violations. Type checkers catch type errors. LLMs catch logic errors, missing edge cases, and security issues that static analysis misses.
 
@@ -1105,169 +362,17 @@ console.log(result.code)
 
 ### Security Layers
 
-Implement defense in depth with multiple protection layers:
+Implement defense in depth with multiple protection layers. Build each layer as a separate function:
 
-```typescript
-// Layer 1: Static analysis before execution
-function staticAnalysis(code: string): {
-  safe: boolean
-  warnings: string[]
-} {
-  const warnings: string[] = []
+**Layer 1: Static analysis** — `staticAnalysis(code: string): { safe: boolean; warnings: string[] }`. Scans the code string for dangerous patterns before execution. What patterns indicate risk? Think about process control, file system access, network calls, environment variable reads, and global scope manipulation. Each match should produce a human-readable warning.
 
-  // Check for dangerous patterns
-  const dangerousPatterns = [
-    { pattern: /process\.exit/g, reason: 'Code tries to exit the process' },
-    {
-      pattern: /require\s*\(\s*['"]child_process['"]\s*\)/g,
-      reason: 'Code imports child_process',
-    },
-    {
-      pattern: /require\s*\(\s*['"]fs['"]\s*\)/g,
-      reason: 'Code imports fs module',
-    },
-    {
-      pattern: /import.*from\s+['"]fs['"]/g,
-      reason: 'Code imports fs module',
-    },
-    {
-      pattern: /import.*from\s+['"]child_process['"]/g,
-      reason: 'Code imports child_process',
-    },
-    { pattern: /fetch\s*\(/g, reason: 'Code makes network requests' },
-    {
-      pattern: /globalThis|global\./g,
-      reason: 'Code accesses global scope',
-    },
-    {
-      pattern: /Bun\.env|process\.env/g,
-      reason: 'Code accesses environment variables',
-    },
-    {
-      pattern: /Bun\.file|Bun\.write/g,
-      reason: 'Code accesses file system via Bun',
-    },
-  ]
+**Layer 2: Sandboxed execution** — Use the sandbox from Section 4. Always run in a subprocess with limited permissions.
 
-  for (const { pattern, reason } of dangerousPatterns) {
-    if (pattern.test(code)) {
-      warnings.push(reason)
-    }
-  }
+**Layer 3: Output validation** — `validateOutput(output: string): { valid: boolean; issues: string[] }`. Inspects the subprocess output for suspicious content. What would indicate that generated code leaked sensitive data? Think about output size, key-shaped strings, and path-like values.
 
-  return {
-    safe: warnings.length === 0,
-    warnings,
-  }
-}
+**Layer 4: Rate limiting** — `ExecutionRateLimiter` class that prevents abuse by limiting executions per time window. What data structure efficiently tracks "how many executions in the last N seconds"?
 
-// Layer 2: Sandboxed execution (see Section 4)
-// Always run in a subprocess with limited permissions
-
-// Layer 3: Output validation
-function validateOutput(output: string): {
-  valid: boolean
-  issues: string[]
-} {
-  const issues: string[] = []
-
-  // Check output size
-  if (output.length > 1_000_000) {
-    issues.push('Output exceeds 1MB limit')
-  }
-
-  // Check for sensitive data leakage
-  const sensitivePatterns = [
-    /sk-ant-[a-zA-Z0-9]+/g, // Anthropic API keys
-    /sk-[a-zA-Z0-9]+/g, // OpenAI API keys
-    /password\s*[:=]\s*.+/gi, // Passwords
-  ]
-
-  for (const pattern of sensitivePatterns) {
-    if (pattern.test(output)) {
-      issues.push('Output may contain sensitive data')
-    }
-  }
-
-  return {
-    valid: issues.length === 0,
-    issues,
-  }
-}
-
-// Layer 4: Rate limiting
-class ExecutionRateLimiter {
-  private executions: number[] = []
-  private maxPerMinute: number
-
-  constructor(maxPerMinute: number = 10) {
-    this.maxPerMinute = maxPerMinute
-  }
-
-  canExecute(): boolean {
-    const now = Date.now()
-    const oneMinuteAgo = now - 60_000
-
-    // Clean old entries
-    this.executions = this.executions.filter(t => t > oneMinuteAgo)
-
-    return this.executions.length < this.maxPerMinute
-  }
-
-  recordExecution(): void {
-    this.executions.push(Date.now())
-  }
-}
-
-// Complete secure execution pipeline
-async function secureCodeExecution(code: string): Promise<{
-  executed: boolean
-  result?: { stdout: string; exitCode: number }
-  blocked?: { reason: string }
-}> {
-  // Layer 1: Static analysis
-  const analysis = staticAnalysis(code)
-  if (!analysis.safe) {
-    return {
-      executed: false,
-      blocked: {
-        reason: `Static analysis blocked: ${analysis.warnings.join('; ')}`,
-      },
-    }
-  }
-
-  // Layer 2: Rate limiting
-  const rateLimiter = new ExecutionRateLimiter(10)
-  if (!rateLimiter.canExecute()) {
-    return {
-      executed: false,
-      blocked: { reason: 'Rate limit exceeded' },
-    }
-  }
-  rateLimiter.recordExecution()
-
-  // Layer 3: Sandboxed execution (simplified for demonstration)
-  console.log('[Security] All checks passed. Executing in sandbox...')
-
-  // In production, use the full sandbox from Section 4
-  return {
-    executed: true,
-    result: {
-      stdout: '[Sandboxed execution output would appear here]',
-      exitCode: 0,
-    },
-  }
-}
-
-// Usage
-const testCode = `
-const sum = Array.from({ length: 10 }, (_, i) => i + 1).reduce((a, b) => a + b, 0);
-console.log("Sum of 1-10:", sum);
-`
-
-const secResult = await secureCodeExecution(testCode)
-console.log(secResult)
-```
+**Composing the layers** — `secureCodeExecution(code: string)` runs all four layers in sequence. Which layers should run before execution and which after? If any layer rejects, the pipeline should short-circuit. What return type captures both the result and any layer that blocked?
 
 ### Security Checklist for Code Generation Systems
 
@@ -1283,6 +388,98 @@ console.log(secResult)
 | Generated code leaks sensitive data      | Scan output for sensitive patterns                   |
 
 > **Advanced Note:** For production code generation systems, use container-based sandboxing (Docker, Firecracker, or gVisor) instead of subprocess isolation. Subprocess isolation prevents the worst issues but does not provide true security boundaries. Container sandboxing gives you CPU/memory limits, network isolation, and filesystem restrictions.
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: Diff-Based Code Editing
+
+### Surgical Edits over Full Regeneration
+
+Production code generation systems rarely regenerate entire files. Instead, they produce targeted edits — find-replace pairs that modify specific locations while preserving surrounding code. This is safer, cheaper (fewer output tokens), and easier to review.
+
+A diff-based code modifier works like this:
+
+1. Read the current file content
+2. Ask the LLM to produce one or more edit operations (each with `old_string` and `new_string`)
+3. Validate that each `old_string` appears exactly once in the file (uniqueness check)
+4. Apply the replacements sequentially
+
+```typescript
+interface CodeEdit {
+  old_string: string
+  new_string: string
+}
+```
+
+The uniqueness constraint is critical — if `old_string` matches multiple locations, the edit is ambiguous and must be rejected. The caller should provide more surrounding context to disambiguate.
+
+When a single logical change touches multiple locations (e.g., adding an import at the top and using it in a function below), you can either issue multiple edit operations or use a unified diff patch that contains multiple hunks applied atomically.
+
+> **Key Insight:** String replacement is safest for single-site edits. Multi-hunk unified diff patches are better when one logical change spans multiple locations in a file — either all hunks apply or none do.
+
+---
+
+## Section 10: Safe Code Writing
+
+### Production Safety for File Writes
+
+Writing generated code to disk requires safety checks that prevent accidental damage:
+
+1. **Read before write** — Always read the existing file content before overwriting. This prevents silently destroying code the LLM has never seen.
+2. **Path validation** — Reject writes to paths outside the project directory. Resolve symlinks and reject paths containing `..` that escape the workspace.
+3. **Overwrite confirmation** — If the target file already exists and has content, require explicit confirmation before replacing it.
+4. **Parent directory creation** — Create intermediate directories as needed so the write does not fail on a missing parent.
+
+```typescript
+const safePath = resolve(projectRoot, requestedPath)
+if (!safePath.startsWith(projectRoot)) throw new Error('Path escapes project root')
+```
+
+These checks form a write guard that wraps every file write in the code generation pipeline. The guard is a pure function — it takes a proposed write and returns either an approved write or an error, making it easy to test.
+
+---
+
+## Section 11: Edit History and Reversibility
+
+### Tracking Changes for Undo
+
+Every generated code change should be tracked and reversible. An edit history log records the file path, old content, new content, and timestamp for each edit. This enables:
+
+- **Undo** — Revert the last edit by restoring the old content
+- **Redo** — Re-apply a reverted edit
+- **Debugging** — Walk through the sequence of changes to understand what the agent did
+
+The key design choice is decoupling file state from conversation state. When the user undoes a code change, the file reverts but the conversation continues — the agent remembers what it wrote and why it was undone, so it can try a different approach.
+
+```typescript
+interface EditRecord {
+  filePath: string
+  oldContent: string
+  newContent: string
+  timestamp: number
+}
+```
+
+A simple stack-based history (push on edit, pop on undo) covers most use cases. For production systems, consider persisting the history to disk so it survives across sessions.
+
+---
+
+## Section 12: Enhanced Sandboxing
+
+### Production Execution Constraints
+
+The sandboxed execution from Section 4 provides the foundation. Production systems add additional constraints:
+
+- **Timeout limits** — Kill the subprocess after a configurable duration (e.g., 10 seconds) to prevent infinite loops
+- **Output size limits** — Truncate stdout/stderr beyond a threshold (e.g., 1MB) to prevent memory exhaustion
+- **Directory restrictions** — Confine file access to a temporary working directory; reject reads/writes outside it
+- **Permission checks** — Validate the code does not request elevated privileges or access sensitive resources before execution
+
+These constraints compose with the existing sandbox. Each is a guard that runs before or after execution, and each can be independently tested.
+
+> **Advanced Note:** For full isolation, production systems use container-based sandboxing (Docker, Firecracker) that provides kernel-level enforcement of CPU, memory, network, and filesystem limits. Subprocess isolation is a starting point, not a finish line.
 
 ---
 
@@ -1350,6 +547,32 @@ A code generation system passes static analysis and runs in a sandbox, but the g
 - D) All three layers should have contributed to preventing this
 
 **Answer: D** — Defense in depth means all layers should contribute. Static analysis (A) should flag `process.env` access. The sandbox (B) should set `HOME` to the sandbox directory, not the real home path. Output validation (C) should scan for path-like strings that might reveal system information. In a well-designed system, multiple layers would catch this issue, so even if one fails, the others provide protection.
+
+---
+
+### Question 6 (Medium)
+
+Why do production code generation systems prefer diff-based edits (find-replace pairs) over regenerating entire files?
+
+- A) Diff-based edits use more tokens, which improves quality
+- B) Regenerating files is not supported by the Vercel AI SDK
+- C) Diff-based edits are safer, cheaper, and easier to review because they only modify specific locations
+- D) LLMs cannot generate complete files
+
+**Answer: C** — Diff-based editing produces targeted changes that modify only the necessary locations while preserving surrounding code. This is safer (less risk of breaking unrelated code), cheaper (fewer output tokens), and easier to review (the reviewer sees exactly what changed). The uniqueness constraint on the old_string ensures edits are unambiguous.
+
+---
+
+### Question 7 (Hard)
+
+An edit history system tracks code changes with old/new content and supports undo. When a user undoes a code change, what should happen to the conversation state?
+
+- A) The conversation should be rolled back to before the edit was proposed
+- B) The conversation should continue unchanged — the agent remembers what it wrote and why it was undone
+- C) The entire conversation history should be cleared to avoid confusion
+- D) The undo should be blocked because it would make the conversation inconsistent
+
+**Answer: B** — File state and conversation state should be decoupled. When the user undoes a code change, the file reverts but the conversation continues with full context. The agent remembers what it wrote and why it was undone, which allows it to try a different approach. Rolling back the conversation (A) would lose the context of why the change failed. Clearing history (C) or blocking undo (D) would harm the user experience.
 
 ---
 
@@ -1571,6 +794,213 @@ export async function fetchData(url) {
 
 ---
 
+### Exercise 3: Diff-Based Code Modifier
+
+**Objective:** Build a code modification system that generates targeted find-replace edits instead of regenerating entire files.
+
+**Specification:**
+
+1. Create a file `src/exercises/m17/ex03-diff-modifier.ts`
+2. Export an async function `diffModify(filePath: string, instruction: string): Promise<DiffModifyResult>`
+3. Define the types:
+
+```typescript
+interface CodeEdit {
+  old_string: string
+  new_string: string
+}
+
+interface DiffModifyResult {
+  edits: CodeEdit[]
+  applied: number
+  rejected: number
+  errors: string[]
+  originalContent: string
+  finalContent: string
+}
+```
+
+4. The system must:
+   - Read the current file content
+   - Ask the LLM to produce edit operations based on the instruction
+   - Validate each edit: `old_string` must appear exactly once in the file
+   - Apply valid edits sequentially, skip invalid ones with an error message
+   - Return both the original and final content
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m17/ex03-diff-modifier.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 17: Diff-Based Code Modifier', () => {
+  it('should apply a valid single edit', async () => {
+    // Write a temp file, request a modification, verify the edit was applied
+    const result = await diffModify(tempFile, 'Rename the function from foo to bar')
+    expect(result.applied).toBeGreaterThan(0)
+    expect(result.finalContent).toContain('bar')
+    expect(result.finalContent).not.toContain('foo')
+  })
+
+  it('should reject edits where old_string is not found', async () => {
+    const result = await diffModify(tempFile, 'Replace the nonexistent function baz')
+    expect(result.rejected).toBeGreaterThan(0)
+    expect(result.errors.length).toBeGreaterThan(0)
+  })
+
+  it('should preserve file content for non-edited regions', async () => {
+    const result = await diffModify(tempFile, 'Add a return type annotation to the function')
+    expect(result.finalContent).toContain(unchangedSection)
+  })
+})
+```
+
+---
+
+### Exercise 4: Safe Code Writer
+
+**Objective:** Build a code writer with production safety checks: read before write, path validation, overwrite confirmation, and parent directory creation.
+
+**Specification:**
+
+1. Create a file `src/exercises/m17/ex04-safe-writer.ts`
+2. Export an async function `safeWrite(projectRoot: string, filePath: string, content: string, options?: SafeWriteOptions): Promise<SafeWriteResult>`
+3. Define the types:
+
+```typescript
+interface SafeWriteOptions {
+  allowOverwrite?: boolean // default: false
+  createDirectories?: boolean // default: true
+}
+
+interface SafeWriteResult {
+  written: boolean
+  filePath: string
+  previousContent: string | null
+  error?: string
+}
+```
+
+4. The system must:
+   - Resolve the file path and reject any path outside `projectRoot`
+   - Read existing content before writing (store it in `previousContent`)
+   - Refuse to overwrite existing files unless `allowOverwrite` is true
+   - Create parent directories if `createDirectories` is true
+   - Return a result indicating success or failure with details
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m17/ex04-safe-writer.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 17: Safe Code Writer', () => {
+  it('should write a new file successfully', async () => {
+    const result = await safeWrite(tmpDir, 'src/utils.ts', 'export const x = 1')
+    expect(result.written).toBe(true)
+    expect(result.previousContent).toBeNull()
+  })
+
+  it('should reject paths outside project root', async () => {
+    const result = await safeWrite(tmpDir, '../../etc/passwd', 'bad')
+    expect(result.written).toBe(false)
+    expect(result.error).toContain('outside')
+  })
+
+  it('should refuse to overwrite without allowOverwrite', async () => {
+    await safeWrite(tmpDir, 'existing.ts', 'original')
+    const result = await safeWrite(tmpDir, 'existing.ts', 'overwritten')
+    expect(result.written).toBe(false)
+  })
+
+  it('should create parent directories', async () => {
+    const result = await safeWrite(tmpDir, 'deep/nested/dir/file.ts', 'content')
+    expect(result.written).toBe(true)
+  })
+})
+```
+
+---
+
+### Exercise 5: Edit History with Undo/Redo
+
+**Objective:** Build an edit history system that tracks all generated code changes and supports undo/redo operations while preserving conversation context.
+
+**Specification:**
+
+1. Create a file `src/exercises/m17/ex05-edit-history.ts`
+2. Export the `EditHistory` class
+3. Define the types:
+
+```typescript
+interface EditRecord {
+  filePath: string
+  oldContent: string
+  newContent: string
+  timestamp: number
+  description: string
+}
+
+class EditHistory {
+  constructor()
+  record(edit: Omit<EditRecord, 'timestamp'>): void
+  undo(): EditRecord | null // Returns the undone edit, or null if nothing to undo
+  redo(): EditRecord | null // Returns the redone edit, or null if nothing to redo
+  getHistory(): EditRecord[]
+  canUndo(): boolean
+  canRedo(): boolean
+}
+```
+
+4. The system must:
+   - Record every edit with a timestamp
+   - Support undo by restoring the previous content (return the edit so the caller can apply the file revert)
+   - Support redo by re-applying the most recently undone edit
+   - Clear the redo stack when a new edit is recorded after an undo
+   - Maintain the full history for debugging
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m17/ex05-edit-history.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 17: Edit History', () => {
+  it('should record and retrieve edit history', () => {
+    const history = new EditHistory()
+    history.record({ filePath: 'a.ts', oldContent: 'old', newContent: 'new', description: 'edit 1' })
+    expect(history.getHistory()).toHaveLength(1)
+  })
+
+  it('should undo the last edit', () => {
+    const history = new EditHistory()
+    history.record({ filePath: 'a.ts', oldContent: 'v1', newContent: 'v2', description: 'edit' })
+    const undone = history.undo()
+    expect(undone).not.toBeNull()
+    expect(undone!.oldContent).toBe('v1')
+  })
+
+  it('should redo after undo', () => {
+    const history = new EditHistory()
+    history.record({ filePath: 'a.ts', oldContent: 'v1', newContent: 'v2', description: 'edit' })
+    history.undo()
+    const redone = history.redo()
+    expect(redone).not.toBeNull()
+    expect(redone!.newContent).toBe('v2')
+  })
+
+  it('should clear redo stack on new edit after undo', () => {
+    const history = new EditHistory()
+    history.record({ filePath: 'a.ts', oldContent: 'v1', newContent: 'v2', description: 'edit 1' })
+    history.undo()
+    history.record({ filePath: 'a.ts', oldContent: 'v1', newContent: 'v3', description: 'edit 2' })
+    expect(history.canRedo()).toBe(false)
+  })
+})
+```
+
+---
+
 ## Summary
 
 In this module, you learned:
@@ -1583,5 +1013,9 @@ In this module, you learned:
 6. **Iterative refinement:** The generate-run-fix loop combines generation, execution, error analysis, and fixing into a powerful cycle that converges on working code.
 7. **Code review by LLM:** LLMs catch logic errors, security issues, and style problems that static analysis misses. Combine review with automated fixing for a review-and-improve pipeline.
 8. **Security considerations:** Defense in depth with static analysis, sandboxed execution, output validation, and rate limiting protects against the risks of running untrusted code.
+9. **Diff-based code editing:** Producing targeted find-replace edits instead of regenerating entire files is safer, cheaper, and easier to review — with a uniqueness constraint to prevent ambiguous edits.
+10. **Safe code writing:** Write guards that enforce read-before-write, path validation, overwrite confirmation, and parent directory creation prevent accidental damage from generated code.
+11. **Edit history and reversibility:** Tracking every code change with old/new content enables undo, redo, and debugging while keeping file state decoupled from conversation state.
+12. **Enhanced sandboxing:** Production execution adds timeout limits, output size caps, directory restrictions, and permission checks on top of basic subprocess isolation.
 
 In Module 18, you will learn how to add human oversight to these automated systems — approval gates for high-stakes actions, feedback integration for continuous improvement, and audit trails for compliance.

@@ -51,12 +51,9 @@ Not every action needs human approval. Place each action on the autonomy spectru
 | Approve/reject | Agent proposes, human decides    | Sending an email, modifying a database  |
 | Human does it  | Agent assists but human executes | Financial transactions, legal filings   |
 
-```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
+Build a function `classifyActionRisk` that uses structured output to classify an action into the appropriate level. Define a schema:
 
-// Classify action risk to determine the approval level needed
+```typescript
 const riskSchema = z.object({
   action: z.string(),
   riskLevel: z.enum(['low', 'medium', 'high', 'critical']),
@@ -64,39 +61,21 @@ const riskSchema = z.object({
   reasoning: z.string(),
   reversible: z.boolean().describe('Can this action be undone?'),
 })
-
-async function classifyActionRisk(action: string, context: string): Promise<z.infer<typeof riskSchema>> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: riskSchema }),
-    system: `You are a risk assessment system. Classify actions by risk level:
-- low: No real consequences if wrong (reading data, formatting)
-- medium: Minor consequences, easily reversible (sending notifications, updating preferences)
-- high: Significant consequences, hard to reverse (sending emails, modifying databases)
-- critical: Major consequences, irreversible (financial transactions, data deletion, legal filings)
-
-Map risk levels to autonomy levels:
-- low -> full_autonomy
-- medium -> notify_only
-- high -> approve_reject
-- critical -> human_executes`,
-    prompt: `Action: ${action}\nContext: ${context}`,
-  })
-
-  return output!
-}
-
-// Usage
-const risk = await classifyActionRisk(
-  'Delete all user records older than 2 years',
-  'Production database with 50,000 user records'
-)
-
-console.log(`Action: ${risk.action}`)
-console.log(`Risk: ${risk.riskLevel}, Autonomy: ${risk.autonomyLevel}`)
-console.log(`Reversible: ${risk.reversible}`)
-console.log(`Reasoning: ${risk.reasoning}`)
 ```
+
+The function signature should be:
+
+```typescript
+async function classifyActionRisk(action: string, context: string): Promise<z.infer<typeof riskSchema>>
+```
+
+The function should use `generateText` with `Output.object({ schema: riskSchema })`. The system prompt needs to define what each risk level means and how it maps to an autonomy level.
+
+Think about these questions:
+
+- What makes an action "critical" vs. "high" risk? Consider reversibility -- can the action be undone? What about blast radius -- does it affect one record or thousands?
+- How do you define clear criteria for each risk level so the model classifies consistently? What examples would you put in the system prompt?
+- Why is the `reversible` field important for risk assessment? How would a reversible high-risk action differ from an irreversible one?
 
 > **Beginner Note:** Human-in-the-loop is not about distrusting AI — it is about using AI and humans where each excels. AI is fast and tireless. Humans have judgment and contextual understanding. The best systems combine both.
 
@@ -106,15 +85,9 @@ console.log(`Reasoning: ${risk.reasoning}`)
 
 ### Agent Proposes, Human Approves
 
-The basic HITL pattern: the agent generates a proposed action, presents it to a human, and only executes if approved.
+The basic HITL pattern: the agent generates a proposed action, presents it to a human, and only executes if approved. You need these types:
 
 ```typescript
-import { generateText, Output, type ModelMessage } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-import * as readline from 'readline'
-
-// Proposed action that needs approval
 interface ProposedAction {
   type: string
   description: string
@@ -123,233 +96,37 @@ interface ProposedAction {
   reasoning: string
 }
 
-// Human decision
 interface ApprovalDecision {
   approved: boolean
   feedback?: string
   modifiedAction?: Partial<ProposedAction>
 }
-
-// Ask a human for approval via CLI
-async function requestApproval(action: ProposedAction): Promise<ApprovalDecision> {
-  console.log('\n' + '='.repeat(60))
-  console.log('APPROVAL REQUIRED')
-  console.log('='.repeat(60))
-  console.log(`Action: ${action.type}`)
-  console.log(`Description: ${action.description}`)
-  console.log(`Risk level: ${action.risk}`)
-  console.log(`Reasoning: ${action.reasoning}`)
-  console.log(`Details: ${JSON.stringify(action.details, null, 2)}`)
-  console.log('='.repeat(60))
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  })
-
-  return new Promise(resolve => {
-    rl.question('\nApprove this action? (y/n/m for modify): ', async answer => {
-      const response = answer.trim().toLowerCase()
-
-      if (response === 'y' || response === 'yes') {
-        rl.close()
-        resolve({ approved: true })
-      } else if (response === 'm' || response === 'modify') {
-        rl.question('Enter modified instructions: ', feedback => {
-          rl.close()
-          resolve({
-            approved: true,
-            feedback: feedback.trim(),
-            modifiedAction: { description: feedback.trim() },
-          })
-        })
-      } else {
-        rl.question('Reason for rejection (optional): ', reason => {
-          rl.close()
-          resolve({
-            approved: false,
-            feedback: reason.trim() || undefined,
-          })
-        })
-      }
-    })
-  })
-}
-
-// Agent with approval gates
-async function agentWithApproval(task: string): Promise<string> {
-  const messages: ModelMessage[] = [{ role: 'user', content: task }]
-
-  const tools = {
-    sendEmail: {
-      description: 'Send an email to a recipient. REQUIRES HUMAN APPROVAL.',
-      parameters: z.object({
-        to: z.string().describe('Recipient email address'),
-        subject: z.string().describe('Email subject'),
-        body: z.string().describe('Email body'),
-      }),
-      execute: async ({ to, subject, body }: { to: string; subject: string; body: string }) => {
-        const proposed: ProposedAction = {
-          type: 'sendEmail',
-          description: `Send email to ${to}: "${subject}"`,
-          details: { to, subject, body },
-          risk: 'high',
-          reasoning: 'This action modifies external state and cannot be automatically undone.',
-        }
-        const decision = await requestApproval(proposed)
-        if (!decision.approved) {
-          return `Action denied by human reviewer.${decision.feedback ? ` Reason: ${decision.feedback}` : ''}`
-        }
-        // In production: actually send the email
-        return `Email sent to ${to} with subject "${subject}".`
-      },
-    },
-    searchData: {
-      description: 'Search internal data. Does NOT require approval.',
-      parameters: z.object({
-        query: z.string(),
-      }),
-      execute: async ({ query }: { query: string }) => `Search results for "${query}": [data found]`,
-    },
-    deleteRecord: {
-      description: 'Delete a database record. REQUIRES HUMAN APPROVAL.',
-      parameters: z.object({
-        table: z.string(),
-        id: z.string(),
-      }),
-      execute: async ({ table, id }: { table: string; id: string }) => {
-        const proposed: ProposedAction = {
-          type: 'deleteRecord',
-          description: `Delete record ${id} from table ${table}`,
-          details: { table, id },
-          risk: 'critical',
-          reasoning: 'This action modifies external state and cannot be automatically undone.',
-        }
-        const decision = await requestApproval(proposed)
-        if (!decision.approved) {
-          return `Action denied by human reviewer.${decision.feedback ? ` Reason: ${decision.feedback}` : ''}`
-        }
-        // In production: actually delete the record
-        return `Record ${id} deleted from table ${table}.`
-      },
-    },
-  }
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a helpful assistant. Some actions require human approval before execution.
-When you want to send an email or delete a record, propose the action and wait for approval.
-For search actions, proceed automatically.`,
-    messages,
-    tools,
-    maxSteps: 5,
-  })
-
-  return result.text
-}
-
-// Note: This example uses stdin for approval, which works in CLI contexts.
-// For programmatic usage, replace requestApproval with a callback function.
 ```
+
+Build two things:
+
+**`requestApproval(action: ProposedAction): Promise<ApprovalDecision>`** — A CLI-based function that displays the proposed action and asks the human to approve, reject, or modify it. Use Node's `readline.createInterface` for interactive input.
+
+How do you structure the readline flow? Each response path (approve/reject/modify) needs different follow-up input. How do you wrap the callback-based `rl.question` in a Promise so the function can be awaited?
+
+**`agentWithApproval(task: string): Promise<string>`** — An agent that uses `generateText` with tools, where high-risk tools require approval before executing and low-risk tools run automatically. Think about: how does a tool's `execute` function decide whether to request approval? What message should the tool return to the LLM if the human rejects the action?
 
 > **Advanced Note:** In production, approval requests are typically sent to a queue (Slack, email, web dashboard) rather than blocking on stdin. The agent pauses, saves its state, and resumes when the approval comes back. This requires persistent state storage which we cover in the audit trail section.
 
 ### Programmatic Approval Callbacks
 
-For automated testing and non-CLI environments, use callback-based approval:
+For automated testing and non-CLI environments, use callback-based approval. Define a callback type:
 
 ```typescript
-import { generateText, type ModelMessage } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 type ApprovalCallback = (action: { toolName: string; args: Record<string, unknown> }) => Promise<{
   approved: boolean
   feedback?: string
 }>
-
-async function agentWithCallback(
-  task: string,
-  onApprovalNeeded: ApprovalCallback
-): Promise<{ response: string; approvals: Array<{ action: string; approved: boolean }> }> {
-  const approvals: Array<{ action: string; approved: boolean }> = []
-  const approvalRequired = new Set(['sendEmail', 'deleteRecord', 'modifyDatabase'])
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    maxSteps: 5,
-    system: 'You are a helpful assistant with access to tools that may require approval.',
-    tools: {
-      sendEmail: {
-        description: 'Send an email (requires approval)',
-        parameters: z.object({
-          to: z.string(),
-          subject: z.string(),
-          body: z.string(),
-        }),
-        execute: async args => {
-          if (approvalRequired.has('sendEmail')) {
-            const decision = await onApprovalNeeded({
-              toolName: 'sendEmail',
-              args,
-            })
-            approvals.push({
-              action: 'sendEmail',
-              approved: decision.approved,
-            })
-
-            if (!decision.approved) {
-              return JSON.stringify({
-                success: false,
-                reason: `Action rejected by human reviewer: ${decision.feedback || 'no reason given'}`,
-              })
-            }
-          }
-
-          // Execute the action (simulated)
-          return JSON.stringify({
-            success: true,
-            message: `Email sent to ${args.to}`,
-          })
-        },
-      },
-      searchData: {
-        description: 'Search for data (no approval needed)',
-        parameters: z.object({ query: z.string() }),
-        execute: async ({ query }) => `Results for "${query}": [relevant data]`,
-      },
-    },
-    prompt: task,
-  })
-
-  return { response: result.text, approvals }
-}
-
-// Usage with an auto-approve callback (for testing)
-const testResult = await agentWithCallback(
-  "Search for John Doe's email and send him a meeting invitation for Friday at 2pm",
-  async action => {
-    console.log(`Approval requested: ${action.toolName}`)
-    console.log(`Args: ${JSON.stringify(action.args)}`)
-    // Auto-approve for testing
-    return { approved: true }
-  }
-)
-
-console.log('Response:', testResult.response)
-console.log('Approvals:', testResult.approvals)
-
-// Usage with an auto-reject callback (for testing guardrails)
-const rejectResult = await agentWithCallback('Delete all inactive users from the database', async action => {
-  return {
-    approved: false,
-    feedback: 'Bulk deletions require manager approval',
-  }
-})
-
-console.log('Response:', rejectResult.response)
-console.log('Approvals:', rejectResult.approvals)
 ```
+
+Build a function `agentWithCallback(task: string, onApprovalNeeded: ApprovalCallback)` that returns `{ response: string; approvals: Array<{ action: string; approved: boolean }> }`. The agent should use the callback to check with the caller before executing certain tools.
+
+Think about: how do you decide which tools need approval? What data structure lets you look this up efficiently in each tool's `execute`? Why is the callback approach better for automated testing than the CLI approach? How would you write a test that verifies the agent correctly handles a rejection?
 
 ---
 
@@ -357,13 +134,9 @@ console.log('Approvals:', rejectResult.approvals)
 
 ### Auto-Approve High Confidence, Escalate Low Confidence
 
-Not every action needs human review. Route based on the agent's confidence:
+Not every action needs human review. Route based on the agent's confidence. Define the configuration and proposal types:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface ConfidenceConfig {
   autoApproveThreshold: number // Above this -> auto-approve (e.g., 0.9)
   escalateThreshold: number // Below this -> require human review (e.g., 0.7)
@@ -379,95 +152,21 @@ const proposalSchema = z.object({
 })
 
 type Proposal = z.infer<typeof proposalSchema>
-
-async function confidenceBasedRouting(
-  task: string,
-  config: ConfidenceConfig,
-  onApproval: (proposal: Proposal) => Promise<boolean>
-): Promise<{
-  result: string
-  routing: 'auto_approved' | 'notified' | 'human_reviewed'
-  proposal: Proposal
-}> {
-  // Step 1: Agent proposes an action with confidence
-  const { output: proposal } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: proposalSchema }),
-    system: `You are an assistant that proposes actions with confidence levels.
-Be honest about your confidence:
-- 0.9-1.0: Very confident, clear-cut case
-- 0.7-0.9: Fairly confident, standard case with minor uncertainties
-- 0.5-0.7: Moderate confidence, some ambiguity or missing context
-- Below 0.5: Low confidence, significant uncertainty
-
-Consider: Is the task clear? Do you have enough context? Could this go wrong?`,
-    prompt: task,
-  })
-
-  console.log(`Proposal: ${proposal!.action}`)
-  console.log(`Confidence: ${proposal!.confidence}`)
-  console.log(`Reasoning: ${proposal!.reasoning}`)
-
-  // Step 2: Route based on confidence
-  let routing: 'auto_approved' | 'notified' | 'human_reviewed'
-
-  if (proposal!.confidence >= config.autoApproveThreshold) {
-    routing = 'auto_approved'
-    console.log('[Router] Auto-approved (high confidence)')
-  } else if (proposal!.confidence >= config.escalateThreshold) {
-    routing = 'notified'
-    console.log('[Router] Proceeding with notification (moderate confidence)')
-  } else {
-    routing = 'human_reviewed'
-    console.log('[Router] Escalating to human review (low confidence)')
-
-    const approved = await onApproval(proposal!)
-    if (!approved) {
-      return {
-        result: 'Action rejected by human reviewer.',
-        routing,
-        proposal: proposal!,
-      }
-    }
-  }
-
-  // Step 3: Execute the action
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: `Execute this action: ${proposal!.action}\n\nContext: ${proposal!.reasoning}`,
-  })
-
-  return { result: result.text, routing, proposal: proposal! }
-}
-
-// Usage
-const output = await confidenceBasedRouting(
-  'Reply to the customer saying their refund has been processed for $49.99',
-  {
-    autoApproveThreshold: 0.9,
-    escalateThreshold: 0.7,
-  },
-  async proposal => {
-    console.log(`\n[HUMAN REVIEW NEEDED]`)
-    console.log(`Action: ${proposal.action}`)
-    console.log(`Confidence: ${proposal.confidence}`)
-    console.log(`Risk: ${proposal.riskAssessment}`)
-    // Simulating human approval
-    return true
-  }
-)
-
-console.log(`\nRouting: ${output.routing}`)
-console.log(`Result: ${output.result}`)
 ```
+
+Build `confidenceBasedRouting(task, config, onApproval)` that returns `{ result, routing, proposal }` where `routing` is `'auto_approved' | 'notified' | 'human_reviewed'`. The function uses the LLM to propose an action with a confidence score, then routes based on that score and the config thresholds.
+
+Think about:
+
+- How do you get the LLM to produce an honest confidence score? What system prompt instructions prevent it from always reporting high confidence?
+- What happens in each routing zone? Above the auto-approve threshold, between the two thresholds, and below the escalation threshold -- each needs different behavior.
+- If the human rejects an escalated action, what should the function return?
 
 ### Dynamic Threshold Adjustment
 
-Adjust thresholds based on the action type:
+Different action types deserve different thresholds. Build an `ActionThresholds` interface and a `getThresholds` function:
 
 ```typescript
-import { z } from 'zod'
-
 interface ActionThresholds {
   readOnly: { autoApprove: number; escalate: number }
   modification: { autoApprove: number; escalate: number }
@@ -475,32 +174,9 @@ interface ActionThresholds {
   financial: { autoApprove: number; escalate: number }
   communication: { autoApprove: number; escalate: number }
 }
-
-const defaultThresholds: ActionThresholds = {
-  readOnly: { autoApprove: 0.5, escalate: 0.0 }, // Almost always auto-approve
-  modification: { autoApprove: 0.85, escalate: 0.6 },
-  deletion: { autoApprove: 0.95, escalate: 0.8 }, // Very high bar
-  financial: { autoApprove: 1.0, escalate: 0.9 }, // Effectively always review
-  communication: { autoApprove: 0.9, escalate: 0.7 },
-}
-
-function getThresholds(
-  actionType: keyof ActionThresholds,
-  overrides?: Partial<ActionThresholds>
-): { autoApprove: number; escalate: number } {
-  const thresholds = { ...defaultThresholds, ...overrides }
-  return thresholds[actionType]
-}
-
-// Usage
-const deleteThresholds = getThresholds('deletion')
-console.log(`Delete auto-approve: ${deleteThresholds.autoApprove}`)
-// 0.95 — practically never auto-approved
-
-const readThresholds = getThresholds('readOnly')
-console.log(`Read auto-approve: ${readThresholds.autoApprove}`)
-// 0.5 — almost always auto-approved
 ```
+
+What should the default thresholds be for each action type? Consider the cost of a mistake: a wrong read is cheap, a wrong financial transaction is expensive. How would you let callers override specific thresholds while keeping defaults for others? What TypeScript utility type supports partial overrides of a typed object?
 
 > **Beginner Note:** Confidence-based routing is like a triage system in a hospital. Minor issues (high confidence, low risk) are handled automatically. Serious cases (low confidence, high risk) go to a specialist (human reviewer). This keeps the system efficient while maintaining safety.
 
@@ -510,13 +186,9 @@ console.log(`Read auto-approve: ${readThresholds.autoApprove}`)
 
 ### Learning from Human Corrections
 
-When a human rejects or modifies an agent's proposal, that feedback is valuable. Store it and use it to improve future behavior:
+When a human rejects or modifies an agent's proposal, that feedback is valuable. Store it and use it to improve future behavior. Define the feedback entry type:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface FeedbackEntry {
   id: string
   timestamp: number
@@ -527,147 +199,17 @@ interface FeedbackEntry {
   modifiedAction?: string
   category: string
 }
-
-class FeedbackStore {
-  private entries: FeedbackEntry[] = []
-
-  add(entry: FeedbackEntry): void {
-    this.entries.push(entry)
-  }
-
-  getRecentFeedback(category: string, limit: number = 5): FeedbackEntry[] {
-    return this.entries
-      .filter(e => e.category === category)
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, limit)
-  }
-
-  getRejectionPatterns(): Map<string, number> {
-    const patterns = new Map<string, number>()
-    for (const entry of this.entries.filter(e => e.decision === 'rejected')) {
-      const key = entry.category
-      patterns.set(key, (patterns.get(key) || 0) + 1)
-    }
-    return patterns
-  }
-
-  getApprovalRate(category?: string): number {
-    const relevant = category ? this.entries.filter(e => e.category === category) : this.entries
-    if (relevant.length === 0) return 0
-    const approved = relevant.filter(e => e.decision === 'approved').length
-    return approved / relevant.length
-  }
-
-  // Format recent feedback as context for the agent
-  toPromptContext(category: string): string {
-    const recent = this.getRecentFeedback(category, 3)
-    if (recent.length === 0) return ''
-
-    const examples = recent
-      .map(e => {
-        let text = `- Task: "${e.task}" -> Proposed: "${e.proposedAction}"`
-        if (e.decision === 'rejected') {
-          text += ` -> REJECTED: "${e.humanFeedback || 'no reason'}"`
-        } else if (e.decision === 'modified') {
-          text += ` -> MODIFIED TO: "${e.modifiedAction}"`
-        } else {
-          text += ` -> APPROVED`
-        }
-        return text
-      })
-      .join('\n')
-
-    return `\nRecent feedback from human reviewers for similar tasks:
-${examples}
-
-Use this feedback to improve your proposals. Avoid patterns that were previously rejected.`
-  }
-}
-
-// Agent that learns from feedback
-async function feedbackAwareAgent(
-  task: string,
-  category: string,
-  feedbackStore: FeedbackStore,
-  onApproval: (action: string) => Promise<{
-    decision: 'approved' | 'rejected' | 'modified'
-    feedback?: string
-    modification?: string
-  }>
-): Promise<string> {
-  const feedbackContext = feedbackStore.toPromptContext(category)
-  const approvalRate = feedbackStore.getApprovalRate(category)
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `You are a helpful assistant. Propose actions carefully.
-${feedbackContext}
-
-Current approval rate for ${category}: ${(approvalRate * 100).toFixed(0)}%.
-${approvalRate < 0.7 ? 'Your proposals are being rejected frequently. Be more conservative and specific.' : ''}`,
-    prompt: task,
-  })
-
-  // Request approval
-  const decision = await onApproval(result.text)
-
-  // Store feedback
-  feedbackStore.add({
-    id: crypto.randomUUID(),
-    timestamp: Date.now(),
-    task,
-    proposedAction: result.text,
-    decision: decision.decision,
-    humanFeedback: decision.feedback,
-    modifiedAction: decision.modification,
-    category,
-  })
-
-  if (decision.decision === 'modified' && decision.modification) {
-    return decision.modification
-  }
-
-  return result.text
-}
-
-// Usage
-const store = new FeedbackStore()
-
-// Simulate past feedback
-store.add({
-  id: '1',
-  timestamp: Date.now() - 3600000,
-  task: 'Write a refund email',
-  proposedAction: 'Dear Customer, your refund is done.',
-  decision: 'rejected',
-  humanFeedback: 'Too informal. Include the refund amount and expected timeline.',
-  category: 'customer_email',
-})
-
-store.add({
-  id: '2',
-  timestamp: Date.now() - 1800000,
-  task: 'Write an apology email',
-  proposedAction:
-    'Dear valued customer, we sincerely apologize for the inconvenience. Your refund of $29.99 will be processed within 3-5 business days.',
-  decision: 'approved',
-  category: 'customer_email',
-})
-
-const response = await feedbackAwareAgent(
-  'Write a confirmation email for a subscription cancellation',
-  'customer_email',
-  store,
-  async action => {
-    console.log('Proposed action:', action)
-    // Simulate approval
-    return { decision: 'approved' }
-  }
-)
-
-console.log('Response:', response)
-console.log('\nApproval rate:', store.getApprovalRate('customer_email'))
 ```
+
+Build a `FeedbackStore` class that stores feedback entries and makes them available for prompt injection. The class needs methods to add entries, query recent feedback by category, analyze rejection patterns, and calculate approval rates.
+
+The most important method is one that formats recent feedback as prompt context -- converting past human decisions into text the LLM can learn from. How would you format approval/rejection history so the model understands what worked and what did not?
+
+Now build `feedbackAwareAgent(task, category, feedbackStore, onApproval)` that incorporates feedback history into its system prompt. Think about:
+
+- How do you inject the feedback context into the system prompt? Where does it go relative to the main instructions?
+- What should happen when the approval rate drops below a threshold? How do you signal to the model that it needs to be more conservative?
+- How does in-context learning from feedback differ from fine-tuning? What are the advantages and limitations of each?
 
 > **Advanced Note:** In production, feedback stores should be persistent (database) and shared across agent instances. Use the feedback to fine-tune prompts, adjust confidence thresholds, and identify systematic issues. If a certain category of action is consistently rejected, that signals a prompt engineering problem.
 
@@ -677,13 +219,9 @@ console.log('\nApproval rate:', store.getApprovalRate('customer_email'))
 
 ### Agent Asks for Help on Uncertain Cases
 
-Instead of waiting for the human to reject a proposal, a proactive agent can identify uncertainty and ask for guidance upfront:
+Instead of waiting for the human to reject a proposal, a proactive agent can identify uncertainty and ask for guidance upfront. Define the types:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface ClarificationRequest {
   question: string
   options: string[]
@@ -704,99 +242,22 @@ const uncertaintySchema = z.object({
     .describe('Areas of uncertainty, if any'),
   proposedAction: z.string().describe('What you would do if proceeding'),
 })
-
-async function activeLearningAgent(
-  task: string,
-  onClarification: (requests: ClarificationRequest[]) => Promise<Record<string, string>>
-): Promise<string> {
-  // Step 1: Analyze the task for uncertainty
-  const { output: analysis } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: uncertaintySchema }),
-    system: `You are a careful assistant. Before acting, assess your confidence.
-If anything is ambiguous, unclear, or has multiple valid interpretations,
-flag it as an uncertainty. It is better to ask than to guess wrong.
-
-Common sources of uncertainty:
-- Ambiguous pronouns or references
-- Missing context (dates, amounts, names)
-- Multiple valid interpretations of the request
-- Domain-specific terms that could mean different things
-- Unstated preferences or constraints`,
-    prompt: task,
-  })
-
-  // Step 2: If uncertain, ask for clarification
-  if (!analysis!.confident && analysis!.uncertainties.length > 0) {
-    console.log('[Agent] Requesting clarification on uncertain points...')
-
-    const clarifications = await onClarification(
-      analysis!.uncertainties.map(u => ({
-        question: u.question,
-        options: u.options,
-        context: task,
-        impact: u.impact,
-      }))
-    )
-
-    // Step 3: Proceed with clarified context
-    const clarificationContext = Object.entries(clarifications)
-      .map(([q, a]) => `Q: ${q}\nA: ${a}`)
-      .join('\n\n')
-
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      prompt: `Original task: ${task}
-
-Clarifications received:
-${clarificationContext}
-
-Now complete the task with these clarifications.`,
-    })
-
-    return result.text
-  }
-
-  // Step 4: Confident — proceed directly
-  console.log('[Agent] Confident enough to proceed without clarification.')
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: task,
-  })
-
-  return result.text
-}
-
-// Usage
-const response = await activeLearningAgent('Send a follow-up email to the client about the project', async requests => {
-  console.log('\n=== Clarification Needed ===')
-  const answers: Record<string, string> = {}
-
-  for (const req of requests) {
-    console.log(`\nQuestion: ${req.question}`)
-    console.log(`Options: ${req.options.join(', ')}`)
-    console.log(`Impact: ${req.impact}`)
-
-    // Simulating human response
-    answers[req.question] =
-      'The client is Acme Corp. The project is the Q1 dashboard redesign. Send a status update, not a request for payment.'
-  }
-
-  return answers
-})
-
-console.log('\nFinal response:', response)
 ```
+
+Build `activeLearningAgent(task, onClarification)` that works in two phases: first analyzing whether the task is clear enough, then acting (possibly after asking for clarification).
+
+Think about:
+
+- How does the system prompt help the model identify uncertainty? What common sources of ambiguity should it check for?
+- If the model reports uncertainty, how do you convert its structured output into `ClarificationRequest` objects for the human?
+- After receiving answers, how do you incorporate them into the follow-up prompt?
+- Why is it better for the agent to ask upfront rather than act and be rejected? Compare the cost of a clarification question vs. a full rejected draft.
 
 ### Uncertainty Detection Heuristics
 
-Beyond asking the model about its own confidence, use structural heuristics:
+Beyond asking the model about its own confidence, build a `detectUncertainty(task: string): Promise<UncertaintySignals>` function that uses structured output to check for specific patterns:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface UncertaintySignals {
   hasAmbiguousPronouns: boolean
   missingNumbers: boolean
@@ -805,39 +266,11 @@ interface UncertaintySignals {
   vagueDateReferences: boolean
   overallUncertainty: number // 0-1
 }
-
-async function detectUncertainty(task: string): Promise<UncertaintySignals> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({
-      schema: z.object({
-        hasAmbiguousPronouns: z.boolean().describe('Are there pronouns (it, they, them) without clear referents?'),
-        missingNumbers: z.boolean().describe('Are there missing quantities, amounts, or dates?'),
-        multiplePossibleInterpretations: z
-          .boolean()
-          .describe('Could this task reasonably be interpreted in more than one way?'),
-        domainSpecificTerms: z.boolean().describe('Are there industry-specific terms that could be ambiguous?'),
-        vagueDateReferences: z.boolean().describe('Are there vague time references like "soon", "recently", "later"?'),
-        overallUncertainty: z
-          .number()
-          .min(0)
-          .max(1)
-          .describe('Overall uncertainty score (0 = very clear, 1 = very ambiguous)'),
-      }),
-    }),
-    prompt: `Analyze this task for ambiguity and missing information:
-"${task}"`,
-  })
-
-  return output!
-}
-
-// Usage
-const signals = await detectUncertainty('Send them the updated report when it is ready')
-
-console.log('Uncertainty signals:', signals)
-// Likely flags: ambiguous pronouns ("them", "it"), vague date ("when ready")
 ```
+
+Define a Zod schema matching this interface with descriptive `.describe()` strings for each field. The model should analyze the task text for ambiguity and return structured signals.
+
+How would you use these signals downstream? Could the `overallUncertainty` score feed into the confidence-based routing from Section 3? What threshold would trigger a clarification request vs. a human escalation?
 
 > **Beginner Note:** Active learning is the agent equivalent of asking a clarifying question before starting work. A junior employee who asks "Just to confirm, you mean the Q1 report for Acme Corp, right?" is more valuable than one who confidently delivers the wrong report.
 
@@ -847,11 +280,9 @@ console.log('Uncertainty signals:', signals)
 
 ### CLI-Based Review
 
-Build a command-line review interface for human decision-making:
+Build a command-line review interface for human decision-making. Define the types:
 
 ```typescript
-import * as readline from 'readline'
-
 interface ReviewItem {
   id: string
   type: string
@@ -868,130 +299,19 @@ interface ReviewDecision {
   timestamp: number
   reviewerNote?: string
 }
-
-class CLIReviewer {
-  private rl: readline.Interface
-
-  constructor() {
-    this.rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    })
-  }
-
-  private ask(question: string): Promise<string> {
-    return new Promise(resolve => {
-      this.rl.question(question, answer => resolve(answer.trim()))
-    })
-  }
-
-  async reviewItem(item: ReviewItem): Promise<ReviewDecision> {
-    console.log('\n' + '-'.repeat(60))
-    console.log(`Review Item: ${item.id}`)
-    console.log(`Type: ${item.type} | Risk: ${item.risk}`)
-    console.log('-'.repeat(60))
-    console.log(item.content)
-    console.log('-'.repeat(60))
-
-    if (item.metadata && Object.keys(item.metadata).length > 0) {
-      console.log('Metadata:', JSON.stringify(item.metadata, null, 2))
-      console.log('-'.repeat(60))
-    }
-
-    const choices = '[a]pprove / [r]eject / [m]odify / [s]kip'
-    const response = await this.ask(`Decision (${choices}): `)
-
-    switch (response.toLowerCase()) {
-      case 'a':
-      case 'approve': {
-        const note = await this.ask('Note (optional, press Enter to skip): ')
-        return {
-          itemId: item.id,
-          decision: 'approve',
-          reviewerNote: note || undefined,
-          timestamp: Date.now(),
-        }
-      }
-
-      case 'r':
-      case 'reject': {
-        const feedback = await this.ask('Reason for rejection: ')
-        return {
-          itemId: item.id,
-          decision: 'reject',
-          feedback,
-          timestamp: Date.now(),
-        }
-      }
-
-      case 'm':
-      case 'modify': {
-        const modified = await this.ask('Modified content: ')
-        const note = await this.ask('Note about changes: ')
-        return {
-          itemId: item.id,
-          decision: 'modify',
-          modifiedContent: modified,
-          feedback: note || undefined,
-          timestamp: Date.now(),
-        }
-      }
-
-      default:
-        return {
-          itemId: item.id,
-          decision: 'skip',
-          timestamp: Date.now(),
-        }
-    }
-  }
-
-  async reviewBatch(items: ReviewItem[]): Promise<ReviewDecision[]> {
-    console.log(`\n${'='.repeat(60)}`)
-    console.log(`Review Queue: ${items.length} items`)
-    console.log(`${'='.repeat(60)}`)
-
-    const decisions: ReviewDecision[] = []
-
-    for (let i = 0; i < items.length; i++) {
-      console.log(`\n[${i + 1}/${items.length}]`)
-      const decision = await this.reviewItem(items[i])
-      decisions.push(decision)
-
-      // Show running stats
-      const approved = decisions.filter(d => d.decision === 'approve').length
-      const rejected = decisions.filter(d => d.decision === 'reject').length
-      console.log(`Progress: ${approved} approved, ${rejected} rejected, ${items.length - i - 1} remaining`)
-    }
-
-    this.rl.close()
-    return decisions
-  }
-}
-
-// Usage example (would be run in a CLI context)
-// const reviewer = new CLIReviewer();
-// const decisions = await reviewer.reviewBatch([
-//   {
-//     id: "1",
-//     type: "email_draft",
-//     content: "Dear Customer, your refund of $49.99 has been processed...",
-//     metadata: { recipient: "customer@example.com" },
-//     risk: "high",
-//   },
-//   {
-//     id: "2",
-//     type: "data_update",
-//     content: "UPDATE users SET status='inactive' WHERE last_login < '2024-01-01'",
-//     metadata: { affectedRows: 1234 },
-//     risk: "critical",
-//   },
-// ]);
 ```
+
+Build a `CLIReviewer` class that presents review items to a human via the terminal and collects decisions. The class needs methods for reviewing a single item and reviewing a batch with progress tracking.
+
+Think about:
+
+- How do you wrap `rl.question` in a Promise so the class methods can be async? Where should the readline interface be created and destroyed?
+- For `reviewItem`, how do you display the item clearly and handle different decision paths (approve/reject/modify/skip)? Each path needs different follow-up input.
+- For `reviewBatch`, what progress information is useful to show after each decision? How do you handle cleanup if the reviewer quits mid-batch?
 
 ### Programmatic Review Interface
 
-For integrations with web dashboards or APIs:
+For integrations with web dashboards or APIs, build a queue-based system:
 
 ```typescript
 interface ReviewQueue {
@@ -999,94 +319,15 @@ interface ReviewQueue {
   decisions: Map<string, ReviewDecision>
   waiters: Map<string, (decision: ReviewDecision) => void>
 }
-
-function createReviewQueue(): ReviewQueue {
-  return {
-    items: new Map(),
-    decisions: new Map(),
-    waiters: new Map(),
-  }
-}
-
-function submitForReview(queue: ReviewQueue, item: ReviewItem): Promise<ReviewDecision> {
-  queue.items.set(item.id, { ...item, status: 'pending' })
-
-  return new Promise(resolve => {
-    // Check if already reviewed (e.g., auto-approved)
-    const existing = queue.decisions.get(item.id)
-    if (existing) {
-      resolve(existing)
-      return
-    }
-
-    // Wait for a reviewer to submit a decision
-    queue.waiters.set(item.id, resolve)
-  })
-}
-
-function submitDecision(queue: ReviewQueue, decision: ReviewDecision): void {
-  queue.decisions.set(decision.itemId, decision)
-
-  const item = queue.items.get(decision.itemId)
-  if (item) {
-    item.status = 'reviewed'
-  }
-
-  // Resolve any waiting promise
-  const waiter = queue.waiters.get(decision.itemId)
-  if (waiter) {
-    waiter(decision)
-    queue.waiters.delete(decision.itemId)
-  }
-}
-
-function getPendingItems(queue: ReviewQueue): ReviewItem[] {
-  return Array.from(queue.items.values())
-    .filter(item => item.status === 'pending')
-    .map(({ status, ...item }) => item)
-}
-
-// Usage
-const queue = createReviewQueue()
-
-// Agent submits items for review
-const agentTask = async () => {
-  const decision = await submitForReview(queue, {
-    id: 'action-1',
-    type: 'email',
-    content: 'Draft email to customer about refund',
-    metadata: { amount: 49.99 },
-    risk: 'high',
-  })
-
-  if (decision.decision === 'approve') {
-    console.log('[Agent] Email approved, sending...')
-  } else {
-    console.log(`[Agent] Email ${decision.decision}: ${decision.feedback}`)
-  }
-}
-
-// Reviewer checks the queue (in a separate process/interface)
-const reviewerTask = async () => {
-  // Simulate a short delay before the reviewer checks
-  await new Promise(r => setTimeout(r, 100))
-
-  const pending = getPendingItems(queue)
-  console.log(`[Reviewer] ${pending.length} items pending`)
-
-  for (const item of pending) {
-    submitDecision(queue, {
-      itemId: item.id,
-      decision: 'approve',
-      timestamp: Date.now(),
-      reviewerNote: 'Looks good',
-    })
-  }
-}
-
-// Run both concurrently
-await Promise.all([agentTask(), reviewerTask()])
 ```
+
+Build functions for creating, submitting to, and deciding on review queues: `createReviewQueue()`, `submitForReview(queue, item)`, `submitDecision(queue, decision)`, and `getPendingItems(queue)`.
+
+The key pattern is a Promise-based bridge: when an item is submitted for review, the caller gets a Promise that resolves only when someone submits a decision. Think about:
+
+- How do you create a Promise whose `resolve` function is stored externally and called later by a different function? This is the "deferred promise" pattern.
+- What should `submitForReview` do if the item has already been reviewed? What about duplicate submissions?
+- How does this architecture decouple the agent (which submits and waits) from the reviewer (which decides asynchronously)?
 
 ---
 
@@ -1094,15 +335,13 @@ await Promise.all([agentTask(), reviewerTask()])
 
 ### Logging Decisions for Compliance
 
-Every decision in a HITL system should be logged with enough detail to reconstruct what happened and why:
+Every decision in a HITL system should be logged with enough detail to reconstruct what happened and why. Define the entry type:
 
 ```typescript
 interface AuditEntry {
   id: string
   timestamp: number
   sessionId: string
-
-  // What happened
   eventType:
     | 'action_proposed'
     | 'action_approved'
@@ -1112,212 +351,30 @@ interface AuditEntry {
     | 'error'
     | 'clarification_requested'
     | 'clarification_received'
-
-  // Who was involved
   agentId: string
   reviewerId?: string
-
-  // Details
   action: string
   details: Record<string, unknown>
   reasoning?: string
   feedback?: string
-
-  // Context
   taskDescription: string
   confidenceScore?: number
   riskLevel?: string
-
-  // For compliance
   policyApplied?: string
   complianceCheck?: boolean
 }
-
-class AuditLog {
-  private entries: AuditEntry[] = []
-  private sessionId: string
-
-  constructor(sessionId?: string) {
-    this.sessionId = sessionId || crypto.randomUUID()
-  }
-
-  log(entry: Omit<AuditEntry, 'id' | 'timestamp' | 'sessionId'>): void {
-    const fullEntry: AuditEntry = {
-      ...entry,
-      id: crypto.randomUUID(),
-      timestamp: Date.now(),
-      sessionId: this.sessionId,
-    }
-
-    this.entries.push(fullEntry)
-
-    // Also print for real-time monitoring
-    console.log(`[AUDIT] ${fullEntry.eventType} | Agent: ${fullEntry.agentId} | ${fullEntry.action.slice(0, 80)}`)
-  }
-
-  getEntries(filter?: { eventType?: string; agentId?: string; after?: number }): AuditEntry[] {
-    let results = [...this.entries]
-
-    if (filter?.eventType) {
-      results = results.filter(e => e.eventType === filter.eventType)
-    }
-    if (filter?.agentId) {
-      results = results.filter(e => e.agentId === filter.agentId)
-    }
-    if (filter?.after) {
-      results = results.filter(e => e.timestamp > filter.after)
-    }
-
-    return results
-  }
-
-  getSessionSummary(): {
-    totalEvents: number
-    proposed: number
-    approved: number
-    rejected: number
-    modified: number
-    errors: number
-    approvalRate: number
-    timeline: Array<{ time: number; event: string }>
-  } {
-    const proposed = this.entries.filter(e => e.eventType === 'action_proposed').length
-    const approved = this.entries.filter(e => e.eventType === 'action_approved').length
-    const rejected = this.entries.filter(e => e.eventType === 'action_rejected').length
-    const modified = this.entries.filter(e => e.eventType === 'action_modified').length
-    const errors = this.entries.filter(e => e.eventType === 'error').length
-
-    return {
-      totalEvents: this.entries.length,
-      proposed,
-      approved,
-      rejected,
-      modified,
-      errors,
-      approvalRate: proposed > 0 ? approved / proposed : 0,
-      timeline: this.entries.map(e => ({
-        time: e.timestamp,
-        event: `${e.eventType}: ${e.action.slice(0, 50)}`,
-      })),
-    }
-  }
-
-  // Export for compliance — e.g., to save to a file or database
-  exportJSON(): string {
-    return JSON.stringify(
-      {
-        sessionId: this.sessionId,
-        exportedAt: new Date().toISOString(),
-        entries: this.entries,
-        summary: this.getSessionSummary(),
-      },
-      null,
-      2
-    )
-  }
-}
-
-// Agent with full audit trail
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-async function auditedAgent(
-  task: string,
-  audit: AuditLog,
-  onApproval: (action: string) => Promise<{
-    decision: 'approved' | 'rejected' | 'modified'
-    feedback?: string
-  }>
-): Promise<string> {
-  const agentId = 'support-agent-v1'
-
-  // Log task start
-  audit.log({
-    eventType: 'action_proposed',
-    agentId,
-    action: 'Process customer request',
-    details: { task },
-    taskDescription: task,
-  })
-
-  // Generate response
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: 'You are a customer support agent. Draft a response to the customer.',
-    prompt: task,
-  })
-
-  // Request approval
-  audit.log({
-    eventType: 'action_proposed',
-    agentId,
-    action: 'Send customer response',
-    details: { draft: result.text.slice(0, 200) },
-    taskDescription: task,
-    confidenceScore: 0.85,
-    riskLevel: 'medium',
-  })
-
-  const decision = await onApproval(result.text)
-
-  // Log the decision
-  audit.log({
-    eventType:
-      decision.decision === 'approved'
-        ? 'action_approved'
-        : decision.decision === 'rejected'
-          ? 'action_rejected'
-          : 'action_modified',
-    agentId,
-    reviewerId: 'human-reviewer-1',
-    action: 'Customer response review',
-    details: { decision: decision.decision },
-    feedback: decision.feedback,
-    taskDescription: task,
-    policyApplied: 'customer-communication-policy-v2',
-    complianceCheck: true,
-  })
-
-  if (decision.decision === 'approved') {
-    // Log execution
-    audit.log({
-      eventType: 'action_executed',
-      agentId,
-      action: 'Send customer response',
-      details: { sent: true },
-      taskDescription: task,
-    })
-    return result.text
-  }
-
-  return `Action ${decision.decision}: ${decision.feedback || 'No feedback'}`
-}
-
-// Usage
-const audit = new AuditLog()
-
-const response = await auditedAgent(
-  'Customer wants to know the status of their refund for order #12345',
-  audit,
-  async action => {
-    console.log('\n[Reviewer] Reviewing:', action.slice(0, 100))
-    return { decision: 'approved' }
-  }
-)
-
-// Print audit summary
-const summary = audit.getSessionSummary()
-console.log('\n=== Audit Summary ===')
-console.log(`Total events: ${summary.totalEvents}`)
-console.log(`Proposed: ${summary.proposed}`)
-console.log(`Approved: ${summary.approved}`)
-console.log(`Rejected: ${summary.rejected}`)
-console.log(`Approval rate: ${(summary.approvalRate * 100).toFixed(0)}%`)
-
-// Export for compliance
-// await Bun.write("data/audit-log.json", audit.exportJSON());
 ```
+
+Build an `AuditLog` class that records every decision point in a HITL workflow. The class needs methods for logging events (auto-generating IDs, timestamps, and session context), querying entries with filters, summarizing a session's statistics, and exporting the full log as JSON.
+
+Now build `auditedAgent(task, audit, onApproval)` that wraps a simple agent with full audit logging at each decision point.
+
+Think about:
+
+- What events should be logged? Consider the lifecycle: task received, action proposed, human decision, action executed, errors.
+- What auto-generated fields make the log useful without burdening the caller? Which fields should the caller provide vs. which should the class fill in?
+- How do you calculate the approval rate from the event types? What edge case arises when no actions have been proposed yet?
+- What fields are essential for compliance (GDPR, HIPAA) vs. nice-to-have for debugging?
 
 > **Advanced Note:** For regulatory compliance (GDPR, HIPAA, SOX), audit logs typically need to be immutable (append-only), timestamped with a trusted clock, and stored in a tamper-evident manner. Consider using a dedicated audit logging service or write-once storage in production.
 
@@ -1327,15 +384,11 @@ console.log(`Approval rate: ${(summary.approvalRate * 100).toFixed(0)}%`)
 
 ### When No Human is Available
 
-What happens when the agent needs approval but no human is online? Production systems need fallback behaviors:
+What happens when the agent needs approval but no human is online? Production systems need fallback behaviors. Define the configuration:
 
 ```typescript
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
 interface DegradationConfig {
-  approvalTimeoutMs: number // How long to wait for human
+  approvalTimeoutMs: number
   fallbackBehavior: 'queue' | 'auto_approve_low_risk' | 'reject_all' | 'use_defaults'
   notifyOnDegradation: boolean
   maxQueueSize: number
@@ -1347,147 +400,20 @@ interface DegradedAction {
   degradedDecision: string
   reason: string
 }
-
-class GracefulDegradation {
-  private queue: Array<{
-    action: string
-    risk: string
-    timestamp: number
-    resolve: (decision: string) => void
-  }> = []
-
-  constructor(private config: DegradationConfig) {}
-
-  async requestApproval(
-    action: string,
-    risk: string,
-    humanAvailable: () => boolean,
-    requestHuman: (action: string) => Promise<string>
-  ): Promise<DegradedAction> {
-    // If human is available, use normal flow
-    if (humanAvailable()) {
-      try {
-        const decision = await Promise.race([
-          requestHuman(action),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Approval timeout')), this.config.approvalTimeoutMs)
-          ),
-        ])
-
-        return {
-          action,
-          originalRisk: risk,
-          degradedDecision: decision,
-          reason: 'Human reviewed',
-        }
-      } catch (error) {
-        console.warn(`[Degradation] Human approval timed out after ${this.config.approvalTimeoutMs}ms`)
-      }
-    }
-
-    // No human available or timed out — apply degradation strategy
-    return this.applyFallback(action, risk)
-  }
-
-  private applyFallback(action: string, risk: string): DegradedAction {
-    switch (this.config.fallbackBehavior) {
-      case 'queue':
-        // Save for later review
-        if (this.queue.length < this.config.maxQueueSize) {
-          console.log(`[Degradation] Queued for later review: ${action.slice(0, 50)}`)
-          return {
-            action,
-            originalRisk: risk,
-            degradedDecision: 'queued',
-            reason: 'No human available — queued for later review',
-          }
-        }
-        // Queue full — reject
-        return {
-          action,
-          originalRisk: risk,
-          degradedDecision: 'rejected',
-          reason: 'Queue full and no human available',
-        }
-
-      case 'auto_approve_low_risk':
-        if (risk === 'low' || risk === 'medium') {
-          console.log(`[Degradation] Auto-approving ${risk}-risk action`)
-          return {
-            action,
-            originalRisk: risk,
-            degradedDecision: 'auto_approved',
-            reason: `Auto-approved: ${risk} risk, no human available`,
-          }
-        }
-        return {
-          action,
-          originalRisk: risk,
-          degradedDecision: 'rejected',
-          reason: `${risk}-risk action requires human approval — no human available`,
-        }
-
-      case 'reject_all':
-        return {
-          action,
-          originalRisk: risk,
-          degradedDecision: 'rejected',
-          reason: 'All actions rejected when no human is available',
-        }
-
-      case 'use_defaults':
-        return {
-          action,
-          originalRisk: risk,
-          degradedDecision: 'default_applied',
-          reason: 'Applied default safe action — no human available',
-        }
-    }
-  }
-
-  getPendingQueue(): Array<{ action: string; risk: string; timestamp: number }> {
-    return this.queue.map(({ action, risk, timestamp }) => ({
-      action,
-      risk,
-      timestamp,
-    }))
-  }
-}
-
-// Usage
-const degradation = new GracefulDegradation({
-  approvalTimeoutMs: 5000,
-  fallbackBehavior: 'auto_approve_low_risk',
-  notifyOnDegradation: true,
-  maxQueueSize: 100,
-})
-
-// Simulate: human is not available
-const result = await degradation.requestApproval(
-  'Send confirmation email to customer@example.com',
-  'medium',
-  () => false, // Human not available
-  async action => 'approved' // Would not be called
-)
-
-console.log(result)
-// { degradedDecision: "auto_approved", reason: "Auto-approved: medium risk, no human available" }
-
-// Simulate: high-risk action, human not available
-const highRiskResult = await degradation.requestApproval(
-  'Delete all inactive user accounts',
-  'critical',
-  () => false,
-  async action => 'approved'
-)
-
-console.log(highRiskResult)
-// { degradedDecision: "rejected", reason: "critical-risk action requires human approval" }
 ```
+
+Build a `GracefulDegradation` class that handles approval requests when humans may be unavailable or slow to respond. The class needs a method to request approval (trying the human first, falling back if unavailable or timed out), a private fallback method that implements the configured strategy, and a way to retrieve queued items.
+
+Think about:
+
+- How do you implement a timeout on the human's response? What concurrency primitive lets you race a callback against a timer?
+- The config specifies four fallback strategies (`queue`, `auto_approve_low_risk`, `reject_all`, `use_defaults`). What does each one do? Which ones are safe for critical-risk actions?
+- Why must `auto_approve_low_risk` NEVER auto-approve critical-risk actions? What is the cost/benefit analysis?
+- What happens when the queue is full? Should new items be rejected or should old items be evicted?
 
 ### Escalation Chains
 
-When the primary reviewer is unavailable, escalate to backups:
+When the primary reviewer is unavailable, escalate to backups. Build an `escalatingApproval` function:
 
 ```typescript
 interface Reviewer {
@@ -1500,72 +426,123 @@ interface Reviewer {
 async function escalatingApproval(
   action: string,
   reviewers: Reviewer[],
-  timeoutMs: number = 30000
-): Promise<{ decision: string; reviewerId: string; escalated: boolean }> {
-  for (let i = 0; i < reviewers.length; i++) {
-    const reviewer = reviewers[i]
-
-    if (!reviewer.available()) {
-      console.log(`[Escalation] ${reviewer.name} unavailable, trying next...`)
-      continue
-    }
-
-    try {
-      const decision = await Promise.race([
-        reviewer.review(action),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
-      ])
-
-      return {
-        decision,
-        reviewerId: reviewer.id,
-        escalated: i > 0,
-      }
-    } catch {
-      console.log(`[Escalation] ${reviewer.name} timed out, trying next...`)
-    }
-  }
-
-  return {
-    decision: 'rejected',
-    reviewerId: 'system',
-    escalated: true,
-  }
-}
-
-// Usage
-const reviewers: Reviewer[] = [
-  {
-    id: 'primary',
-    name: 'Primary Reviewer',
-    available: () => false, // Simulating unavailable
-    review: async action => 'approved',
-  },
-  {
-    id: 'backup',
-    name: 'Backup Reviewer',
-    available: () => true,
-    review: async action => {
-      console.log(`[Backup] Reviewing: ${action.slice(0, 50)}`)
-      return 'approved'
-    },
-  },
-  {
-    id: 'manager',
-    name: 'Manager',
-    available: () => true,
-    review: async action => 'approved',
-  },
-]
-
-const approval = await escalatingApproval('Approve $5,000 refund for customer complaint', reviewers)
-
-console.log(`Decision: ${approval.decision}`)
-console.log(`Reviewed by: ${approval.reviewerId}`)
-console.log(`Escalated: ${approval.escalated}`)
+  timeoutMs?: number
+): Promise<{ decision: string; reviewerId: string; escalated: boolean }>
 ```
 
+The function should try reviewers in priority order, skipping unavailable ones and timing out slow ones. Think about:
+
+- How do you determine whether the final decision came from an escalated reviewer vs. the primary one?
+- What should happen if all reviewers are either unavailable or time out? What is the safest default?
+- What should happen to queued actions when a human comes back online? How would you design a notification mechanism?
+
 > **Beginner Note:** Graceful degradation means your system keeps working even when ideal conditions are not met. Just as a car still works without air conditioning (less comfortable but functional), your agent system should still work without a human reviewer (less capable but safe).
+
+---
+
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: Declarative Permission Rules
+
+### Rules Instead of Code
+
+Production permission systems define access control declaratively — as data, not logic. Each rule specifies a pattern (glob or regex) and a decision (allow, deny, or ask). Rules are checked before every tool execution.
+
+```typescript
+interface PermissionRule {
+  pattern: string // glob pattern for the resource
+  decision: 'allow' | 'deny' | 'ask'
+}
+```
+
+A rule set is evaluated in order, and the last matching rule wins. This lets you layer broad defaults with specific overrides:
+
+```typescript
+const rules: PermissionRule[] = [
+  { pattern: '**', decision: 'ask' }, // default: ask for everything
+  { pattern: 'src/**/*.ts', decision: 'allow' }, // allow reading project files
+  { pattern: '.env*', decision: 'deny' }, // never touch env files
+]
+```
+
+Declarative rules are easier to audit, version, and share than imperative permission logic. A project can ship baseline rules and let users override them.
+
+---
+
+## Section 10: Permission Modes
+
+### Configurable Autonomy Levels
+
+The autonomy spectrum from Section 1 becomes concrete through permission modes — named configurations that change which rules apply:
+
+- **Restrictive** — Ask for most operations. Safe for exploration and untrusted tasks.
+- **Normal** — Auto-approve reads and low-risk writes. Ask for shell commands, network access, and deletions.
+- **Autonomous** — Auto-approve most operations within the project directory. Deny anything outside it.
+
+Switching modes changes the active rule set, not the code. The permission engine stays the same; only the rules differ.
+
+> **Key Insight:** Modes let you match the autonomy level to the task. A code review task needs restrictive mode; a scaffolding task can use autonomous mode. The user chooses the mode, not the agent.
+
+---
+
+## Section 11: Denial Adaptation
+
+### Learning from "No"
+
+When a human denies an action, the agent must not retry the same operation. Instead, it should:
+
+1. Record the denial and the reason (if provided)
+2. Include the denial in the next LLM call as context
+3. Propose an alternative approach
+
+This creates a feedback loop where the agent adapts its behavior within the session. The denial is appended to the conversation history, not used to truncate it — the agent remembers what it tried and why it was rejected.
+
+```typescript
+// After denial, the next message to the LLM includes:
+// "The user denied your request to delete the file. Reason: 'Use git revert instead'. Propose an alternative."
+```
+
+The pattern is simple: denied actions go into a "do not retry" set for the session. If the agent generates the same tool call with the same parameters, it is blocked before reaching the user.
+
+---
+
+## Section 12: Three Approval Modes
+
+### Suggest, Auto-Edit, and Full-Auto
+
+Production coding agents implement three distinct autonomy levels that go beyond simple ask/don't-ask:
+
+1. **Suggest mode** — Read-only. The agent can read files and analyze code, but requires explicit approval for all writes and all shell commands. Use this for exploration and review tasks.
+
+2. **Auto-Edit mode** — File edits are auto-approved, but shell commands require approval. This is the sweet spot for code generation tasks where the agent should freely write code but not execute arbitrary commands.
+
+3. **Full-Auto mode** — All operations are auto-approved, but with a critical safety constraint: network access is disabled and file writes are limited to the working directory. The agent can do anything locally but cannot exfiltrate data or reach external services.
+
+The full-auto pattern demonstrates **compensating controls** — relaxing one constraint (human approval) while tightening another (network/filesystem scope). Full autonomy is safe when the blast radius is contained.
+
+> **Advanced Note:** The network-disable-in-full-auto pattern is a significant safety innovation. No network means no data exfiltration, no supply chain attacks, and no unintended external side effects — even if the agent goes off the rails.
+
+---
+
+## Section 13: Glob-Based Command Permissions
+
+### Fine-Grained Shell Command Control
+
+For shell command execution, glob patterns provide precise control over what is allowed, what needs confirmation, and what is blocked:
+
+```typescript
+const commandRules = [
+  { pattern: 'git status *', decision: 'allow' },
+  { pattern: 'git push *', decision: 'ask' },
+  { pattern: 'rm -rf *', decision: 'deny' },
+  { pattern: 'npm test *', decision: 'allow' },
+  { pattern: 'curl *', decision: 'deny' },
+]
+```
+
+Rules are evaluated in order with last-match-wins semantics. This allows layering — a project defines baseline rules, and the user adds overrides on top. Glob patterns are more readable than regex and compose naturally.
+
+The matcher compares the full command string against each rule's pattern. Wildcards (`*`) match any sequence of characters within a single argument. Double wildcards (`**`) are not typically needed for flat command strings.
 
 ---
 
@@ -1633,6 +610,32 @@ In a graceful degradation system with `auto_approve_low_risk` fallback, a "criti
 - D) The system retries until a human becomes available
 
 **Answer: B** — With `auto_approve_low_risk` fallback behavior, only low and medium risk actions are auto-approved when no human is available. Critical-risk actions are rejected because the consequences of a wrong decision are too severe to auto-approve. This is the core principle of graceful degradation: maintain safety by reducing capability rather than reducing safety.
+
+---
+
+### Question 6 (Medium)
+
+In a full-auto permission mode, the agent can execute all operations without human approval. What compensating control makes this safe?
+
+- A) The agent uses a more powerful model that makes fewer mistakes
+- B) Network access is disabled and file writes are restricted to the working directory, containing the blast radius
+- C) The agent runs all operations twice and compares the results
+- D) Full-auto mode is never safe and should not be used
+
+**Answer: B** — Full-auto mode relaxes the human approval constraint but tightens the scope constraint. With network disabled, the agent cannot exfiltrate data, download malicious code, or reach external services. With file writes limited to the working directory, it cannot damage the system. This is the principle of compensating controls — relaxing one safeguard while tightening another to maintain overall safety.
+
+---
+
+### Question 7 (Hard)
+
+A declarative permission system uses last-match-wins evaluation. Given these rules in order: `{ pattern: '**', decision: 'ask' }`, `{ pattern: 'src/**/*.ts', decision: 'allow' }`, `{ pattern: '.env*', decision: 'deny' }`, what happens when the agent tries to read `src/.env.local`?
+
+- A) It is allowed because it matches `src/**/*.ts`
+- B) It is denied because it matches `.env*`
+- C) It triggers an ask because `**` is the broadest match
+- D) It causes an error because two rules match
+
+**Answer: B** — With last-match-wins evaluation, all matching rules are checked in order and the last one to match determines the decision. The file `src/.env.local` matches all three patterns: `**` (everything), `src/**/*.ts` would not match (no .ts extension), but `.env*` does match the filename. Since `.env*` is the last matching rule, the decision is deny. This demonstrates how layered rules can provide specific overrides on top of broad defaults.
 
 ---
 
@@ -1877,6 +880,197 @@ describe('Exercise 18: Audit Trail', () => {
 
 ---
 
+### Exercise 3: Declarative Permission System
+
+**Objective:** Build a permission checker that uses declarative rules with glob patterns to decide whether tool calls should be allowed, denied, or require human approval.
+
+**Specification:**
+
+1. Create a file `src/exercises/m18/ex03-permission-system.ts`
+2. Export a function `createPermissionChecker(rules: PermissionRule[]): PermissionChecker`
+3. Define the types:
+
+```typescript
+interface PermissionRule {
+  pattern: string // glob pattern
+  decision: 'allow' | 'deny' | 'ask'
+}
+
+interface PermissionChecker {
+  check(resource: string): 'allow' | 'deny' | 'ask'
+}
+```
+
+4. The checker must:
+   - Evaluate rules in order, last matching rule wins
+   - Support glob wildcards (`*` matches any characters, `**` matches across path separators)
+   - Return `'ask'` if no rules match (safe default)
+   - Handle edge cases: empty rule set, empty resource string
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m18/ex03-permission-system.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 18: Declarative Permission System', () => {
+  it('should apply last-match-wins semantics', () => {
+    const checker = createPermissionChecker([
+      { pattern: '**', decision: 'deny' },
+      { pattern: 'src/**', decision: 'allow' },
+    ])
+    expect(checker.check('src/index.ts')).toBe('allow')
+    expect(checker.check('etc/passwd')).toBe('deny')
+  })
+
+  it('should default to ask when no rules match', () => {
+    const checker = createPermissionChecker([])
+    expect(checker.check('anything')).toBe('ask')
+  })
+
+  it('should handle specific deny overrides', () => {
+    const checker = createPermissionChecker([
+      { pattern: '**', decision: 'allow' },
+      { pattern: '.env*', decision: 'deny' },
+    ])
+    expect(checker.check('.env')).toBe('deny')
+    expect(checker.check('.env.local')).toBe('deny')
+    expect(checker.check('src/app.ts')).toBe('allow')
+  })
+})
+```
+
+---
+
+### Exercise 4: Denial Adaptation
+
+**Objective:** Build an agent that adapts when the user denies an action — it proposes an alternative instead of retrying the denied operation.
+
+**Specification:**
+
+1. Create a file `src/exercises/m18/ex04-denial-adaptation.ts`
+2. Export an async function `adaptiveAgent(task: string, options: AdaptiveAgentOptions): Promise<AdaptiveAgentResult>`
+3. Define the types:
+
+```typescript
+interface AdaptiveAgentOptions {
+  onApproval: (proposal: { tool: string; args: Record<string, unknown> }) => Promise<{
+    approved: boolean
+    feedback?: string
+  }>
+  maxSteps?: number // default: 6
+}
+
+interface AdaptiveAgentResult {
+  response: string
+  deniedActions: Array<{ tool: string; args: Record<string, unknown>; feedback?: string }>
+  alternativesTried: number
+  totalSteps: number
+}
+```
+
+4. The agent must:
+   - Track denied actions and never retry the same tool call with the same parameters
+   - Include denial feedback in the next LLM call so the agent can adjust
+   - Propose an alternative approach after a denial
+   - Record all denied actions and the number of alternatives attempted
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m18/ex04-denial-adaptation.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 18: Denial Adaptation', () => {
+  it('should not retry denied actions', async () => {
+    const calls: string[] = []
+    const result = await adaptiveAgent('Delete the temp files and clean up', {
+      onApproval: async proposal => {
+        calls.push(proposal.tool)
+        if (proposal.tool === 'deleteFile') return { approved: false, feedback: 'Use trash instead' }
+        return { approved: true }
+      },
+    })
+    const deleteCalls = calls.filter(c => c === 'deleteFile')
+    expect(deleteCalls.length).toBeLessThanOrEqual(1)
+    expect(result.deniedActions.length).toBeGreaterThan(0)
+  })
+
+  it('should include denial feedback in result', async () => {
+    const result = await adaptiveAgent('Send a notification email', {
+      onApproval: async () => ({ approved: false, feedback: 'Use Slack instead of email' }),
+    })
+    expect(result.deniedActions[0].feedback).toContain('Slack')
+  })
+})
+```
+
+---
+
+### Exercise 5: Permission Modes with Glob-Based Commands
+
+**Objective:** Build a permission mode system that supports three autonomy levels (suggest/auto-edit/full-auto) with glob-based shell command rules.
+
+**Specification:**
+
+1. Create a file `src/exercises/m18/ex05-permission-modes.ts`
+2. Export a function `createModeEngine(mode: PermissionMode): ModeEngine`
+3. Define the types:
+
+```typescript
+type PermissionMode = 'suggest' | 'auto-edit' | 'full-auto'
+
+interface CommandRule {
+  pattern: string // glob pattern for command string
+  decision: 'allow' | 'deny' | 'ask'
+}
+
+interface ModeEngine {
+  mode: PermissionMode
+  checkFileWrite(path: string): 'allow' | 'deny' | 'ask'
+  checkFileRead(path: string): 'allow' | 'deny' | 'ask'
+  checkCommand(command: string): 'allow' | 'deny' | 'ask'
+}
+```
+
+4. Mode behaviors:
+   - **suggest** — reads are allowed, all writes and commands require approval
+   - **auto-edit** — reads and file writes within the project are allowed, commands require approval
+   - **full-auto** — reads and writes within the project are allowed, safe commands (git status, npm test, etc.) are allowed, network commands (curl, wget, npm publish) are denied, destructive commands (rm -rf) are denied
+5. Command rules use glob matching with last-match-wins semantics
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m18/ex05-permission-modes.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 18: Permission Modes', () => {
+  it('suggest mode should require approval for all writes', () => {
+    const engine = createModeEngine('suggest')
+    expect(engine.checkFileWrite('src/app.ts')).toBe('ask')
+    expect(engine.checkFileRead('src/app.ts')).toBe('allow')
+    expect(engine.checkCommand('git status')).toBe('ask')
+  })
+
+  it('auto-edit mode should allow writes but ask for commands', () => {
+    const engine = createModeEngine('auto-edit')
+    expect(engine.checkFileWrite('src/app.ts')).toBe('allow')
+    expect(engine.checkCommand('npm test')).toBe('ask')
+  })
+
+  it('full-auto mode should deny network commands', () => {
+    const engine = createModeEngine('full-auto')
+    expect(engine.checkFileWrite('src/app.ts')).toBe('allow')
+    expect(engine.checkCommand('git status')).toBe('allow')
+    expect(engine.checkCommand('curl http://example.com')).toBe('deny')
+    expect(engine.checkCommand('rm -rf /')).toBe('deny')
+  })
+})
+```
+
+---
+
 ## Summary
 
 In this module, you learned:
@@ -1889,5 +1083,10 @@ In this module, you learned:
 6. **Review interfaces:** CLI-based and programmatic review queues let humans efficiently review batches of agent proposals.
 7. **Audit trails:** Log every decision with enough detail for compliance review. Include who, what, when, why, and the outcome.
 8. **Graceful degradation:** When no human is available, fall back to safe behaviors — auto-approve low-risk actions, queue high-risk ones, or reject everything. Never auto-approve critical actions.
+9. **Declarative permission rules:** Defining access control as data (pattern + decision) instead of logic makes permissions auditable, versionable, and composable with last-match-wins semantics.
+10. **Permission modes:** Named configurations (restrictive, normal, autonomous) let users match the autonomy level to the task by switching rule sets, not code.
+11. **Denial adaptation:** Recording denied actions and including them as context prevents the agent from retrying rejected operations and teaches it to propose alternatives.
+12. **Three approval modes:** Suggest (read-only), auto-edit (file writes allowed), and full-auto (all operations, but network disabled) provide distinct autonomy levels with compensating controls.
+13. **Glob-based command permissions:** Fine-grained shell command control using glob patterns enables layered rules — project defaults with user overrides — for precise command execution governance.
 
 This completes Part IV: Agents and Orchestration. You now have the patterns to build autonomous agents, coordinate multiple agents, design deterministic pipelines, generate code iteratively, and add human oversight — the full toolkit for production LLM applications.

@@ -172,74 +172,53 @@ cp .env.example .env
 # Edit .env with your actual API keys
 ```
 
-Now create a utility to validate that keys are present at startup:
+Now create a utility to validate that keys are present at startup. Create a file `src/utils/env.ts` that exports these three functions:
 
 ```typescript
 // src/utils/env.ts
 
 export function requireEnv(name: string): string {
-  const value = process.env[name]
-  if (!value) {
-    throw new Error(
-      `Missing required environment variable: ${name}\n` + `Copy .env.example to .env and fill in your API keys.`
-    )
-  }
-  return value
+  /* ... */
 }
 
 export function optionalEnv(name: string, fallback: string = ''): string {
-  return process.env[name] ?? fallback
+  /* ... */
 }
 
-/**
- * Validate all required environment variables at startup.
- * Call this at the top of your main entry point.
- */
 export function validateEnv(): void {
-  const required = ['MISTRAL_API_KEY']
-  const missing = required.filter(name => !process.env[name])
-
-  if (missing.length > 0) {
-    console.error('Missing required environment variables:')
-    missing.forEach(name => console.error(`  - ${name}`))
-    console.error('\nCopy .env.example to .env and fill in your API keys.')
-    process.exit(1)
-  }
-
-  console.log('Environment validated. All required keys present.')
+  /* ... */
 }
 ```
+
+**What each function should do:**
+
+- `requireEnv` — Read `process.env[name]`. If the value is missing or empty, throw an `Error` with a message that includes the variable name and a hint to copy `.env.example`. If present, return the value.
+- `optionalEnv` — Return the environment variable value if it exists, otherwise return the `fallback`. This is a one-liner using `??`.
+- `validateEnv` — Define an array of required variable names (at minimum `'MISTRAL_API_KEY'`). Filter to find which are missing from `process.env`. If any are missing, log each one and exit the process. If all are present, log a success message.
+
+**Guiding questions:** What should `requireEnv` return if the variable exists? What operator lets you provide a default value for `undefined`? How do you exit a Node/Bun process with a non-zero status code?
 
 > **Beginner Note:** Never hardcode API keys in your source files. Even in tutorials and experiments, use environment variables. It builds good habits and prevents accidental key exposure if you push code to GitHub.
 
 ### Verifying the Setup
 
-Create a simple smoke test to confirm everything works:
+Create a simple smoke test to confirm everything works. Create `src/index.ts` that:
+
+1. Imports `validateEnv` from your `./utils/env.js` and calls it first
+2. Imports `generateText` from `'ai'` and `mistral` from `'@ai-sdk/mistral'`
+3. Defines an async `smokeTest` function that calls `generateText` with a simple prompt like `"Say 'hello' and nothing else."`
+4. Logs the response text and usage information
+5. Calls `smokeTest().catch(console.error)` at the bottom
+
+The key API pattern is:
 
 ```typescript
-// src/index.ts
-
-import { validateEnv } from './utils/env.js'
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-// Validate environment before doing anything else
-validateEnv()
-
-async function smokeTest(): Promise<void> {
-  console.log('Running smoke test...')
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: "Say 'hello' and nothing else.",
-  })
-
-  console.log('Response:', result.text)
-  console.log('Tokens used:', result.usage)
-  console.log('\nSmoke test passed! Your setup is working.')
-}
-
-smokeTest().catch(console.error)
+const result = await generateText({
+  model: mistral('mistral-small-latest'),
+  prompt: 'Your prompt here',
+})
+console.log(result.text) // The generated text
+console.log(result.usage) // { inputTokens, outputTokens, totalTokens }
 ```
 
 Run it:
@@ -269,29 +248,20 @@ This abstraction has profound implications:
 
 Mistral is our default provider throughout this course. Their generous free tier (1 billion tokens per month, all models, no credit card required) makes it the best starting point. The `@ai-sdk/mistral` package handles all the details.
 
+Create `src/providers/mistral.ts`. It should import `mistral` from `'@ai-sdk/mistral'` and export:
+
+- A pre-configured model constant `mistralSmall` using `mistral('mistral-small-latest')`
+- A factory function `createMistralModel(modelId?: string)` that defaults to `'mistral-small-latest'`
+
+The provider reads `MISTRAL_API_KEY` from the environment automatically. Free tier: 1 RPS, 500K tokens/min, 1B tokens/month per model, no credit card required. Sign up at https://console.mistral.ai.
+
+Common model IDs: `"mistral-small-latest"` (fast, default), `"mistral-large-latest"` (most capable), `"codestral-latest"` (code-optimized), `"pixtral-12b-2409"` (multimodal/vision).
+
+The pattern for creating a model instance is simply:
+
 ```typescript
-// src/providers/mistral.ts
-
 import { mistral } from '@ai-sdk/mistral'
-
-/**
- * Create a Mistral model instance.
- *
- * Reads MISTRAL_API_KEY from the environment automatically.
- * Free tier: 1 RPS, 500K tokens/min, 1B tokens/month per model, no credit card required.
- * Sign up at: https://console.mistral.ai
- *
- * Common model IDs:
- *   - "mistral-small-latest"  — Fast, efficient (default)
- *   - "mistral-large-latest"  — Most capable
- *   - "codestral-latest"      — Optimized for code
- *   - "pixtral-12b-2409"      — Multimodal (vision)
- */
-export const mistralSmall = mistral('mistral-small-latest')
-
-export function createMistralModel(modelId: string = 'mistral-small-latest') {
-  return mistral(modelId)
-}
+const model = mistral('mistral-small-latest')
 ```
 
 > **Beginner Note:** The `mistral()` function returns a model object, not a response. Think of it as configuring _which_ model you want to talk to. The actual API call happens when you pass this model to `generateText` or `streamText`.
@@ -300,117 +270,37 @@ export function createMistralModel(modelId: string = 'mistral-small-latest') {
 
 Groq provides ultra-fast inference on open-source models with a free tier (~500K tokens per day, no credit card required). It is an excellent alternative when you need speed.
 
-```typescript
-// src/providers/groq.ts
+Create `src/providers/groq.ts` following the same pattern. Import `groq` from `'@ai-sdk/groq'` and export a default constant and a factory function.
 
-import { groq } from '@ai-sdk/groq'
+Groq reads `GROQ_API_KEY` from the environment automatically. Free tier: ~500K tokens/day, no credit card required. Sign up at https://console.groq.com.
 
-/**
- * Create a Groq model instance.
- *
- * Reads GROQ_API_KEY from the environment automatically.
- * Free tier: ~500K tokens/day, no credit card required.
- * Sign up at: https://console.groq.com
- *
- * Common model IDs:
- *   - "openai/gpt-oss-20b"       — Fastest (1000 t/s), cheapest ($0.075/M)
- *   - "openai/gpt-oss-120b"      — Code execution, reasoning ($0.15/M)
- *   - "llama-3.3-70b-versatile"   — Proven, larger model
- */
-export const groqDefault = groq('openai/gpt-oss-20b')
-
-export function createGroqModel(modelId: string = 'openai/gpt-oss-20b') {
-  return groq(modelId)
-}
-```
+Common model IDs: `"openai/gpt-oss-20b"` (fastest, cheapest), `"openai/gpt-oss-120b"` (code execution, reasoning), `"llama-3.3-70b-versatile"` (proven, larger).
 
 ### Setting Up the Anthropic Provider
 
 Anthropic's Claude models are a premium option — highly capable but require a paid API key. Use Claude when you need top-tier reasoning and instruction following.
 
-```typescript
-// src/providers/anthropic.ts
+Create `src/providers/anthropic.ts` following the same pattern. Import `anthropic` from `'@ai-sdk/anthropic'`. Export constants for commonly used models and a factory function.
 
-import { anthropic } from '@ai-sdk/anthropic'
-
-/**
- * Create an Anthropic model instance.
- *
- * The anthropic() function reads ANTHROPIC_API_KEY from the environment
- * automatically. You pass a model ID string to select which Claude model
- * to use.
- *
- * Common model IDs:
- *   - "claude-sonnet-4-20250514"   — Best balance of speed and quality
- *   - "claude-opus-4-20250514"     — Most capable, slower, more expensive
- *   - "claude-haiku-4-5-20251001"    — Fastest, cheapest, good for simple tasks
- */
-export const claudeSonnet = anthropic('claude-sonnet-4-20250514')
-export const claudeHaiku = anthropic('claude-haiku-4-5-20251001')
-
-export function createAnthropicModel(modelId: string = 'claude-sonnet-4-20250514') {
-  return anthropic(modelId)
-}
-```
+Anthropic reads `ANTHROPIC_API_KEY` from the environment automatically. Common model IDs: `"claude-sonnet-4-20250514"` (best speed/quality balance), `"claude-opus-4-20250514"` (most capable), `"claude-haiku-4-5-20251001"` (fastest, cheapest).
 
 ### Setting Up the OpenAI Provider
 
 If you want to experiment with GPT models as an alternative:
 
-```typescript
-// src/providers/openai.ts
+Create `src/providers/openai.ts` following the same pattern. Import `openai` from `'@ai-sdk/openai'`.
 
-import { openai } from '@ai-sdk/openai'
-
-/**
- * Create an OpenAI model instance.
- *
- * Reads OPENAI_API_KEY from the environment automatically.
- *
- * Common model IDs:
- *   - "gpt-5.4"       — Latest GPT-5.4, fast and capable
- *   - "gpt-5-mini"    — Smaller, cheaper, faster
- */
-export const gpt5 = openai('gpt-5.4')
-export const gpt5Mini = openai('gpt-5-mini')
-
-export function createOpenAIModel(modelId: string = 'gpt-5.4') {
-  return openai(modelId)
-}
-```
+OpenAI reads `OPENAI_API_KEY` from the environment automatically. Common model IDs: `"gpt-5.4"` (latest, fast and capable), `"gpt-5-mini"` (smaller, cheaper, faster).
 
 ### Setting Up Ollama (Local Models)
 
 Ollama lets you run open-source models locally — no API key needed, no usage costs, and full data privacy. This is ideal for offline development and experimentation.
 
-```typescript
-// src/providers/ollama.ts
+Create `src/providers/ollama.ts`. Import `ollama` from `'ai-sdk-ollama'` (note: not `@ai-sdk/ollama`). Export a default constant and a factory function.
 
-import { ollama } from 'ai-sdk-ollama'
+Prerequisites: Install Ollama from https://ollama.com, pull a model with `ollama pull qwen3.5`, and the server runs on `http://localhost:11434` by default.
 
-/**
- * Create an Ollama model instance.
- *
- * Prerequisites:
- *   1. Install Ollama: https://ollama.com
- *   2. Pull a model: `ollama pull qwen3.5`
- *   3. Ollama server runs on http://localhost:11434 by default
- *
- * Recommended local models:
- *   - "qwen3.5"          — Primary choice (best all-rounder: tool calling, structured output, reasoning)
- *   - "ministral-3"      — Lightweight alternative (fast, vision support, 3B/8B/14B sizes)
- *
- * Cloud variants (higher capability, same Ollama API — no local GPU needed):
- *   - "qwen3.5:cloud"
- *   - "ministral-3:cloud"
- *   - "mistral-large-3:cloud"  — Frontier-class (top coding, multimodal)
- */
-export const localModel = ollama('qwen3.5')
-
-export function createOllamaModel(modelId: string = 'qwen3.5') {
-  return ollama(modelId)
-}
-```
+Recommended local models: `"qwen3.5"` (primary choice — best all-rounder), `"ministral-3"` (lightweight alternative). Cloud variants: `"qwen3.5:cloud"`, `"ministral-3:cloud"`, `"mistral-large-3:cloud"` (frontier-class).
 
 > **Advanced Note:** Ollama models are significantly less capable than Claude or GPT-4 for complex tasks. Use them for quick iteration and testing, but validate important behavior with a frontier model. The quality gap is especially apparent in structured output (Module 3) and tool use (Module 7).
 
@@ -418,16 +308,11 @@ export function createOllamaModel(modelId: string = 'qwen3.5') {
 
 ### A Unified Provider Factory
 
-Here is a useful pattern that lets you select a provider at runtime:
+Here is a useful pattern that lets you select a provider at runtime. Create `src/providers/factory.ts` with these types and exports:
 
 ```typescript
 // src/providers/factory.ts
 
-import { mistral } from '@ai-sdk/mistral'
-import { groq } from '@ai-sdk/groq'
-import { anthropic } from '@ai-sdk/anthropic'
-import { openai } from '@ai-sdk/openai'
-import { ollama } from 'ai-sdk-ollama'
 import type { LanguageModel } from 'ai'
 
 export type ProviderName = 'mistral' | 'groq' | 'anthropic' | 'openai' | 'ollama'
@@ -437,46 +322,32 @@ interface ModelConfig {
   modelId?: string
 }
 
-const DEFAULT_MODELS: Record<ProviderName, string> = {
-  mistral: 'mistral-small-latest',
-  groq: 'openai/gpt-oss-20b',
-  anthropic: 'claude-sonnet-4-20250514',
-  openai: 'gpt-5.4',
-  ollama: 'qwen3.5',
-}
-
-/**
- * Create a model instance from a provider name and optional model ID.
- * This is useful for configuration-driven model selection.
- */
 export function createModel(config: ModelConfig): LanguageModel {
-  const modelId = config.modelId ?? DEFAULT_MODELS[config.provider]
-
-  switch (config.provider) {
-    case 'mistral':
-      return mistral(modelId)
-    case 'groq':
-      return groq(modelId)
-    case 'anthropic':
-      return anthropic(modelId)
-    case 'openai':
-      return openai(modelId)
-    case 'ollama':
-      return ollama(modelId, { think: false })
-    default:
-      throw new Error(`Unknown provider: ${config.provider}`)
-  }
+  /* ... */
 }
+```
 
-// Usage example:
-// const model = createModel({ provider: 'mistral' })
-// const model = createModel({ provider: 'groq', modelId: 'openai/gpt-oss-120b' })  // code execution + reasoning
-// const model = createModel({ provider: 'anthropic' })
-// const model = createModel({ provider: 'openai', modelId: 'gpt-5-mini' })
-// const model = createModel({ provider: 'ollama', modelId: 'qwen3.5' })
+**What `createModel` should do:**
+
+1. Import all five provider functions at the top of the file
+2. Define a `DEFAULT_MODELS` record mapping each `ProviderName` to its default model ID string
+3. Use `config.modelId ?? DEFAULT_MODELS[config.provider]` to resolve the model ID
+4. Use a `switch` on `config.provider` to call the correct provider function with the model ID
+5. For Ollama, pass `{ think: false }` as the second argument to disable thinking mode
+6. Throw a descriptive error in the `default` case for unknown providers
+
+**Guiding questions:** Why is `LanguageModel` the right return type? What would happen if you forgot the `default` case? Why does Ollama need `{ think: false }`?
+
+Usage after you build it:
+
+```typescript
+const model = createModel({ provider: 'mistral' })
+const model = createModel({ provider: 'anthropic', modelId: 'claude-haiku-4-5-20251001' })
 ```
 
 This factory pattern becomes increasingly valuable as your application grows. You can read the provider name from a config file, a CLI argument, or an environment variable — keeping your application code provider-agnostic.
+
+> **Scale Note: 75+ Providers via AI SDK** — The Vercel AI SDK supports 75+ providers through its unified interface — the same `generateText` and `streamText` functions you are learning here. Production coding agents use this exact pattern with the `models.dev` registry to support every major provider through a single SDK. This validates the provider-agnostic approach: your code stays the same whether you use Mistral, Anthropic, OpenAI, Google, or any other supported provider. Production systems also configure model **variants** with provider-specific options — for example, thinking budget levels for Anthropic models or reasoning effort levels for OpenAI — passed via `providerOptions` in `generateText`/`streamText` calls.
 
 ---
 
@@ -494,25 +365,20 @@ The function signature accepts a configuration object with many options, but onl
 
 ### Your Absolute First Call
 
-Let us start with the simplest possible call:
+Create `src/examples/first-call.ts`. It should:
+
+1. Import `generateText` from `'ai'` and `mistral` from `'@ai-sdk/mistral'`
+2. Define an async function that calls `generateText` with your Mistral model and a simple prompt like `'What is the capital of France?'`
+3. Log `result.text` to the console
+
+The core pattern is:
 
 ```typescript
-// src/examples/first-call.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function firstCall(): Promise<void> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: 'What is the capital of France?',
-  })
-
-  console.log(result.text)
-  // => "The capital of France is Paris."
-}
-
-firstCall().catch(console.error)
+const result = await generateText({
+  model: mistral('mistral-small-latest'),
+  prompt: 'What is the capital of France?',
+})
+console.log(result.text)
 ```
 
 Run it:
@@ -525,44 +391,20 @@ That is it. One import, one function call, one result. Let us now unpack what ha
 
 ### Understanding the Result Object
 
-`generateText` returns a rich result object. Here is what it contains:
+`generateText` returns a rich result object. Create `src/examples/result-object.ts` that makes a `generateText` call and logs each property of the result. The key properties to explore are:
 
 ```typescript
-// src/examples/result-object.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function exploreResult(): Promise<void> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    prompt: 'Explain quantum computing in one sentence.',
-  })
-
-  // The generated text
-  console.log('Text:', result.text)
-
-  // Token usage information
-  console.log('Usage:', result.usage)
-  // => { inputTokens: 14, outputTokens: 32, totalTokens: 46 }
-
-  // The finish reason — why the model stopped generating
-  console.log('Finish reason:', result.finishReason)
-  // => "stop" (model decided it was done)
-  // Other possible values: "length" (hit maxOutputTokens), "tool-calls", "error"
-
-  // Response metadata
-  console.log('Response ID:', result.response.id)
-  console.log('Model used:', result.response.modelId)
-
-  // Warnings (e.g., if a feature is not supported by the provider)
-  if (result.warnings && result.warnings.length > 0) {
-    console.log('Warnings:', result.warnings)
-  }
-}
-
-exploreResult().catch(console.error)
+result.text // The generated text string
+result.usage // { inputTokens: number, outputTokens: number, totalTokens: number }
+result.finishReason // "stop" | "length" | "tool-calls" | "error"
+result.response.id // Unique response ID from the provider
+result.response.modelId // Which model actually responded
+result.warnings // Array of warnings (e.g., unsupported features)
 ```
+
+The `finishReason` is especially important: `"stop"` means the model completed naturally, while `"length"` means it was cut off by `maxOutputTokens`.
+
+Build this file yourself — call `generateText` with a prompt, then log each of the properties above to see what the result object contains.
 
 > **Beginner Note:** Always check `result.finishReason`. If it is `"length"`, the model was cut off mid-sentence because it hit the token limit. You will need to increase `maxOutputTokens` or shorten your prompt. This is one of the most common issues beginners encounter.
 
@@ -594,106 +436,36 @@ The `messages` format gives you full control over the conversation, including sy
 
 ### System Prompts
 
-The `system` parameter sets the model's persona and instructions:
+The `system` parameter sets the model's persona and instructions. The pattern is:
 
 ```typescript
-// src/examples/system-prompt.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function withSystemPrompt(): Promise<void> {
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: 'You are a pirate captain. Respond to everything in pirate speak. Keep responses under 50 words.',
-    prompt: 'How do I learn to code?',
-  })
-
-  console.log(result.text)
-  // => "Arrr, ye landlubber! Start with JavaScript, the lingua franca of the seven
-  //     seas of the web. Practice every day on freeCodeCamp, and soon ye'll be
-  //     commandin' the code like a true captain commands their ship!"
-}
-
-withSystemPrompt().catch(console.error)
+const result = await generateText({
+  model: mistral('mistral-small-latest'),
+  system: 'You are a pirate captain. Respond in pirate speak. Keep responses under 50 words.',
+  prompt: 'How do I learn to code?',
+})
 ```
+
+Create `src/examples/system-prompt.ts` — try a few different system prompts (a pirate, a poet, a strict teacher) and see how they change the model's response to the same user prompt. This is your first taste of how the system message shapes behavior.
 
 ### Multiple Examples with Different Prompts
 
-Here is a collection of calls demonstrating different use cases:
+Create `src/examples/various-prompts.ts` that demonstrates four different use cases of `generateText`:
+
+1. **Factual question** — a simple prompt with no system message (e.g., "What are the three laws of thermodynamics?")
+2. **Creative writing** — a system message setting a creative persona, with a story prompt
+3. **Code generation** — a system message setting a developer persona, with a coding task
+4. **Summarization** — a system message instructing the model to summarize, with a long passage as the prompt
+
+For each, log the result text and `result.usage.totalTokens` so you can see how token usage varies by task.
+
+**Tip:** Create the model object once and reuse it across calls:
 
 ```typescript
-// src/examples/various-prompts.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 const model = mistral('mistral-small-latest')
-
-async function factualQuestion(): Promise<void> {
-  const result = await generateText({
-    model,
-    prompt: 'What are the three laws of thermodynamics? Be concise.',
-  })
-  console.log('=== Factual Question ===')
-  console.log(result.text)
-  console.log(`Tokens: ${result.usage.totalTokens}\n`)
-}
-
-async function creativeWriting(): Promise<void> {
-  const result = await generateText({
-    model,
-    system: 'You are a creative fiction writer. Write vivid, engaging prose.',
-    prompt: 'Write a 3-sentence story about a robot discovering music for the first time.',
-  })
-  console.log('=== Creative Writing ===')
-  console.log(result.text)
-  console.log(`Tokens: ${result.usage.totalTokens}\n`)
-}
-
-async function codeGeneration(): Promise<void> {
-  const result = await generateText({
-    model,
-    system: 'You are a senior TypeScript developer. Write clean, well-typed code with brief comments.',
-    prompt: 'Write a function that debounces another function with a configurable delay.',
-  })
-  console.log('=== Code Generation ===')
-  console.log(result.text)
-  console.log(`Tokens: ${result.usage.totalTokens}\n`)
-}
-
-async function summarization(): Promise<void> {
-  const longText = `
-    The transformer architecture, introduced in the 2017 paper "Attention Is All You Need"
-    by Vaswani et al., revolutionized natural language processing by replacing recurrent
-    neural networks with self-attention mechanisms. Unlike RNNs, which process tokens
-    sequentially, transformers can process all tokens in parallel, dramatically improving
-    training efficiency. The key innovation is the multi-head attention mechanism, which
-    allows the model to attend to different parts of the input simultaneously. This
-    architecture became the foundation for models like BERT, GPT, and Claude.
-  `
-
-  const result = await generateText({
-    model,
-    system: 'Summarize the following text in exactly one sentence.',
-    prompt: longText,
-  })
-  console.log('=== Summarization ===')
-  console.log(result.text)
-  console.log(`Tokens: ${result.usage.totalTokens}\n`)
-}
-
-async function main(): Promise<void> {
-  await factualQuestion()
-  await creativeWriting()
-  await codeGeneration()
-  await summarization()
-}
-
-main().catch(console.error)
 ```
 
-> **Advanced Note:** Notice that we create the model object once and reuse it across calls. The model object is stateless — it just holds configuration. Each `generateText` call is independent. There is no connection pooling or session management to worry about.
+> **Advanced Note:** The model object is stateless — it just holds configuration. Each `generateText` call is independent. There is no connection pooling or session management to worry about.
 
 ---
 
@@ -713,66 +485,24 @@ LLM conversations are structured as sequences of messages, each tagged with a **
 
 The system message is your primary control surface. It tells the model _how to behave_ before the user says anything. Think of it as writing an employee's job description.
 
+Create `src/examples/roles-system.ts` that demonstrates how different system messages change the model's behavior. Use the `messages` array format instead of the `system` + `prompt` shorthand:
+
 ```typescript
-// src/examples/roles-system.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const model = mistral('mistral-small-latest')
-
-// Example 1: Technical expert
-async function technicalExpert(): Promise<void> {
-  const result = await generateText({
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: `You are a senior software architect with 20 years of experience.
-You give precise, technical answers. You always mention trade-offs.
-You format code examples in TypeScript unless asked otherwise.`,
-      },
-      {
-        role: 'user',
-        content: 'Should I use a SQL or NoSQL database for my new project?',
-      },
-    ],
-  })
-
-  console.log('=== Technical Expert ===')
-  console.log(result.text)
-}
-
-// Example 2: Friendly tutor
-async function friendlyTutor(): Promise<void> {
-  const result = await generateText({
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: `You are a patient, encouraging programming tutor for beginners.
-Use simple analogies. Avoid jargon unless you explain it immediately.
-After explaining a concept, ask a follow-up question to check understanding.`,
-      },
-      {
-        role: 'user',
-        content: 'What is a variable in programming?',
-      },
-    ],
-  })
-
-  console.log('=== Friendly Tutor ===')
-  console.log(result.text)
-}
-
-async function main(): Promise<void> {
-  await technicalExpert()
-  console.log('\n---\n')
-  await friendlyTutor()
-}
-
-main().catch(console.error)
+const result = await generateText({
+  model,
+  messages: [
+    { role: 'system', content: 'Your persona instructions here...' },
+    { role: 'user', content: 'The user question here...' },
+  ],
+})
 ```
+
+Build two functions in this file:
+
+1. **Technical expert** — system message describes a senior software architect who gives precise answers and mentions trade-offs. Ask it a technical question.
+2. **Friendly tutor** — system message describes a patient beginner tutor who uses analogies and avoids jargon. Ask it to explain a basic concept.
+
+Run both and compare how the same type of question gets wildly different answers depending on the system message. This is the power of the system role.
 
 ### User Messages: The Input
 
@@ -790,54 +520,20 @@ User messages represent what the end user typed. In a chatbot, these come from a
 
 Assistant messages represent previous model responses. Including them creates the illusion of a continuous conversation. This is how multi-turn chat works — you replay the full conversation history with each API call.
 
+Create `src/examples/roles-multiturn.ts` that simulates a multi-turn conversation by providing message history. The messages array should alternate between `user` and `assistant` roles, starting with an optional `system` message:
+
 ```typescript
-// src/examples/roles-multiturn.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function multiTurnConversation(): Promise<void> {
-  const model = mistral('mistral-small-latest')
-
-  // Simulate a multi-turn conversation by providing history
-  const result = await generateText({
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a helpful cooking assistant. Be concise.',
-      },
-      {
-        role: 'user',
-        content: 'I want to make pasta tonight.',
-      },
-      {
-        role: 'assistant',
-        content:
-          'Great choice! What kind of pasta are you thinking? I can help with carbonara, aglio e olio, bolognese, or something else.',
-      },
-      {
-        role: 'user',
-        content: "Carbonara please. But I don't have guanciale.",
-      },
-      {
-        role: 'assistant',
-        content:
-          'No problem — pancetta or thick-cut bacon are good substitutes. Do you have eggs, parmesan, and black pepper?',
-      },
-      {
-        role: 'user',
-        content: 'Yes I have all of those. Give me the recipe.',
-      },
-    ],
-  })
-
-  console.log('=== Multi-Turn Conversation ===')
-  console.log(result.text)
-}
-
-multiTurnConversation().catch(console.error)
+messages: [
+  { role: 'system', content: '...' },
+  { role: 'user', content: '...' },
+  { role: 'assistant', content: '...' }, // A previous model response you provide
+  { role: 'user', content: '...' },
+  { role: 'assistant', content: '...' }, // Another previous response
+  { role: 'user', content: '...' }, // The new question — model responds to this
+]
 ```
+
+Build a conversation with at least 3 turns of history (e.g., a cooking assistant, a travel planner, or a debugging helper). The key insight: the model has no memory — you must include the full history each time. The model responds to the **last user message** in the context of everything above it.
 
 > **Beginner Note:** The model has no memory between API calls. Every call is stateless. If you want the model to "remember" previous messages, you must include them in the `messages` array. This is why chatbots grow more expensive over time — each message includes the entire conversation history.
 
@@ -868,65 +564,39 @@ const badMessages = [
 
 ### Practical Pattern: Building Conversation History
 
-Here is a reusable pattern for building conversation history incrementally:
+Now build a reusable pattern for managing conversation history incrementally. Create `src/examples/conversation-builder.ts` with a `Conversation` class:
 
 ```typescript
-// src/examples/conversation-builder.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
 import type { ModelMessage } from 'ai'
 
 class Conversation {
   private messages: ModelMessage[] = []
-  private model = mistral('mistral-small-latest')
 
   constructor(systemPrompt?: string) {
-    if (systemPrompt) {
-      this.messages.push({ role: 'system', content: systemPrompt })
-    }
+    /* ... */
   }
-
   async say(userMessage: string): Promise<string> {
-    this.messages.push({ role: 'user', content: userMessage })
-
-    const result = await generateText({
-      model: this.model,
-      messages: this.messages,
-    })
-
-    this.messages.push({ role: 'assistant', content: result.text })
-    return result.text
+    /* ... */
   }
-
   getHistory(): ModelMessage[] {
-    return [...this.messages]
+    /* ... */
   }
-
   getTokenEstimate(): number {
-    const totalChars = this.messages
-      .map(m => (typeof m.content === 'string' ? m.content.length : 0))
-      .reduce((a, b) => a + b, 0)
-    return Math.ceil(totalChars / 4)
+    /* ... */
   }
 }
-
-async function main(): Promise<void> {
-  const chat = new Conversation('You are a knowledgeable history teacher. Keep answers under 100 words.')
-
-  console.log('User: When did World War 2 start?')
-  const r1 = await chat.say('When did World War 2 start?')
-  console.log('Assistant:', r1)
-
-  console.log('\nUser: Who were the main countries involved?')
-  const r2 = await chat.say('Who were the main countries involved?')
-  console.log('Assistant:', r2)
-
-  console.log(`\nEstimated tokens in history: ${chat.getTokenEstimate()}`)
-}
-
-main().catch(console.error)
 ```
+
+**What each method should do:**
+
+- **constructor** — If a `systemPrompt` is provided, push a system message onto the `messages` array. Also store a model instance.
+- **say** — Push the user message, call `generateText` with the full `messages` array, push the assistant response, and return the text. This is the core loop of any chatbot.
+- **getHistory** — Return a copy of the messages array (use spread: `[...this.messages]`).
+- **getTokenEstimate** — Sum the character lengths of all message contents and divide by ~4 (a rough token estimate).
+
+**Guiding questions:** Why do you push both the user message AND the assistant response onto the array? Why return a copy from `getHistory` instead of the array directly? What happens to the messages array as the conversation grows?
+
+Test it by creating a conversation, calling `say()` a few times, and logging the history and token estimate.
 
 > **Advanced Note:** This simple Conversation class grows unboundedly. In production, you need a strategy for managing context window limits: truncation, summarization, or sliding window. We cover these techniques in Module 4 (Conversations & Memory).
 
@@ -946,159 +616,73 @@ The key metric is **Time to First Token (TTFT)**. A 500-token response that take
 
 `streamText` has the same interface as `generateText` — same `model`, `messages`, `system`, and configuration options. The difference is in the return value: instead of a completed result, you get a stream.
 
+Create `src/examples/streaming-basic.ts`. The key differences from `generateText`:
+
+1. `streamText` is **not awaited** when called — it returns a stream object immediately
+2. You consume the stream with `for await...of` on `result.textStream`
+3. After the stream completes, properties like `result.usage` and `result.finishReason` are promises you must `await`
+
 ```typescript
-// src/examples/streaming-basic.ts
+const result = streamText({
+  // No await here!
+  model: mistral('mistral-small-latest'),
+  prompt: 'Explain how a CPU works.',
+})
 
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function basicStream(): Promise<void> {
-  const result = streamText({
-    model: mistral('mistral-small-latest'),
-    prompt: 'Explain how a CPU works in 200 words.',
-  })
-
-  // Consume the text stream — each chunk is a piece of the response
-  for await (const textPart of result.textStream) {
-    process.stdout.write(textPart)
-  }
-
-  // After the stream completes, you can access the full result
-  const usage = await result.usage
-  const finishReason = await result.finishReason
-  console.log('\n\n--- Stream Complete ---')
-  console.log('Total tokens:', usage)
-  console.log('Finish reason:', finishReason)
+for await (const textPart of result.textStream) {
+  process.stdout.write(textPart) // Print each chunk as it arrives
 }
 
-basicStream().catch(console.error)
+const usage = await result.usage // Available after stream completes
 ```
+
+Build this file — call `streamText`, consume the text stream with `process.stdout.write` so you see tokens appear in real-time, then log the usage and finish reason after the stream ends.
 
 > **Beginner Note:** Notice that `streamText` is NOT awaited when called — it returns immediately with a stream object. You then consume the stream with `for await...of`. The `await` happens inside the loop as each chunk arrives.
 
 ### Stream Consumption Patterns
 
-There are several ways to consume a stream:
+There are several ways to consume a stream. Create `src/examples/streaming-patterns.ts` that demonstrates all three patterns:
+
+**Pattern 1: Token-by-token with `textStream`** — iterate with `for await...of` and write each chunk to stdout.
+
+**Pattern 2: Collect the full text** — instead of iterating, simply `await result.text` to get the complete response as a single string once streaming finishes.
 
 ```typescript
-// src/examples/streaming-patterns.ts
-
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const model = mistral('mistral-small-latest')
-
-// Pattern 1: Token-by-token with textStream
-async function tokenByToken(): Promise<void> {
-  console.log('=== Token by Token ===')
-  const result = streamText({
-    model,
-    prompt: 'List 5 programming languages and their strengths.',
-  })
-
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk)
-  }
-  console.log('\n')
-}
-
-// Pattern 2: Collect the full text
-async function collectFullText(): Promise<void> {
-  console.log('=== Collected Full Text ===')
-  const result = streamText({
-    model,
-    prompt: 'What is the meaning of life? Answer in one paragraph.',
-  })
-
-  // The text promise resolves to the complete text once streaming finishes
-  const fullText = await result.text
-  console.log(fullText)
-  console.log()
-}
-
-// Pattern 3: Using callbacks via the stream object
-async function withCallbacks(): Promise<void> {
-  console.log('=== With Callbacks ===')
-  let chunkCount = 0
-
-  const result = streamText({
-    model,
-    prompt: 'Write a haiku about programming.',
-    onChunk(event) {
-      if (event.chunk.type === 'text-delta') {
-        chunkCount++
-      }
-    },
-    onFinish(event) {
-      console.log(`\n\nFinished! Chunks received: ${chunkCount}`)
-      console.log(`Usage: ${JSON.stringify(event.usage)}`)
-    },
-  })
-
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk)
-  }
-}
-
-async function main(): Promise<void> {
-  await tokenByToken()
-  await collectFullText()
-  await withCallbacks()
-}
-
-main().catch(console.error)
+const fullText = await result.text // Waits for the entire stream, returns the full string
 ```
+
+**Pattern 3: Using callbacks** — pass `onChunk` and `onFinish` callbacks directly to `streamText`:
+
+```typescript
+const result = streamText({
+  model,
+  prompt: '...',
+  onChunk(event) {
+    /* called for each chunk */
+  },
+  onFinish(event) {
+    /* called when stream completes, event.usage available */
+  },
+})
+```
+
+Build one function per pattern, run them sequentially in a `main()` function, and compare how each pattern feels. When would you use Pattern 2 vs Pattern 1? When would callbacks be useful?
 
 ### Streaming with Timing Information
 
-Measuring token delivery speed helps you understand model performance and detect issues:
+Measuring token delivery speed helps you understand model performance and detect issues. Create `src/examples/streaming-timing.ts` that wraps a `streamText` call with timing instrumentation.
 
-```typescript
-// src/examples/streaming-timing.ts
+**What to track:**
 
-import { streamText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+- `startTime` — record with `performance.now()` before calling `streamText`
+- `firstTokenTime` — record when the first chunk arrives (this gives you TTFT)
+- `chunkCount` and `totalChars` — increment as you iterate the stream
+- `endTime` — record after the stream completes
 
-async function streamWithTiming(): Promise<void> {
-  const model = mistral('mistral-small-latest')
+**The approach:** Use `performance.now()` to capture timestamps. Inside your `for await` loop, check if `firstTokenTime` is still `null` — if so, this is the first chunk, so record the time. After the loop, calculate TTFT, total time, stream duration, and chars/second.
 
-  const startTime = performance.now()
-  let firstTokenTime: number | null = null
-  let chunkCount = 0
-  let totalChars = 0
-
-  const result = streamText({
-    model,
-    prompt: 'Write a short essay about the importance of testing in software development. About 200 words.',
-  })
-
-  for await (const chunk of result.textStream) {
-    if (firstTokenTime === null) {
-      firstTokenTime = performance.now()
-      const ttft = (firstTokenTime - startTime).toFixed(0)
-      process.stdout.write(`[TTFT: ${ttft}ms] `)
-    }
-
-    process.stdout.write(chunk)
-    chunkCount++
-    totalChars += chunk.length
-  }
-
-  const endTime = performance.now()
-  const totalTime = endTime - startTime
-  const streamTime = endTime - (firstTokenTime ?? endTime)
-
-  console.log('\n\n--- Timing Report ---')
-  console.log(`Time to first token (TTFT): ${((firstTokenTime ?? endTime) - startTime).toFixed(0)}ms`)
-  console.log(`Total time: ${totalTime.toFixed(0)}ms`)
-  console.log(`Stream duration: ${streamTime.toFixed(0)}ms`)
-  console.log(`Chunks received: ${chunkCount}`)
-  console.log(`Characters generated: ${totalChars}`)
-  console.log(`Average chars/second: ${((totalChars / streamTime) * 1000).toFixed(1)}`)
-}
-
-streamWithTiming().catch(console.error)
-```
+**Guiding questions:** Why is `performance.now()` better than `Date.now()` for this? What is TTFT and why does it matter for user experience? How would you compute average characters per second from the values you tracked?
 
 > **Advanced Note:** Time to First Token (TTFT) is a critical metric in production. It determines how quickly your user sees _something_ happen. TTFT varies by model (Haiku < Sonnet < Opus), prompt length (longer prompts = slower TTFT), and server load. Monitor TTFT in production to catch regressions.
 
@@ -1126,37 +710,20 @@ streamWithTiming().catch(console.error)
 - **Temperature 1.0:** Creative. The model explores less likely tokens. Good for brainstorming and creative writing.
 - **Temperature > 1.0:** Very random. Outputs become increasingly incoherent. Rarely useful.
 
+Create `src/examples/temperature-comparison.ts` that empirically demonstrates temperature's effect. The approach:
+
+1. Pick a creative prompt (e.g., "Write a one-sentence description of a sunset.")
+2. Loop through several temperature values: `[0, 0.3, 0.7, 1.0]`
+3. At each temperature, run the same prompt 3 times
+4. Log all results so you can compare variation
+
+The temperature parameter is passed directly to `generateText`:
+
 ```typescript
-// src/examples/temperature-comparison.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const model = mistral('mistral-small-latest')
-const prompt = 'Write a one-sentence description of a sunset.'
-
-async function compareTemperatures(): Promise<void> {
-  const temperatures = [0, 0.3, 0.7, 1.0]
-
-  for (const temp of temperatures) {
-    console.log(`\n=== Temperature: ${temp} ===`)
-
-    // Run 3 times at each temperature to see variation
-    for (let i = 0; i < 3; i++) {
-      const result = await generateText({
-        model,
-        prompt,
-        temperature: temp,
-      })
-      console.log(`  Run ${i + 1}: ${result.text}`)
-    }
-  }
-}
-
-compareTemperatures().catch(console.error)
+const result = await generateText({ model, prompt, temperature: 0.7 })
 ```
 
-When you run this, you will observe:
+Build this and run it. You should observe:
 
 - At temperature 0, all three runs produce identical (or nearly identical) output.
 - At temperature 1.0, each run produces a distinctly different sentence.
@@ -1183,44 +750,16 @@ const result = await generateText({
 
 **maxOutputTokens** sets an upper limit on the response length. This is critical for cost control and preventing runaway responses.
 
+Create `src/examples/max-tokens.ts` that demonstrates the effect of `maxOutputTokens`. Make two calls with the same prompt (e.g., "Explain the theory of relativity in detail."):
+
+1. One with a very small limit (`maxOutputTokens: 50`) — the model will be cut off
+2. One with a generous limit (`maxOutputTokens: 1000`) — the model finishes naturally
+
 ```typescript
-// src/examples/max-tokens.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const model = mistral('mistral-small-latest')
-
-async function maxTokensDemo(): Promise<void> {
-  // Very short limit — model gets cut off
-  const short = await generateText({
-    model,
-    prompt: 'Explain the theory of relativity in detail.',
-    maxOutputTokens: 50,
-  })
-
-  console.log('=== maxOutputTokens: 50 ===')
-  console.log(short.text)
-  console.log(`Finish reason: ${short.finishReason}`)
-  // => finishReason: "length" — the model was cut off
-  console.log()
-
-  // Generous limit — model finishes naturally
-  const generous = await generateText({
-    model,
-    prompt: 'Explain the theory of relativity in detail.',
-    maxOutputTokens: 1000,
-  })
-
-  console.log('=== maxOutputTokens: 1000 ===')
-  console.log(generous.text)
-  console.log(`Finish reason: ${generous.finishReason}`)
-  // => finishReason: "stop" — the model finished on its own
-  console.log(`Tokens used: ${generous.usage.outputTokens} of 1000 allowed`)
-}
-
-maxTokensDemo().catch(console.error)
+const result = await generateText({ model, prompt, maxOutputTokens: 50 })
 ```
+
+For each, log the text, `finishReason`, and `usage.outputTokens`. You should see `finishReason: "length"` for the short limit and `finishReason: "stop"` for the generous one.
 
 > **Beginner Note:** Setting `maxOutputTokens` does not make the model _use_ that many tokens. It sets a ceiling. If the model can answer in 50 tokens, it will stop at 50 even if `maxOutputTokens` is 4000. Think of it as a safety net, not a target.
 
@@ -1228,29 +767,17 @@ maxTokensDemo().catch(console.error)
 
 **Stop sequences** tell the model to stop generating when it produces a specific string. This is useful for structured output and preventing the model from going off-topic.
 
+Create `src/examples/stop-sequences.ts` that demonstrates how stop sequences work. For example, stopping at the first newline forces single-line output:
+
 ```typescript
-// src/examples/stop-sequences.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-async function stopSequenceDemo(): Promise<void> {
-  const model = mistral('mistral-small-latest')
-
-  // Stop at the first newline — forces single-line output
-  const result = await generateText({
-    model,
-    prompt: 'Give me a motivational quote:',
-    stopSequences: ['\n'],
-  })
-
-  console.log('Single line output:', result.text)
-  console.log('Finish reason:', result.finishReason)
-  // => finishReason: "stop" — stopped because of the stop sequence
-}
-
-stopSequenceDemo().catch(console.error)
+const result = await generateText({
+  model,
+  prompt: 'Give me a motivational quote:',
+  stopSequences: ['\n'],
+})
 ```
+
+Experiment with different stop sequences — what happens if you stop at a period? At a comma? Log `finishReason` to confirm the model stopped due to the sequence.
 
 ### Frequency and Presence Penalties
 
@@ -1259,43 +786,16 @@ These parameters reduce repetition in generated text:
 - **Frequency penalty** (0 to 2): Penalizes tokens based on how many times they have appeared. Higher values reduce word repetition.
 - **Presence penalty** (0 to 2): Penalizes tokens based on whether they have appeared at all. Higher values encourage topic diversity.
 
+Create `src/examples/penalties.ts` that compares outputs with and without frequency/presence penalties. Use a prompt that tends to produce repetition (e.g., "List 10 creative uses for a paperclip.") and make two calls:
+
+1. One with `frequencyPenalty: 0, presencePenalty: 0` (default — may repeat ideas)
+2. One with `frequencyPenalty: 0.5, presencePenalty: 0.5` (should produce more diverse ideas)
+
 ```typescript
-// src/examples/penalties.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
-const model = mistral('mistral-small-latest')
-
-async function penaltyComparison(): Promise<void> {
-  const prompt = 'List 10 creative uses for a paperclip.'
-
-  // No penalties — model may repeat similar ideas
-  const noPenalty = await generateText({
-    model,
-    prompt,
-    frequencyPenalty: 0,
-    presencePenalty: 0,
-  })
-
-  console.log('=== No Penalties ===')
-  console.log(noPenalty.text)
-  console.log()
-
-  // High presence penalty — model avoids repeating topics
-  const highPenalty = await generateText({
-    model,
-    prompt,
-    frequencyPenalty: 0.5,
-    presencePenalty: 0.5,
-  })
-
-  console.log('=== With Penalties (0.5 / 0.5) ===')
-  console.log(highPenalty.text)
-}
-
-penaltyComparison().catch(console.error)
+const result = await generateText({ model, prompt, frequencyPenalty: 0.5, presencePenalty: 0.5 })
 ```
+
+Compare the outputs — do you see more variety with penalties enabled?
 
 > **Advanced Note:** Penalties are more commonly used with OpenAI models. Claude models tend to be less repetitive by default. Over-penalizing can make output disjointed and nonsensical. Start with values between 0 and 0.5 and adjust based on results.
 
@@ -1348,65 +848,34 @@ Robust error handling is not optional — it is the difference between a demo an
 
 ### Basic Error Handling Pattern
 
+Create `src/examples/error-handling-basic.ts` with a `safeGenerate` function:
+
 ```typescript
-// src/examples/error-handling-basic.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 async function safeGenerate(prompt: string): Promise<string | null> {
-  try {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      prompt,
-      maxOutputTokens: 500,
-    })
-
-    // Check if the model was cut off
-    if (result.finishReason === 'length') {
-      console.warn('Warning: Response was truncated due to maxOutputTokens limit.')
-    }
-
-    return result.text
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(`LLM call failed: ${error.message}`)
-
-      if (error.message.includes('401') || error.message.includes('authentication')) {
-        console.error('Authentication failed. Check your MISTRAL_API_KEY.')
-      } else if (error.message.includes('429') || error.message.includes('rate')) {
-        console.error('Rate limited. Wait and retry.')
-      } else if (error.message.includes('timeout')) {
-        console.error('Request timed out. The model may be overloaded.')
-      }
-    }
-
-    return null
-  }
+  /* ... */
 }
-
-async function main(): Promise<void> {
-  const response = await safeGenerate('What is the speed of light?')
-
-  if (response) {
-    console.log('Success:', response)
-  } else {
-    console.log('Failed to get a response.')
-  }
-}
-
-main().catch(console.error)
 ```
+
+**What it should do:**
+
+1. Wrap `generateText` in a `try/catch`
+2. On success, check `result.finishReason` — if it is `'length'`, log a warning that the response was truncated
+3. Return `result.text` on success
+4. In the `catch`, inspect `error.message` to identify the error type:
+   - Contains `'401'` or `'authentication'` — log an API key error
+   - Contains `'429'` or `'rate'` — log a rate limit error
+   - Contains `'timeout'` — log a timeout error
+5. Return `null` on failure
+
+**Guiding questions:** Why return `null` instead of throwing? What is the difference between a `"length"` finish reason and an actual error? How would you use `instanceof Error` to safely access `error.message`?
 
 ### Retry Logic with Exponential Backoff
 
 Rate limits are the most common error in LLM applications. The standard approach is exponential backoff: wait, retry, wait longer, retry again.
 
-```typescript
-// src/examples/error-handling-retry.ts
+Create `src/examples/error-handling-retry.ts` that implements retry with exponential backoff. You will need these types and helpers:
 
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+```typescript
 import type { LanguageModel } from 'ai'
 
 interface RetryOptions {
@@ -1416,154 +885,67 @@ interface RetryOptions {
   backoffMultiplier: number
 }
 
-const DEFAULT_RETRY_OPTIONS: RetryOptions = {
-  maxRetries: 3,
-  initialDelayMs: 1000,
-  maxDelayMs: 30000,
-  backoffMultiplier: 2,
-}
-
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  /* ... */
 }
-
 function isRetryable(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  const message = error.message.toLowerCase()
-
-  // Retry on rate limits and server errors
-  if (message.includes('429') || message.includes('rate')) return true
-  if (message.includes('500') || message.includes('502') || message.includes('503')) return true
-  if (message.includes('timeout') || message.includes('econnreset')) return true
-
-  // Do NOT retry on auth errors or bad requests
-  if (message.includes('401') || message.includes('403')) return false
-  if (message.includes('400') || message.includes('404')) return false
-
-  return true
+  /* ... */
 }
 
 async function generateTextWithRetry(
-  params: {
-    model: LanguageModel
-    prompt?: string
-    system?: string
-    maxOutputTokens?: number
-    temperature?: number
-  },
-  options: Partial<RetryOptions> = {}
+  params: { model: LanguageModel; prompt?: string; system?: string; maxOutputTokens?: number; temperature?: number },
+  options?: Partial<RetryOptions>
 ): Promise<string> {
-  const opts = { ...DEFAULT_RETRY_OPTIONS, ...options }
-  let lastError: Error | null = null
-  let delay = opts.initialDelayMs
-
-  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
-    try {
-      if (attempt > 0) {
-        console.log(`Retry attempt ${attempt}/${opts.maxRetries} after ${delay}ms...`)
-        await sleep(delay)
-        delay = Math.min(delay * opts.backoffMultiplier, opts.maxDelayMs)
-      }
-
-      const result = await generateText(params as Parameters<typeof generateText>[0])
-      return result.text
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error))
-
-      if (!isRetryable(error)) {
-        console.error(`Non-retryable error: ${lastError.message}`)
-        throw lastError
-      }
-
-      console.warn(`Attempt ${attempt + 1} failed: ${lastError.message}`)
-    }
-  }
-
-  throw new Error(`All ${opts.maxRetries + 1} attempts failed. Last error: ${lastError?.message}`)
+  /* ... */
 }
-
-// Usage
-async function main(): Promise<void> {
-  const response = await generateTextWithRetry({
-    model: mistral('mistral-small-latest'),
-    prompt: 'What is the capital of Japan?',
-    maxOutputTokens: 100,
-  })
-
-  console.log('Response:', response)
-}
-
-main().catch(console.error)
 ```
+
+**What each function should do:**
+
+- **`sleep`** — Return a promise that resolves after `ms` milliseconds (use `setTimeout` inside `new Promise`).
+- **`isRetryable`** — Check `error.message` for status codes. Return `true` for transient errors (429, 500, 502, 503, timeout, ECONNRESET). Return `false` for permanent errors (401, 403, 400, 404). Default to `true` for unknown errors.
+- **`generateTextWithRetry`** — Loop from attempt 0 to `maxRetries`. On each attempt: if not the first attempt, sleep for the current delay then multiply the delay by `backoffMultiplier` (capped at `maxDelayMs`). Call `generateText`. If it succeeds, return the text. If it fails with a non-retryable error, throw immediately. If all retries are exhausted, throw with a descriptive message.
+
+**Guiding questions:** Why should you NOT retry a 401 error? Why multiply the delay on each attempt instead of using a fixed delay? What should the default delay progression look like (1s, 2s, 4s, 8s...)?
 
 ### Timeout Handling
 
 Long responses can hang if the provider is experiencing issues. Always set reasonable timeouts:
 
+Create `src/examples/error-handling-timeout.ts` with a `generateWithTimeout` function:
+
 ```typescript
-// src/examples/error-handling-timeout.ts
-
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-
 async function generateWithTimeout(prompt: string, timeoutMs: number = 30000): Promise<string> {
-  const controller = new AbortController()
-
-  const timeoutId = setTimeout(() => {
-    controller.abort()
-  }, timeoutMs)
-
-  try {
-    const result = await generateText({
-      model: mistral('mistral-small-latest'),
-      prompt,
-      maxOutputTokens: 500,
-      abortSignal: controller.signal,
-    })
-
-    return result.text
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Request timed out after ${timeoutMs}ms`)
-    }
-    throw error
-  } finally {
-    clearTimeout(timeoutId)
-  }
+  /* ... */
 }
-
-async function main(): Promise<void> {
-  try {
-    const result = await generateWithTimeout('What is 2 + 2?', 30000)
-    console.log('Success:', result)
-  } catch (error) {
-    console.error('Error:', (error as Error).message)
-  }
-
-  try {
-    // Intentionally short timeout to demonstrate failure
-    const result = await generateWithTimeout(
-      'Write a 1000-word essay about the history of computing.',
-      100 // 100ms — this will almost certainly time out
-    )
-    console.log('Success:', result)
-  } catch (error) {
-    console.error('Expected timeout:', (error as Error).message)
-  }
-}
-
-main().catch(console.error)
 ```
+
+**What it should do:**
+
+1. Create an `AbortController` instance
+2. Set a `setTimeout` that calls `controller.abort()` after `timeoutMs`
+3. Pass `abortSignal: controller.signal` to `generateText`
+4. In the `catch`, check if the error is an `AbortError` (check `error.name === 'AbortError'`) — if so, throw a descriptive timeout error
+5. In the `finally` block, always `clearTimeout` to prevent the timer from firing after a successful response
+
+**Key API pattern:**
+
+```typescript
+const controller = new AbortController()
+const result = await generateText({ model, prompt, abortSignal: controller.signal })
+```
+
+**Guiding questions:** Why do you need the `finally` block to clear the timeout? What happens if you forget to clear it? How is `AbortError` different from other errors?
+
+Test it with a reasonable timeout (30s) and an impossibly short one (100ms) to see both success and failure paths.
 
 ### Comprehensive Error Handler
 
-Here is a production-grade wrapper that combines retry logic, timeouts, and structured error reporting:
+Now build a production-grade wrapper that combines retry logic, timeouts, and structured error reporting. Create `src/utils/llm-client.ts` with these types and exports:
 
 ```typescript
 // src/utils/llm-client.ts
 
-import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
 import type { LanguageModel, ModelMessage } from 'ai'
 
 interface LLMCallOptions {
@@ -1579,11 +961,7 @@ interface LLMCallOptions {
 
 interface LLMResult {
   text: string
-  usage: {
-    inputTokens: number
-    outputTokens: number
-    totalTokens: number
-  }
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number }
   finishReason: string
   durationMs: number
 }
@@ -1595,101 +973,137 @@ class LLMError extends Error {
     public readonly retryable: boolean,
     public readonly originalError?: Error
   ) {
-    super(message)
-    this.name = 'LLMError'
+    /* call super(message), set this.name */
   }
 }
 
 function classifyError(error: unknown): LLMError {
-  const msg = error instanceof Error ? error.message : String(error)
-  const original = error instanceof Error ? error : undefined
-
-  if (msg.includes('401') || msg.includes('authentication')) {
-    return new LLMError('Invalid API key', 'AUTH_ERROR', false, original)
-  }
-  if (msg.includes('429') || msg.includes('rate')) {
-    return new LLMError('Rate limit exceeded', 'RATE_LIMIT', true, original)
-  }
-  if (msg.includes('500') || msg.includes('502') || msg.includes('503')) {
-    return new LLMError('Provider server error', 'SERVER_ERROR', true, original)
-  }
-  if (msg.includes('timeout') || msg.includes('AbortError')) {
-    return new LLMError('Request timed out', 'TIMEOUT', true, original)
-  }
-  if (msg.includes('context') || msg.includes('token')) {
-    return new LLMError('Context length exceeded', 'CONTEXT_LENGTH', false, original)
-  }
-
-  return new LLMError(`Unknown error: ${msg}`, 'UNKNOWN', true, original)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  /* ... */
 }
 
 export async function llmCall(options: LLMCallOptions): Promise<LLMResult> {
-  const {
-    model = mistral('mistral-small-latest'),
-    system,
-    messages,
-    prompt,
-    maxOutputTokens = 1000,
-    temperature = 0.7,
-    timeoutMs = 30000,
-    maxRetries = 3,
-  } = options
-
-  let lastError: LLMError | null = null
-  let delay = 1000
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    if (attempt > 0) {
-      console.log(`[LLM] Retry ${attempt}/${maxRetries} after ${delay}ms`)
-      await sleep(delay)
-      delay = Math.min(delay * 2, 30000)
-    }
-
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-    const startTime = performance.now()
-
-    try {
-      const result = await generateText({
-        model,
-        system,
-        messages,
-        prompt,
-        maxOutputTokens,
-        temperature,
-        abortSignal: controller.signal,
-      } as Parameters<typeof generateText>[0])
-
-      const durationMs = performance.now() - startTime
-
-      return {
-        text: result.text,
-        usage: result.usage,
-        finishReason: result.finishReason,
-        durationMs,
-      }
-    } catch (error) {
-      lastError = classifyError(error)
-
-      if (!lastError.retryable) {
-        throw lastError
-      }
-
-      console.warn(`[LLM] Attempt ${attempt + 1} failed: ${lastError.message}`)
-    } finally {
-      clearTimeout(timeoutId)
-    }
-  }
-
-  throw lastError ?? new LLMError('All attempts failed', 'EXHAUSTED', false)
+  /* ... */
 }
 ```
 
+**What each piece should do:**
+
+- **`LLMError`** — Extends `Error` with a `code` string (e.g., `'RATE_LIMIT'`, `'AUTH_ERROR'`, `'TIMEOUT'`, `'CONTEXT_LENGTH'`, `'SERVER_ERROR'`), a `retryable` boolean, and an optional `originalError`.
+- **`classifyError`** — Inspect the error message to determine the type. Map `'401'`/`'authentication'` to `AUTH_ERROR` (not retryable), `'429'`/`'rate'` to `RATE_LIMIT` (retryable), `'500'`/`'502'`/`'503'` to `SERVER_ERROR` (retryable), `'timeout'`/`'AbortError'` to `TIMEOUT` (retryable), `'context'`/`'token'` to `CONTEXT_LENGTH` (not retryable). Default to `UNKNOWN` (retryable).
+- **`llmCall`** — Combine everything: destructure options with defaults, loop with retry, create an `AbortController` with timeout for each attempt, call `generateText`, measure duration with `performance.now()`, classify errors on failure, only retry if `retryable` is true, use exponential backoff.
+
+**Guiding questions:** Why create a new `AbortController` for each attempt? Why measure `durationMs` inside the function instead of letting the caller do it? What should happen if `options.model` is not provided?
+
 > **Beginner Note:** You do not need to write this much error handling for every exercise. Start with a simple try/catch. Build toward the comprehensive version as your applications become more complex.
+
+### Error Categorization
+
+The comprehensive error handler above uses `classifyError` to turn raw exceptions into typed `LLMError` instances. This is a production-essential pattern: different error types require different responses, and treating all errors the same leads to poor user experience and wasted retries.
+
+Here are the five error categories every LLM application should distinguish:
+
+| Category             | HTTP Status         | Retryable?                | User-Facing Action                       |
+| -------------------- | ------------------- | ------------------------- | ---------------------------------------- |
+| **Rate Limit**       | 429                 | Yes (with backoff)        | "Please wait a moment and try again"     |
+| **Authentication**   | 401, 403            | No                        | "Check your API key configuration"       |
+| **Network**          | Timeout, ECONNRESET | Yes                       | "Connection issue — retrying"            |
+| **Model Not Found**  | 404                 | No                        | "Invalid model ID — check configuration" |
+| **Context Overflow** | 400 (token-related) | No (need to reduce input) | "Input too long — try a shorter message" |
+
+The key insight is that **retryable errors** (rate limit, network, server errors) should trigger automatic retry with backoff, while **non-retryable errors** (auth, model not found, context overflow) should fail immediately with a clear message. Retrying a 401 wastes time; failing immediately on a 429 wastes an opportunity.
+
+A typed error class makes downstream handling clean:
+
+```typescript
+// Pattern: typed error handling in application code
+try {
+  const result = await llmCall({ prompt: 'Hello' })
+} catch (error) {
+  if (error instanceof LLMError) {
+    switch (error.code) {
+      case 'RATE_LIMIT':
+        // Already retried internally — show the user a wait message
+        break
+      case 'AUTH_ERROR':
+        // Configuration problem — alert the developer
+        break
+      case 'CONTEXT_LENGTH':
+        // Input too long — truncate and retry
+        break
+      default:
+        // Unexpected — log for investigation
+        break
+    }
+  }
+}
+```
+
+> **Advanced Note:** Some providers include a `Retry-After` header in 429 responses, telling you exactly how long to wait. Production clients parse this header and use it as the backoff delay instead of a fixed exponential schedule. The Vercel AI SDK does not expose this header directly, but you can access it by inspecting the raw error object from the provider.
+
+---
+
+## Section 8: Resilient API Clients
+
+### Why Resilience Matters
+
+In production, your LLM application will make thousands of API calls per day. Transient failures — rate limits, server hiccups, network blips — are not exceptions, they are routine. A resilient API client handles these automatically so your application logic never sees them.
+
+The three building blocks of a resilient client are:
+
+1. **Retry with exponential backoff** — wait longer between each retry attempt
+2. **Jitter** — add randomness to the delay so multiple clients do not all retry at the same instant
+3. **Error classification** — only retry errors that are actually transient
+
+### Exponential Backoff with Jitter
+
+Plain exponential backoff has a problem: if 100 clients all get rate-limited at the same time, they all retry after 1 second, then 2 seconds, then 4 seconds — in perfect synchrony. This creates "retry storms" that keep hammering the server at regular intervals.
+
+Jitter solves this by adding randomness. The "full jitter" strategy picks a random delay between 0 and the exponential backoff ceiling:
+
+```typescript
+// Exponential backoff with full jitter
+function calculateDelay(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  const exponentialDelay = baseDelayMs * Math.pow(2, attempt)
+  const cappedDelay = Math.min(exponentialDelay, maxDelayMs)
+  // Full jitter: random value between 0 and the capped delay
+  return Math.random() * cappedDelay
+}
+
+// attempt 0: random between 0 and 1000ms
+// attempt 1: random between 0 and 2000ms
+// attempt 2: random between 0 and 4000ms
+// attempt 3: random between 0 and 8000ms (capped at maxDelayMs)
+```
+
+### Building the Retry Wrapper
+
+A production retry wrapper combines backoff, jitter, error classification, and abort signal support:
+
+```typescript
+import type { LanguageModel } from 'ai'
+
+interface RetryConfig {
+  maxRetries: number
+  baseDelayMs: number
+  maxDelayMs: number
+}
+
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 30000,
+}
+```
+
+The wrapper should:
+
+1. Accept any `generateText` parameters plus a `RetryConfig`
+2. Classify each error to decide whether to retry
+3. Calculate the delay with jitter for each attempt
+4. Respect an optional `AbortSignal` for cancellation
+5. Throw the last error if all retries are exhausted
+
+> **Beginner Note:** Jitter may seem like a small detail, but it is the difference between a retry strategy that works in development and one that works at scale. AWS, Google Cloud, and every major API client library uses jitter for exactly this reason.
 
 ---
 
@@ -1757,6 +1171,32 @@ You have a production application that makes 100 LLM calls per minute. Occasiona
 - D) Catch all errors silently and return empty strings
 
 **Answer: B** — Rate limits (429) require retry with exponential backoff to avoid hammering the API. Adding `AbortController` timeouts prevents individual requests from hanging indefinitely. Option C might help short-term but does not address the underlying pattern. Option D silently loses data.
+
+---
+
+### Question 6 (Medium)
+
+Why is jitter added to exponential backoff in a resilient API client?
+
+- A) To make the retry delay shorter on average
+- B) To prevent synchronized retry storms when many clients are rate-limited simultaneously
+- C) To randomize which provider receives the retry request
+- D) To ensure retries happen at exact power-of-two intervals
+
+**Answer: B** — Without jitter, all clients that hit a rate limit at the same time will retry in lockstep (1s, 2s, 4s), creating periodic spikes that keep hammering the server. Jitter adds randomness to the delay so retries spread out over time, preventing these synchronized retry storms.
+
+---
+
+### Question 7 (Hard)
+
+A resilient retry wrapper classifies errors before deciding whether to retry. Which of these errors should NOT be retried?
+
+- A) HTTP 429 (Too Many Requests)
+- B) HTTP 500 (Internal Server Error)
+- C) HTTP 401 (Unauthorized — invalid API key)
+- D) A network timeout (ETIMEDOUT)
+
+**Answer: C** — A 401 error means the API key is invalid or missing. Retrying will never succeed because the credentials are wrong — this is a permanent error. Rate limits (429), server errors (500), and network timeouts are transient and may succeed on retry. Retrying permanent errors wastes time and resources.
 
 ---
 
@@ -1983,6 +1423,69 @@ describe('Exercise 4: Streaming with Timing', () => {
 
 ---
 
+### Exercise 5: Resilient API Client
+
+**Objective:** Build a retry wrapper with exponential backoff and jitter that handles rate limits gracefully.
+
+**Specification:**
+
+1. Create a file `src/exercises/m01/ex05-retry-wrapper.ts`
+2. Define a `RetryConfig` type:
+   ```typescript
+   interface RetryConfig {
+     maxRetries: number
+     baseDelayMs: number
+     maxDelayMs: number
+   }
+   ```
+3. Export a function `calculateDelay(attempt: number, baseDelayMs: number, maxDelayMs: number): number` that returns a jittered exponential backoff delay (random value between 0 and the capped exponential delay)
+4. Export a function `isRetryableError(error: unknown): boolean` that returns `true` for transient errors (429, 500, 503, timeout) and `false` for permanent errors (401, 403, 400, 404)
+5. Export an async function `generateTextWithRetry(params: { model: LanguageModel; prompt: string; system?: string }, config?: Partial<RetryConfig>): Promise<string>` that wraps `generateText` with retry logic using your `calculateDelay` and `isRetryableError` functions
+6. The wrapper should respect an optional `AbortSignal` for cancellation
+7. If all retries are exhausted, throw an error including the attempt count and last error message
+
+**Test specification:**
+
+```typescript
+// tests/exercises/m01/ex05-retry-wrapper.test.ts
+import { describe, it, expect } from 'bun:test'
+
+describe('Exercise 5: Resilient API Client', () => {
+  it('calculateDelay should return values within the expected range', () => {
+    for (let i = 0; i < 100; i++) {
+      const delay = calculateDelay(2, 1000, 30000)
+      expect(delay).toBeGreaterThanOrEqual(0)
+      expect(delay).toBeLessThanOrEqual(4000) // 1000 * 2^2 = 4000
+    }
+  })
+
+  it('calculateDelay should cap at maxDelayMs', () => {
+    for (let i = 0; i < 100; i++) {
+      const delay = calculateDelay(10, 1000, 5000)
+      expect(delay).toBeLessThanOrEqual(5000)
+    }
+  })
+
+  it('isRetryableError should return true for rate limit errors', () => {
+    expect(isRetryableError(new Error('429 Too Many Requests'))).toBe(true)
+  })
+
+  it('isRetryableError should return false for auth errors', () => {
+    expect(isRetryableError(new Error('401 Unauthorized'))).toBe(false)
+  })
+
+  it('should successfully generate text with retry wrapper', async () => {
+    const result = await generateTextWithRetry({
+      model: mistral('mistral-small-latest'),
+      prompt: 'Say hello in one word.',
+    })
+    expect(result.length).toBeGreaterThan(0)
+  })
+})
+```
+
+---
+
 ## Troubleshooting
 
 ### Common Setup Issues
@@ -2011,5 +1514,6 @@ In this module, you learned:
 5. **streamText:** How to stream responses for real-time output and measure timing metrics.
 6. **Parameters:** How temperature, top-P, max tokens, and penalties shape model behavior.
 7. **Error handling:** How to handle API errors, implement retries with exponential backoff, and set timeouts.
+8. **Resilient API clients:** How to build production retry wrappers with exponential backoff and jitter to handle transient failures automatically.
 
 You now have the foundation to build any LLM application. In Module 2, we will use these tools to master the art and science of prompt engineering.

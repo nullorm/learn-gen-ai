@@ -110,15 +110,33 @@ const decisionMatrix = {
 
 > **Beginner Note:** You do not need a specialized graph database (Neo4j, Amazon Neptune) to start. An in-memory adjacency list or even a JSON file works for knowledge graphs with up to ~100,000 nodes. Graduate to a graph database only when you need persistence at scale, complex graph algorithms, or concurrent access.
 
-> **Advanced Note:** The boundary between "graph question" and "vector question" is blurry. A well-structured RAG pipeline with good chunking and metadata can handle some relationship queries through careful prompt engineering. The decision to add a knowledge graph should be driven by observed failure patterns — if your users consistently ask relationship questions that your RAG pipeline cannot answer, a graph will help.
+> **Advanced Note:** The boundary between "graph question" and "vector question" is blurry. A well-structured RAG pipeline with good chunking and metadata can handle some relationship queries through careful prompt engineering. The decision to add a knowledge graph should be driven by observed failure patterns -- if your users consistently ask relationship questions that your RAG pipeline cannot answer, a graph will help.
+
+### A Tangible Example: Codebase Dependency Graphs
+
+If you are building LLM applications, you already have a knowledge graph in front of you -- your codebase. Tools depend on services, commands depend on tools, and agents depend on tools and other agents:
+
+```
+BashTool -> ShellExecutionService
+CommitCommand -> GitTools -> BashTool
+AgentTool -> spawns sub-agents -> [tool subsets]
+```
+
+These are graph-structured relationships. "What happens if the shell service goes down?" requires traversing dependencies to find all affected tools and commands. "Which tools does the commit workflow use?" requires following the dependency chain.
+
+You encounter these dependency graphs in any non-trivial system: microservice architectures (service A calls service B), npm packages (dependency trees), database schemas (foreign key relationships), and API endpoints (route -> handler -> service -> database). Recognizing when your data is naturally graph-shaped is the first step toward deciding whether to build an explicit knowledge graph or leverage an implicit one.
 
 ---
 
 ## Section 2: Entity Extraction with LLMs
 
+> **Building on Module 11:** You already built entity extraction with `Output.object` in Module 11 Section 5. Here we extend it to extract relationships between entities.
+
 ### Defining Entities
 
-An entity is a distinct, identifiable thing: a person, organization, project, technology, concept, or event. Entity extraction is the first step in building a knowledge graph — you cannot create relationships until you know what the entities are.
+An entity is a distinct, identifiable thing: a person, organization, project, technology, concept, or event. Entity extraction is the first step in building a knowledge graph -- you cannot create relationships until you know what the entities are.
+
+Define the schemas that will drive your extraction:
 
 ```typescript
 // src/knowledge-graphs/entity-extraction.ts
@@ -127,7 +145,6 @@ import { generateText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
-// Define entity types for your domain
 const EntityTypeEnum = z.enum([
   'person',
   'organization',
@@ -157,86 +174,50 @@ const EntityExtractionSchema = z.object({
   entities: z.array(EntitySchema).describe('All distinct entities found in the text'),
 })
 
-async function extractEntities(text: string, domainContext?: string): Promise<Entity[]> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: EntityExtractionSchema }),
-    system: `You are an entity extraction expert. Extract all distinct
-entities from the text. For each entity:
-- Use the most complete, canonical form of the name
+async function extractEntities(text: string, domainContext?: string): Promise<Entity[]>
+```
+
+Build `extractEntities` to call `generateText` with `Output.object({ schema: EntityExtractionSchema })`. The system prompt should instruct the model to:
+
+- Use the most complete, canonical form of each name
 - List all aliases (abbreviations, nicknames, alternative spellings)
-- Classify by type
+- Classify by type from the enum
 - Add relevant attributes as key-value pairs
+- Be thorough: extract even implicitly referenced entities
+- Deduplicate: if the same entity appears multiple ways, merge them
 
-${domainContext ? `Domain context: ${domainContext}` : ''}
+If `domainContext` is provided, include it in the system prompt to guide extraction.
 
-Be thorough: extract even implicitly referenced entities.
-Deduplicate: if the same entity is mentioned multiple ways, merge them.`,
-    messages: [{ role: 'user', content: text }],
-    temperature: 0,
-  })
+### Batch Extraction Across Chunks
 
-  return output.entities
-}
+When processing multiple document chunks, you need to deduplicate entities across chunks. Build `extractEntitiesFromChunks`:
 
-// Batch extraction for processing multiple chunks
+```typescript
 async function extractEntitiesFromChunks(
   chunks: string[],
   domainContext?: string
 ): Promise<{
   entities: Entity[]
   chunkEntityMap: Map<number, string[]> // chunk index -> entity names
-}> {
-  const allEntities: Entity[] = []
-  const chunkEntityMap = new Map<number, string[]>()
-  const seenEntities = new Map<string, Entity>() // name -> entity
-
-  for (let i = 0; i < chunks.length; i++) {
-    const entities = await extractEntities(chunks[i], domainContext)
-
-    const chunkEntityNames: string[] = []
-
-    for (const entity of entities) {
-      const normalized = entity.name.toLowerCase().trim()
-
-      if (seenEntities.has(normalized)) {
-        // Merge aliases and attributes
-        const existing = seenEntities.get(normalized)!
-        existing.aliases = [...new Set([...existing.aliases, ...entity.aliases])]
-        existing.attributes = {
-          ...existing.attributes,
-          ...entity.attributes,
-        }
-      } else {
-        seenEntities.set(normalized, entity)
-        allEntities.push(entity)
-      }
-
-      chunkEntityNames.push(entity.name)
-    }
-
-    chunkEntityMap.set(i, chunkEntityNames)
-    console.log(`Chunk ${i + 1}/${chunks.length}: found ${entities.length} entities`)
-  }
-
-  return { entities: allEntities, chunkEntityMap }
-}
-
-export { extractEntities, extractEntitiesFromChunks, type Entity, type EntityType }
+}>
 ```
+
+This function should:
+
+1. Iterate through chunks, calling `extractEntities` on each.
+2. Maintain a `seenEntities` map (normalized name -> Entity) for deduplication.
+3. When a duplicate is found, merge aliases (using `Set` for uniqueness) and merge attributes (later values overwrite earlier ones).
+4. Track which entity names appeared in which chunk via the `chunkEntityMap`.
+
+What normalization would you apply to entity names for deduplication? Why is `.toLowerCase().trim()` a reasonable starting point but not sufficient for all cases?
 
 ### Domain-Specific Entity Extraction
 
-For specialized domains, provide explicit entity type definitions and examples to improve extraction accuracy.
+For specialized domains, provide explicit entity type definitions and examples to improve extraction accuracy. Here is an example schema for a software engineering domain:
 
 ```typescript
 // src/knowledge-graphs/domain-entities.ts
 
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-// Example: Software engineering domain
 const SoftwareEntitySchema = z.object({
   entities: z.array(
     z.object({
@@ -259,34 +240,12 @@ const SoftwareEntitySchema = z.object({
   ),
 })
 
-async function extractSoftwareEntities(text: string): Promise<z.infer<typeof SoftwareEntitySchema>['entities']> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: SoftwareEntitySchema }),
-    system: `You are a software engineering knowledge graph builder.
-Extract entities from the text. Entity types:
-
-- developer: A person who writes code (include role: "frontend", "backend", etc.)
-- team: A group of developers (include team_lead if mentioned)
-- service: A running software service (include language, framework)
-- api_endpoint: A specific API route (include method: GET/POST/etc.)
-- database: A data store (include type: "postgresql", "redis", etc.)
-- library: A software dependency (include version if mentioned)
-- repository: A code repository (include platform: "github", etc.)
-- deployment: A deployed environment (include env: "prod", "staging")
-- incident: A production issue (include severity, date)
-- feature: A product feature (include status: "shipped", "in-progress")
-
-Be precise with naming. Use the most specific type available.`,
-    messages: [{ role: 'user', content: text }],
-    temperature: 0,
-  })
-
-  return output.entities
-}
-
-export { extractSoftwareEntities }
+async function extractSoftwareEntities(text: string): Promise<z.infer<typeof SoftwareEntitySchema>['entities']>
 ```
+
+Build `extractSoftwareEntities` with a detailed system prompt that describes each entity type and what attributes to look for. For example: "developer" should include `role` ("frontend", "backend"), "service" should include `language` and `framework`, "database" should include `type` ("postgresql", "redis").
+
+Why does a domain-specific schema with detailed type descriptions produce better extraction than a generic one? What is the trade-off in terms of reusability?
 
 > **Beginner Note:** Start with a small number of broad entity types (person, organization, concept). You can always refine your taxonomy later. Over-specifying entity types (e.g., distinguishing "senior_engineer" from "junior_engineer") makes extraction harder without proportionally improving retrieval.
 
@@ -299,6 +258,8 @@ export { extractSoftwareEntities }
 ### Subject-Predicate-Object Triples
 
 Relationships are expressed as triples: (subject, predicate, object). "Alice manages Bob" becomes (Alice, manages, Bob). "Project Alpha uses TypeScript" becomes (Project Alpha, uses, TypeScript).
+
+Define the schemas:
 
 ```typescript
 // src/knowledge-graphs/relationship-extraction.ts
@@ -322,38 +283,26 @@ const RelationshipExtractionSchema = z.object({
   relationships: z.array(RelationshipSchema),
 })
 
-async function extractRelationships(text: string, knownEntities?: string[]): Promise<Relationship[]> {
-  const entityGuidance = knownEntities ? `\n\nKnown entities to look for: ${knownEntities.join(', ')}` : ''
+async function extractRelationships(text: string, knownEntities?: string[]): Promise<Relationship[]>
+```
 
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: RelationshipExtractionSchema }),
-    system: `You are a relationship extraction expert. Extract all
-relationships between entities in the text as subject-predicate-object
-triples.
+Build `extractRelationships` with a system prompt that enforces:
 
-Guidelines:
-- Use consistent predicate names (e.g., always "manages" not sometimes
-  "manages" and sometimes "is manager of")
-- Prefer active voice predicates: "manages" not "is managed by"
-- Extract both explicit and implicit relationships
-- Set confidence based on how directly stated the relationship is
-- Mark bidirectional relationships (e.g., "collaborates_with")
-${entityGuidance}
+- Consistent predicate names (always "manages" not sometimes "manages" and sometimes "is manager of")
+- Active voice predicates ("manages" not "is managed by")
+- Both explicit and implicit relationships
+- Confidence scoring based on how directly stated the relationship is
+- Identification of bidirectional relationships (e.g., "collaborates_with")
 
-Common relationship types:
-- manages, reports_to, works_on, belongs_to
-- depends_on, uses, implements, extends
-- authored, created, reviewed, approved
-- located_in, part_of, related_to`,
-    messages: [{ role: 'user', content: text }],
-    temperature: 0,
-  })
+If `knownEntities` is provided, include them in the prompt so the model knows what entities to look for.
 
-  return output.relationships
-}
+What common relationship types would you include in the prompt as guidance? Think about hierarchy (manages, reports_to), collaboration (works_on), dependency (depends_on, uses), and authorship (authored, created).
 
-// Extract entities AND relationships together for consistency
+### Joint Entity-Relationship Extraction
+
+Extracting entities and relationships together in a single call ensures consistency -- the entity names in the relationships will match the entity list exactly.
+
+```typescript
 const EntityRelationshipSchema = z.object({
   entities: z.array(
     z.object({
@@ -372,37 +321,18 @@ const EntityRelationshipSchema = z.object({
   ),
 })
 
-async function extractEntitiesAndRelationships(text: string): Promise<z.infer<typeof EntityRelationshipSchema>> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: EntityRelationshipSchema }),
-    system: `Extract all entities and relationships from the text.
-Ensure every entity mentioned in a relationship also appears in
-the entities list. Use consistent naming — if an entity appears
-in both the entities list and a relationship, the names must match
-exactly.`,
-    messages: [{ role: 'user', content: text }],
-    temperature: 0,
-  })
-
-  return output
-}
-
-export { extractRelationships, extractEntitiesAndRelationships, type Relationship }
+async function extractEntitiesAndRelationships(text: string): Promise<z.infer<typeof EntityRelationshipSchema>>
 ```
+
+Build this with a system prompt that emphasizes: every entity mentioned in a relationship must also appear in the entities list, and names must match exactly between the two lists.
 
 ### Predicate Normalization
 
-Without normalization, you end up with "manages," "is the manager of," "leads," and "oversees" all representing the same relationship. Predicate normalization maps variations to canonical forms.
+Without normalization, you end up with "manages," "is the manager of," "leads," and "oversees" all representing the same relationship. Build a two-tier normalization system:
 
 ```typescript
 // src/knowledge-graphs/predicate-normalization.ts
 
-import { generateText, Output } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
-import { z } from 'zod'
-
-// Static normalization for known predicates
 const PREDICATE_MAP: Record<string, string> = {
   manages: 'manages',
   'is the manager of': 'manages',
@@ -412,55 +342,20 @@ const PREDICATE_MAP: Record<string, string> = {
   'reports to': 'reports_to',
   'reports into': 'reports_to',
   'works under': 'reports_to',
-  'works on': 'works_on',
-  'contributes to': 'works_on',
-  'is assigned to': 'works_on',
-  uses: 'uses',
-  utilizes: 'uses',
-  'depends on': 'depends_on',
-  requires: 'depends_on',
-  'is built with': 'uses',
+  // ... add more mappings
 }
 
-function normalizePredicateStatic(predicate: string): string {
-  const lower = predicate.toLowerCase().trim()
-  return PREDICATE_MAP[lower] ?? lower.replace(/\s+/g, '_')
-}
-
-// LLM-based normalization for unknown predicates
-const NormalizedPredicateSchema = z.object({
-  normalized: z.string().describe('The canonical predicate form (lowercase, underscored)'),
-  category: z.enum(['hierarchy', 'collaboration', 'dependency', 'authorship', 'location', 'temporal', 'other']),
-})
-
-async function normalizePredicateLLM(predicate: string, context: string): Promise<string> {
-  // Try static first
-  const staticResult = normalizePredicateStatic(predicate)
-  if (PREDICATE_MAP[predicate.toLowerCase()]) {
-    return staticResult
-  }
-
-  // Fall back to LLM
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: NormalizedPredicateSchema }),
-    system: `Normalize this relationship predicate to a canonical form.
-Use lowercase with underscores. Prefer common predicates:
-manages, reports_to, works_on, depends_on, uses, authored,
-created, part_of, located_in, related_to
-
-Context for the relationship: ${context}`,
-    messages: [{ role: 'user', content: `Predicate: "${predicate}"` }],
-    temperature: 0,
-  })
-
-  return output.normalized
-}
-
-export { normalizePredicateStatic, normalizePredicateLLM }
+function normalizePredicateStatic(predicate: string): string
+async function normalizePredicateLLM(predicate: string, context: string): Promise<string>
 ```
 
-> **Beginner Note:** Start by extracting entities and relationships together in a single LLM call (the `extractEntitiesAndRelationships` function). This ensures consistency — the model will use the same entity names in both the entity list and the relationships. Split extraction into separate steps only when your texts are too long for a single call.
+Build `normalizePredicateStatic` to look up the lowercased, trimmed predicate in `PREDICATE_MAP`. If not found, replace spaces with underscores as a fallback.
+
+Build `normalizePredicateLLM` to try static normalization first, and only call the LLM when the predicate is not in the static map. Use a Zod schema with `normalized` (the canonical form) and `category` (hierarchy, collaboration, dependency, authorship, location, temporal, other).
+
+When would you extend the static map vs rely on the LLM? What is the cost trade-off?
+
+> **Beginner Note:** Start by extracting entities and relationships together in a single LLM call (the `extractEntitiesAndRelationships` function). This ensures consistency -- the model will use the same entity names in both the entity list and the relationships. Split extraction into separate steps only when your texts are too long for a single call.
 
 > **Advanced Note:** Relationship extraction accuracy varies significantly by domain. For well-structured text (technical documentation, organizational charts), accuracy is high. For narrative text (meeting notes, emails), relationships are often implicit and extraction is noisier. Always review extracted relationships before adding them to your graph, especially for high-stakes applications.
 
@@ -490,150 +385,46 @@ interface GraphEdge {
   weight: number // Confidence or frequency
   metadata: Record<string, string>
 }
+```
 
+Build a `KnowledgeGraph` class with these private fields:
+
+- `nodes: Map<string, GraphNode>` -- all nodes by ID
+- `adjacencyList: Map<string, GraphEdge[]>` -- outgoing edges per node
+- `reverseAdjacencyList: Map<string, GraphEdge[]>` -- incoming edges per node
+- `aliasIndex: Map<string, string>` -- maps lowercased name/alias to node ID
+
+Implement these methods:
+
+```typescript
 class KnowledgeGraph {
-  private nodes: Map<string, GraphNode> = new Map()
-  private adjacencyList: Map<string, GraphEdge[]> = new Map()
-  private reverseAdjacencyList: Map<string, GraphEdge[]> = new Map()
-  private aliasIndex: Map<string, string> = new Map() // alias -> node ID
-
-  // Add a node
-  addNode(node: GraphNode): void {
-    this.nodes.set(node.id, node)
-
-    if (!this.adjacencyList.has(node.id)) {
-      this.adjacencyList.set(node.id, [])
-    }
-    if (!this.reverseAdjacencyList.has(node.id)) {
-      this.reverseAdjacencyList.set(node.id, [])
-    }
-
-    // Index aliases
-    this.aliasIndex.set(node.name.toLowerCase(), node.id)
-    for (const alias of node.aliases) {
-      this.aliasIndex.set(alias.toLowerCase(), node.id)
-    }
-  }
-
-  // Add an edge
-  addEdge(edge: GraphEdge): void {
-    // Ensure both nodes exist
-    if (!this.nodes.has(edge.source) || !this.nodes.has(edge.target)) {
-      console.warn(`Skipping edge: missing node (${edge.source} -> ${edge.target})`)
-      return
-    }
-
-    // Add to forward adjacency
-    const forward = this.adjacencyList.get(edge.source)
-    if (forward) {
-      // Check for duplicate edges
-      const existing = forward.find(e => e.target === edge.target && e.predicate === edge.predicate)
-      if (existing) {
-        // Merge: increase weight
-        existing.weight = Math.max(existing.weight, edge.weight)
-        return
-      }
-      forward.push(edge)
-    }
-
-    // Add to reverse adjacency (for inbound queries)
-    const reverse = this.reverseAdjacencyList.get(edge.target)
-    if (reverse) {
-      reverse.push(edge)
-    }
-  }
-
-  // Find a node by name or alias
-  findNode(nameOrAlias: string): GraphNode | undefined {
-    const normalized = nameOrAlias.toLowerCase()
-    const nodeId = this.aliasIndex.get(normalized)
-    return nodeId ? this.nodes.get(nodeId) : undefined
-  }
-
-  // Get outgoing edges from a node
-  getOutgoingEdges(nodeId: string): GraphEdge[] {
-    return this.adjacencyList.get(nodeId) ?? []
-  }
-
-  // Get incoming edges to a node
-  getIncomingEdges(nodeId: string): GraphEdge[] {
-    return this.reverseAdjacencyList.get(nodeId) ?? []
-  }
-
-  // Get neighbors (nodes connected by outgoing edges)
-  getNeighbors(nodeId: string): GraphNode[] {
-    const edges = this.getOutgoingEdges(nodeId)
-    return edges.map(e => this.nodes.get(e.target)).filter((n): n is GraphNode => n !== undefined)
-  }
-
-  // Get all nodes of a specific type
-  getNodesByType(type: string): GraphNode[] {
-    const results: GraphNode[] = []
-    for (const node of this.nodes.values()) {
-      if (node.type === type) results.push(node)
-    }
-    return results
-  }
-
-  // Get statistics
+  addNode(node: GraphNode): void
+  addEdge(edge: GraphEdge): void
+  findNode(nameOrAlias: string): GraphNode | undefined
+  getOutgoingEdges(nodeId: string): GraphEdge[]
+  getIncomingEdges(nodeId: string): GraphEdge[]
+  getNeighbors(nodeId: string): GraphNode[]
+  getNodesByType(type: string): GraphNode[]
   getStats(): {
     nodeCount: number
     edgeCount: number
     nodeTypes: Record<string, number>
     predicateTypes: Record<string, number>
-  } {
-    const nodeTypes: Record<string, number> = {}
-    for (const node of this.nodes.values()) {
-      nodeTypes[node.type] = (nodeTypes[node.type] ?? 0) + 1
-    }
-
-    const predicateTypes: Record<string, number> = {}
-    let totalEdges = 0
-    for (const edges of this.adjacencyList.values()) {
-      for (const edge of edges) {
-        predicateTypes[edge.predicate] = (predicateTypes[edge.predicate] ?? 0) + 1
-        totalEdges++
-      }
-    }
-
-    return {
-      nodeCount: this.nodes.size,
-      edgeCount: totalEdges,
-      nodeTypes,
-      predicateTypes,
-    }
   }
-
-  // Serialize to JSON
-  toJSON(): {
-    nodes: GraphNode[]
-    edges: GraphEdge[]
-  } {
-    const edges: GraphEdge[] = []
-    for (const edgeList of this.adjacencyList.values()) {
-      edges.push(...edgeList)
-    }
-    return {
-      nodes: [...this.nodes.values()],
-      edges,
-    }
-  }
-
-  // Load from JSON
-  static fromJSON(data: { nodes: GraphNode[]; edges: GraphEdge[] }): KnowledgeGraph {
-    const graph = new KnowledgeGraph()
-    for (const node of data.nodes) {
-      graph.addNode(node)
-    }
-    for (const edge of data.edges) {
-      graph.addEdge(edge)
-    }
-    return graph
-  }
+  toJSON(): { nodes: GraphNode[]; edges: GraphEdge[] }
+  static fromJSON(data: { nodes: GraphNode[]; edges: GraphEdge[] }): KnowledgeGraph
 }
-
-export { KnowledgeGraph, type GraphNode, type GraphEdge }
 ```
+
+Key implementation details to think about:
+
+- `addNode` should initialize empty edge lists in both adjacency maps and index the node's name and all aliases in `aliasIndex`.
+- `addEdge` should validate that both source and target nodes exist. Check for duplicate edges (same source, target, and predicate) and merge by keeping the higher weight rather than adding a duplicate.
+- `findNode` should normalize the input to lowercase and look up in `aliasIndex`.
+- `getNeighbors` should follow outgoing edges and return the target nodes.
+- `toJSON`/`fromJSON` enable persistence to disk.
+
+Why does the graph need a reverse adjacency list? What queries does it enable that forward-only adjacency cannot answer?
 
 ### Building a Graph from Extracted Data
 
@@ -644,84 +435,22 @@ import { KnowledgeGraph, type GraphNode } from './graph.js'
 import { extractEntitiesAndRelationships } from './relationship-extraction.js'
 import { normalizePredicateStatic } from './predicate-normalization.js'
 
-function generateNodeId(name: string, type: string): string {
-  return `${type}:${name.toLowerCase().replace(/\s+/g, '_')}`
-}
-
-async function buildGraphFromText(texts: string[]): Promise<KnowledgeGraph> {
-  const graph = new KnowledgeGraph()
-
-  for (let i = 0; i < texts.length; i++) {
-    console.log(`Processing text ${i + 1}/${texts.length}...`)
-
-    const { entities, relationships } = await extractEntitiesAndRelationships(texts[i])
-
-    // Add entities as nodes
-    for (const entity of entities) {
-      const nodeId = generateNodeId(entity.name, entity.type)
-      const node: GraphNode = {
-        id: nodeId,
-        name: entity.name,
-        type: entity.type,
-        attributes: {},
-        aliases: [],
-      }
-      graph.addNode(node)
-    }
-
-    // Add relationships as edges
-    for (const rel of relationships) {
-      // Find or create source and target nodes
-      const sourceNode = graph.findNode(rel.subject)
-      const targetNode = graph.findNode(rel.object)
-
-      if (!sourceNode || !targetNode) {
-        // Create missing nodes with generic type
-        if (!sourceNode) {
-          graph.addNode({
-            id: generateNodeId(rel.subject, 'unknown'),
-            name: rel.subject,
-            type: 'unknown',
-            attributes: {},
-            aliases: [],
-          })
-        }
-        if (!targetNode) {
-          graph.addNode({
-            id: generateNodeId(rel.object, 'unknown'),
-            name: rel.object,
-            type: 'unknown',
-            attributes: {},
-            aliases: [],
-          })
-        }
-      }
-
-      const sourceId = sourceNode?.id ?? generateNodeId(rel.subject, 'unknown')
-      const targetId = targetNode?.id ?? generateNodeId(rel.object, 'unknown')
-
-      graph.addEdge({
-        source: sourceId,
-        target: targetId,
-        predicate: normalizePredicateStatic(rel.predicate),
-        weight: rel.confidence,
-        metadata: { sourceChunk: String(i) },
-      })
-    }
-  }
-
-  const stats = graph.getStats()
-  console.log(`\nGraph built:`)
-  console.log(`  Nodes: ${stats.nodeCount}`)
-  console.log(`  Edges: ${stats.edgeCount}`)
-  console.log(`  Node types: ${JSON.stringify(stats.nodeTypes)}`)
-  console.log(`  Predicates: ${JSON.stringify(stats.predicateTypes)}`)
-
-  return graph
-}
-
-export { buildGraphFromText, generateNodeId }
+function generateNodeId(name: string, type: string): string
+async function buildGraphFromText(texts: string[]): Promise<KnowledgeGraph>
 ```
+
+Build `generateNodeId` to produce IDs like `"person:alice_smith"` -- the type prefix avoids collisions between entities of different types that share names.
+
+Build `buildGraphFromText` to:
+
+1. Create an empty `KnowledgeGraph`.
+2. For each text, call `extractEntitiesAndRelationships`.
+3. Add extracted entities as nodes using `generateNodeId`.
+4. For each relationship, find source and target nodes via `findNode`. If a node referenced in a relationship does not exist, create it with type `'unknown'`.
+5. Add edges with normalized predicates and confidence as weight.
+6. Log graph statistics at the end.
+
+What should you do when a relationship references an entity that was not in the entity list? Is creating an "unknown" type node the best approach, or can you think of alternatives?
 
 > **Beginner Note:** The node ID convention `type:normalized_name` (e.g., "person:alice_smith") makes it easy to look up nodes and avoid collisions between entities of different types that share names (e.g., a person named "Phoenix" and a city named "Phoenix").
 
@@ -748,172 +477,51 @@ interface TraversalResult {
   paths: string[][] // Each path is a list of node IDs
 }
 
-// Get all nodes within N hops of a starting node
 function getNeighborhood(
   graph: KnowledgeGraph,
   startNodeId: string,
-  maxHops: number = 2,
+  maxHops?: number, // default 2
   predicateFilter?: string[]
-): TraversalResult {
-  const visitedNodes = new Set<string>()
-  const collectedEdges: GraphEdge[] = []
-  const collectedNodes: GraphNode[] = []
-  const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId: startNodeId, depth: 0 }]
+): TraversalResult
 
-  while (queue.length > 0) {
-    const { nodeId, depth } = queue.shift()!
-
-    if (visitedNodes.has(nodeId)) continue
-    visitedNodes.add(nodeId)
-
-    const node = graph.findNode(nodeId)
-    if (node) collectedNodes.push(node)
-
-    if (depth >= maxHops) continue
-
-    // Traverse outgoing edges
-    const outgoing = graph.getOutgoingEdges(nodeId)
-    for (const edge of outgoing) {
-      if (predicateFilter && !predicateFilter.includes(edge.predicate)) {
-        continue
-      }
-
-      collectedEdges.push(edge)
-      if (!visitedNodes.has(edge.target)) {
-        queue.push({
-          nodeId: edge.target,
-          depth: depth + 1,
-        })
-      }
-    }
-
-    // Also traverse incoming edges for bidirectional discovery
-    const incoming = graph.getIncomingEdges(nodeId)
-    for (const edge of incoming) {
-      if (predicateFilter && !predicateFilter.includes(edge.predicate)) {
-        continue
-      }
-
-      collectedEdges.push(edge)
-      if (!visitedNodes.has(edge.source)) {
-        queue.push({
-          nodeId: edge.source,
-          depth: depth + 1,
-        })
-      }
-    }
-  }
-
-  return {
-    nodes: collectedNodes,
-    edges: collectedEdges,
-    paths: [],
-  }
-}
-
-// Find shortest path between two nodes (BFS)
 function findShortestPath(
   graph: KnowledgeGraph,
   startId: string,
   endId: string,
-  maxDepth: number = 5
-): string[] | null {
-  const visited = new Set<string>()
-  const queue: Array<{
-    nodeId: string
-    path: string[]
-  }> = [{ nodeId: startId, path: [startId] }]
+  maxDepth?: number // default 5
+): string[] | null
 
-  while (queue.length > 0) {
-    const { nodeId, path } = queue.shift()!
+function extractSubgraph(
+  graph: KnowledgeGraph,
+  entityNames: string[],
+  hops?: number // default 1
+): TraversalResult
 
-    if (nodeId === endId) return path
-    if (path.length > maxDepth) continue
-    if (visited.has(nodeId)) continue
-    visited.add(nodeId)
-
-    // Check outgoing edges
-    const outgoing = graph.getOutgoingEdges(nodeId)
-    for (const edge of outgoing) {
-      if (!visited.has(edge.target)) {
-        queue.push({
-          nodeId: edge.target,
-          path: [...path, edge.target],
-        })
-      }
-    }
-
-    // Check incoming edges
-    const incoming = graph.getIncomingEdges(nodeId)
-    for (const edge of incoming) {
-      if (!visited.has(edge.source)) {
-        queue.push({
-          nodeId: edge.source,
-          path: [...path, edge.source],
-        })
-      }
-    }
-  }
-
-  return null // No path found
-}
-
-// Extract a subgraph related to a set of entity names
-function extractSubgraph(graph: KnowledgeGraph, entityNames: string[], hops: number = 1): TraversalResult {
-  const allNodes: GraphNode[] = []
-  const allEdges: GraphEdge[] = []
-  const seenNodeIds = new Set<string>()
-  const seenEdgeKeys = new Set<string>()
-
-  for (const name of entityNames) {
-    const node = graph.findNode(name)
-    if (!node) continue
-
-    const neighborhood = getNeighborhood(graph, node.id, hops)
-
-    for (const n of neighborhood.nodes) {
-      if (!seenNodeIds.has(n.id)) {
-        seenNodeIds.add(n.id)
-        allNodes.push(n)
-      }
-    }
-
-    for (const e of neighborhood.edges) {
-      const key = `${e.source}-${e.predicate}-${e.target}`
-      if (!seenEdgeKeys.has(key)) {
-        seenEdgeKeys.add(key)
-        allEdges.push(e)
-      }
-    }
-  }
-
-  return { nodes: allNodes, edges: allEdges, paths: [] }
-}
-
-// Convert traversal result to text for LLM context
-function traversalToText(result: TraversalResult): string {
-  const lines: string[] = []
-
-  lines.push('Entities:')
-  for (const node of result.nodes) {
-    const attrs = Object.entries(node.attributes)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(', ')
-    lines.push(`- ${node.name} (${node.type})${attrs ? ` [${attrs}]` : ''}`)
-  }
-
-  lines.push('\nRelationships:')
-  for (const edge of result.edges) {
-    const sourceNode = result.nodes.find(n => n.id === edge.source)
-    const targetNode = result.nodes.find(n => n.id === edge.target)
-    lines.push(`- ${sourceNode?.name ?? edge.source} --[${edge.predicate}]--> ${targetNode?.name ?? edge.target}`)
-  }
-
-  return lines.join('\n')
-}
-
-export { getNeighborhood, findShortestPath, extractSubgraph, traversalToText, type TraversalResult }
+function traversalToText(result: TraversalResult): string
 ```
+
+Build `getNeighborhood` using BFS:
+
+1. Initialize a queue with the start node at depth 0 and a visited set.
+2. For each dequeued node, collect it and its edges. If depth < maxHops, enqueue unvisited neighbors.
+3. Traverse both outgoing and incoming edges for bidirectional discovery.
+4. If `predicateFilter` is provided, skip edges whose predicate is not in the filter.
+
+Build `findShortestPath` using BFS:
+
+1. Queue entries are `{ nodeId, path }` where path is the list of node IDs visited so far.
+2. When the target is dequeued, return the path. If path length exceeds `maxDepth`, skip.
+3. Check both outgoing and incoming edges.
+4. Return `null` if no path is found.
+
+Build `extractSubgraph` to find each entity name in the graph, get its neighborhood, and merge the results (deduplicating nodes by ID and edges by a `source-predicate-target` key).
+
+Build `traversalToText` to format the result for LLM consumption:
+
+- List entities with their types and attributes
+- List relationships in `"Alice --[manages]--> Bob"` format
+
+Why is traversing both incoming and outgoing edges important for path finding? What kind of relationships would you miss with forward-only traversal?
 
 > **Beginner Note:** Start with neighborhood retrieval (1-2 hops). Most relationship questions can be answered by looking at the immediate neighborhood of the mentioned entities. Path finding is useful for "how are X and Y connected?" questions but can be expensive on large graphs.
 
@@ -932,40 +540,33 @@ The Graph RAG pattern runs two retrieval strategies in parallel and merges the r
 
 The combined context gives the LLM both relevant text passages and structured relationship information.
 
+First, build a function to extract entities from the user's query:
+
 ```typescript
 // src/knowledge-graphs/graph-rag.ts
 
-import { generateText, Output, embed } from 'ai'
+import { generateText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 import { KnowledgeGraph } from './graph.js'
 import { extractSubgraph, traversalToText } from './traversal.js'
 
-// Step 1: Extract entities from the query
 const QueryEntitiesSchema = z.object({
   entities: z.array(z.string()).describe('Entity names mentioned or implied in the query'),
   relationshipType: z.string().optional().describe('The type of relationship being asked about, if any'),
 })
 
-async function extractQueryEntities(query: string): Promise<z.infer<typeof QueryEntitiesSchema>> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: QueryEntitiesSchema }),
-    system: `Extract entity names from the query that should be looked up
-in a knowledge graph. Also identify the relationship type being asked about.
+async function extractQueryEntities(query: string): Promise<z.infer<typeof QueryEntitiesSchema>>
+```
 
-Examples:
+Build this with a system prompt that includes examples:
+
 - "Who manages Alice?" -> entities: ["Alice"], relationshipType: "manages"
 - "What tech does Project Alpha use?" -> entities: ["Project Alpha"], relationshipType: "uses"
-- "How are Alice and Bob connected?" -> entities: ["Alice", "Bob"]`,
-    messages: [{ role: 'user', content: query }],
-    temperature: 0,
-  })
 
-  return output
-}
+Then build the full Graph RAG pipeline:
 
-// Step 2: Full Graph RAG pipeline
+```typescript
 interface GraphRAGResult {
   answer: string
   vectorContext: string[]
@@ -977,131 +578,38 @@ async function graphRAG(
   query: string,
   graph: KnowledgeGraph,
   vectorSearch: (query: string, topK: number) => Promise<string[]>,
-  options: {
-    vectorTopK?: number
-    graphHops?: number
-  } = {}
-): Promise<GraphRAGResult> {
-  const { vectorTopK = 5, graphHops = 2 } = options
-
-  // Run vector and graph retrieval in parallel
-  const [vectorResults, queryEntities] = await Promise.all([
-    vectorSearch(query, vectorTopK),
-    extractQueryEntities(query),
-  ])
-
-  console.log(`Query entities: ${queryEntities.entities.join(', ')}`)
-  if (queryEntities.relationshipType) {
-    console.log(`Relationship type: ${queryEntities.relationshipType}`)
-  }
-
-  // Graph retrieval: get subgraph around mentioned entities
-  const subgraph = extractSubgraph(graph, queryEntities.entities, graphHops)
-  const graphContext = traversalToText(subgraph)
-
-  console.log(`Graph context: ${subgraph.nodes.length} nodes, ${subgraph.edges.length} edges`)
-  console.log(`Vector context: ${vectorResults.length} chunks`)
-
-  // Combine contexts and generate answer
-  const combinedContext = `
-=== Knowledge Graph Context ===
-${graphContext}
-
-=== Document Context ===
-${vectorResults.map((chunk, i) => `[Document ${i + 1}]: ${chunk}`).join('\n\n')}
-`
-
-  const result = await generateText({
-    model: mistral('mistral-small-latest'),
-    system: `Answer the question using both the knowledge graph context
-(entities and their relationships) and the document context (text passages).
-
-The knowledge graph provides structured relationship information.
-The document context provides detailed text passages.
-
-Use both to provide a complete, accurate answer. If the graph and documents
-contradict each other, note the discrepancy.`,
-    messages: [
-      {
-        role: 'user',
-        content: `${combinedContext}\n\nQuestion: ${query}`,
-      },
-    ],
-  })
-
-  return {
-    answer: result.text,
-    vectorContext: vectorResults,
-    graphContext,
-    entitiesFound: subgraph.nodes.map(n => n.name),
-  }
-}
-
-export { extractQueryEntities, graphRAG, type GraphRAGResult }
+  options?: { vectorTopK?: number; graphHops?: number }
+): Promise<GraphRAGResult>
 ```
 
-### Example: Building and Querying a Graph
+Build `graphRAG` to:
+
+1. Run vector search and entity extraction in parallel using `Promise.all`.
+2. Use extracted entity names to call `extractSubgraph` on the graph.
+3. Convert the subgraph to text with `traversalToText`.
+4. Combine both contexts into a single prompt with clearly labeled sections ("=== Knowledge Graph Context ===" and "=== Document Context ===").
+5. Call `generateText` with a system prompt instructing the model to use both contexts, noting any discrepancies between graph and document information.
+
+Why run vector and graph retrieval in parallel rather than sequentially? What does each retrieval strategy contribute that the other cannot?
+
+### Example Usage
+
+To test your Graph RAG pipeline, create a set of sample documents about a fictional software organization:
 
 ```typescript
-// src/knowledge-graphs/example-usage.ts
+const documents = [
+  `Alice Smith is the Engineering Director. She manages the Platform
+team and the Product team. Alice reports to CEO Bob Johnson.`,
 
-import { buildGraphFromText } from './build-graph.js'
-import { graphRAG } from './graph-rag.js'
-
-async function main(): Promise<void> {
-  // Sample documents about a software organization
-  const documents = [
-    `Alice Smith is the Engineering Director. She manages the Platform
-team and the Product team. Alice reports to CEO Bob Johnson.
-Alice has been with the company since 2019.`,
-
-    `The Platform team is led by Charlie Davis. The team maintains
+  `The Platform team is led by Charlie Davis. The team maintains
 the authentication service (built with TypeScript and Hono) and
 the data pipeline (built with Python). Charlie reports to Alice Smith.`,
 
-    `The Product team is led by Diana Lee. They are building
-Project Alpha, a new AI-powered search feature. Project Alpha
-uses the authentication service and a PostgreSQL database.
-Diana reports to Alice Smith.`,
-
-    `Project Alpha depends on the embedding service, which is maintained
-by the Platform team. The embedding service uses the OpenAI API
-and stores vectors in Pinecone. Charlie Davis reviewed the
-architecture for Project Alpha.`,
-  ]
-
-  // Build the knowledge graph
-  const graph = await buildGraphFromText(documents)
-
-  // Simulate a vector search function
-  const vectorSearch = async (query: string, topK: number): Promise<string[]> => {
-    // In practice, this would search an embedding index
-    // For demonstration, return relevant documents
-    return documents.slice(0, topK)
-  }
-
-  // Query 1: Multi-hop relationship
-  console.log('\n=== Query 1: Multi-hop ===')
-  const result1 = await graphRAG(
-    'Who does Charlie Davis report to, and who does that person report to?',
-    graph,
-    vectorSearch
-  )
-  console.log('Answer:', result1.answer)
-
-  // Query 2: Dependency tracking
-  console.log('\n=== Query 2: Dependencies ===')
-  const result2 = await graphRAG('What services does Project Alpha depend on?', graph, vectorSearch)
-  console.log('Answer:', result2.answer)
-
-  // Query 3: Connection finding
-  console.log('\n=== Query 3: Connection ===')
-  const result3 = await graphRAG('How is the Platform team connected to Project Alpha?', graph, vectorSearch)
-  console.log('Answer:', result3.answer)
-}
-
-main().catch(console.error)
+  // ... more documents with cross-references
+]
 ```
+
+Build the graph with `buildGraphFromText(documents)`, create a simulated vector search that returns the raw documents, and test with multi-hop queries like "Who does Charlie Davis report to, and who does that person report to?"
 
 > **Beginner Note:** Start by building the graph from a small set of documents (10-20) and testing queries manually. Inspect the extracted entities and relationships to verify quality before scaling up. Bad entity extraction leads to a bad graph, which leads to bad retrieval.
 
@@ -1115,6 +623,10 @@ main().catch(console.error)
 
 Entity extraction from multiple documents produces duplicates. "Alice Smith," "Alice," "A. Smith," and "Engineering Director Alice" might all refer to the same person. Without deduplication, your graph has four separate nodes for one entity, and relationships are fragmented.
 
+You will build two strategies: string similarity (fast, free) and LLM-based resolution (slower, semantic).
+
+### Strategy 1: String Similarity
+
 ```typescript
 // src/knowledge-graphs/entity-resolution.ts
 
@@ -1123,76 +635,28 @@ import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 import type { GraphNode } from './graph.js'
 
-// Strategy 1: String similarity-based matching
-function stringSimilarity(a: string, b: string): number {
-  const aLower = a.toLowerCase()
-  const bLower = b.toLowerCase()
+function stringSimilarity(a: string, b: string): number
+function levenshteinDistance(a: string, b: string): number
+function findPotentialDuplicates(nodes: GraphNode[], threshold?: number): Array<[GraphNode, GraphNode, number]>
+```
 
-  // Exact match
-  if (aLower === bLower) return 1.0
+Build `stringSimilarity` with three tiers:
 
-  // One contains the other
-  if (aLower.includes(bLower) || bLower.includes(aLower)) {
-    return 0.8
-  }
+- Exact match (case-insensitive): return 1.0
+- One string contains the other: return 0.8
+- Otherwise: compute Levenshtein distance and return `1 - distance / maxLength`
 
-  // Levenshtein distance-based similarity
-  const maxLen = Math.max(aLower.length, bLower.length)
-  if (maxLen === 0) return 1.0
+Build `levenshteinDistance` using the classic dynamic programming matrix approach: create a 2D matrix of size `(b.length + 1) x (a.length + 1)`, initialize the first row and column with sequential indices, then fill in the rest using the min of insertion, deletion, and substitution costs.
 
-  const distance = levenshteinDistance(aLower, bLower)
-  return 1 - distance / maxLen
-}
+Build `findPotentialDuplicates` to compare all pairs of nodes of the same type. Check both the node name and its aliases against the other node's name. Only compare nodes of the same type -- a person and a city should never be considered duplicates even if their names match.
 
-function levenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = []
+Why is it important to only compare nodes of the same type? Can you think of a case where two nodes of different types with the same name should remain separate?
 
-  for (let i = 0; i <= b.length; i++) {
-    matrix[i] = [i]
-  }
-  for (let j = 0; j <= a.length; j++) {
-    matrix[0][j] = j
-  }
+### Strategy 2: LLM-Based Entity Resolution
 
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      const cost = b.charAt(i - 1) === a.charAt(j - 1) ? 0 : 1
-      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost)
-    }
-  }
+For ambiguous cases, use an LLM:
 
-  return matrix[b.length][a.length]
-}
-
-// Find potential duplicates based on string similarity
-function findPotentialDuplicates(nodes: GraphNode[], threshold: number = 0.7): Array<[GraphNode, GraphNode, number]> {
-  const duplicates: Array<[GraphNode, GraphNode, number]> = []
-
-  for (let i = 0; i < nodes.length; i++) {
-    for (let j = i + 1; j < nodes.length; j++) {
-      // Only compare nodes of the same type
-      if (nodes[i].type !== nodes[j].type) continue
-
-      const similarity = stringSimilarity(nodes[i].name, nodes[j].name)
-      if (similarity >= threshold) {
-        duplicates.push([nodes[i], nodes[j], similarity])
-      }
-
-      // Also check aliases
-      for (const alias of nodes[i].aliases) {
-        const aliasSim = stringSimilarity(alias, nodes[j].name)
-        if (aliasSim >= threshold) {
-          duplicates.push([nodes[i], nodes[j], aliasSim])
-          break
-        }
-      }
-    }
-  }
-
-  return duplicates
-}
-
-// Strategy 2: LLM-based entity resolution
+```typescript
 const EntityResolutionSchema = z.object({
   areSameEntity: z.boolean(),
   confidence: z.number().min(0).max(1),
@@ -1204,91 +668,35 @@ async function llmEntityResolution(
   entity1: GraphNode,
   entity2: GraphNode,
   context?: string
-): Promise<z.infer<typeof EntityResolutionSchema>> {
-  const { output } = await generateText({
-    model: mistral('mistral-small-latest'),
-    output: Output.object({ schema: EntityResolutionSchema }),
-    system: `Determine if two entities refer to the same real-world thing.
-Consider:
-- Name similarity and common abbreviations
-- Entity type (must match for them to be the same)
-- Attributes and context
-- Aliases
+): Promise<z.infer<typeof EntityResolutionSchema>>
+```
 
-${context ? `Context: ${context}` : ''}`,
-    messages: [
-      {
-        role: 'user',
-        content: `Entity 1: "${entity1.name}" (${entity1.type}) aliases: [${entity1.aliases.join(', ')}] attributes: ${JSON.stringify(entity1.attributes)}
+Build this to present both entities (name, type, aliases, attributes) to the LLM and ask whether they refer to the same real-world thing.
 
-Entity 2: "${entity2.name}" (${entity2.type}) aliases: [${entity2.aliases.join(', ')}] attributes: ${JSON.stringify(entity2.attributes)}`,
-      },
-    ],
-    temperature: 0,
-  })
+### Graph Deduplication
 
-  return output
-}
+Build a `deduplicateGraph` function that combines both strategies:
 
-// Resolve and merge duplicate entities in a graph
-import { KnowledgeGraph } from './graph.js'
-
+```typescript
 async function deduplicateGraph(
   graph: KnowledgeGraph,
-  useLLM: boolean = false
+  useLLM?: boolean
 ): Promise<{
   merged: number
-  mergeLog: Array<{
-    kept: string
-    removed: string
-    confidence: number
-  }>
-}> {
-  const stats = graph.getStats()
-  const allNodes: GraphNode[] = []
-
-  // Collect all nodes by type
-  for (const type of Object.keys(stats.nodeTypes)) {
-    allNodes.push(...graph.getNodesByType(type))
-  }
-
-  const duplicates = findPotentialDuplicates(allNodes, 0.75)
-  const mergeLog: Array<{
-    kept: string
-    removed: string
-    confidence: number
-  }> = []
-
-  for (const [node1, node2, similarity] of duplicates) {
-    let shouldMerge = similarity >= 0.9 // Auto-merge very high similarity
-    let confidence = similarity
-
-    if (!shouldMerge && useLLM) {
-      // Use LLM for uncertain cases
-      const resolution = await llmEntityResolution(node1, node2)
-      shouldMerge = resolution.areSameEntity
-      confidence = resolution.confidence
-    }
-
-    if (shouldMerge && confidence >= 0.8) {
-      mergeLog.push({
-        kept: node1.name,
-        removed: node2.name,
-        confidence,
-      })
-      // In a real implementation, you would:
-      // 1. Merge node2's edges into node1
-      // 2. Add node2's aliases to node1
-      // 3. Remove node2
-      console.log(`Merged: "${node2.name}" -> "${node1.name}" (confidence: ${confidence.toFixed(2)})`)
-    }
-  }
-
-  return { merged: mergeLog.length, mergeLog }
-}
-
-export { findPotentialDuplicates, llmEntityResolution, deduplicateGraph }
+  mergeLog: Array<{ kept: string; removed: string; confidence: number }>
+}>
 ```
+
+This function should:
+
+1. Collect all nodes from the graph.
+2. Find potential duplicates with `findPotentialDuplicates` at threshold 0.75.
+3. Auto-merge pairs with similarity >= 0.9.
+4. For uncertain pairs (0.75-0.9), use LLM resolution if `useLLM` is true.
+5. Only merge when confidence >= 0.8.
+6. Log each merge decision.
+
+In a full implementation, merging means: reassign all of node2's edges to node1, add node2's aliases to node1, and remove node2. What edge cases could arise during edge reassignment? (Hint: what if node2 has an edge to itself, or an edge to node1?)
 
 > **Beginner Note:** String-based deduplication (exact match and substring match) catches most duplicates and costs nothing. Use it as a first pass. Reserve LLM-based entity resolution for cases where string matching is ambiguous (e.g., "JS" could be "JavaScript" or a person's initials).
 
@@ -1327,7 +735,7 @@ const useCases: UseCase[] = [
       'Who approved the Q3 budget?',
     ],
     recommendedApproach: 'graph_rag',
-    reasoning: 'Questions involve ownership, dependencies, and approval chains — all relationship queries.',
+    reasoning: 'Questions involve ownership, dependencies, and approval chains -- all relationship queries.',
   },
   {
     description: 'Technical documentation for a microservices architecture',
@@ -1409,6 +817,65 @@ Before building Graph RAG, verify these prerequisites:
 
 ---
 
+> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+
+## Section 9: LSP as an Implicit Knowledge Graph
+
+(See Module 10 Section 11 for LSP background.)
+
+Language Server Protocol provides an implicit knowledge graph over code that you never have to build or maintain. The graph is always current because it is computed directly from the source code:
+
+- **Entities:** Functions, classes, interfaces, variables, types, modules
+- **Relationships:** Calls, imports, extends, implements, references, exports
+- **Traversal:** Go-to-definition, find-all-references, call hierarchy, type hierarchy
+- **Maintenance:** Zero — the graph is recomputed from code on every query
+
+Unlike the knowledge graphs taught in this module, which must be built through entity extraction, relationship mapping, and ongoing maintenance, the LSP graph is derived from the source of truth (the code itself). When code changes, the graph updates automatically. There is no extraction pipeline, no entity resolution, no stale data.
+
+```typescript
+// An LSP provides graph queries natively
+const lspQueries = {
+  // Entity lookup
+  getDefinition: (symbol: string) => '→ exact location of the definition',
+  // Relationship traversal (1-hop)
+  findReferences: (symbol: string) => '→ all files and lines that reference this symbol',
+  // Multi-hop traversal
+  getCallHierarchy: (fn: string) => '→ who calls this function, and who calls those callers',
+  // Type relationships
+  getTypeHierarchy: (type: string) => '→ what extends/implements this type',
+}
+```
+
+This is an important design lesson: when possible, derive graphs from authoritative sources rather than maintaining them separately. An LSP graph over code is always correct. A manually built knowledge graph over the same code would be stale by the next commit.
+
+The trade-off is flexibility. LSP graphs only know about code structure — they cannot capture business rules, architectural decisions, or domain concepts that are not expressed in the code. For those, you need explicit knowledge graphs built from documentation and human input.
+
+---
+
+## Section 10: When Graphs Are Free
+
+Some domains provide graph structure inherently — you do not have to build it. Recognizing these "free graphs" saves you the cost and complexity of explicit graph construction:
+
+| Domain             | Free Graph Source          | Entities                       | Relationships                    |
+| ------------------ | -------------------------- | ------------------------------ | -------------------------------- |
+| **Code**           | LSP / AST                  | Functions, classes, modules    | Calls, imports, extends          |
+| **Databases**      | Schema / catalog           | Tables, columns, views         | Foreign keys, joins, constraints |
+| **APIs**           | OpenAPI / GraphQL specs    | Endpoints, schemas, parameters | Request/response, dependencies   |
+| **Packages**       | Package manager            | Libraries, versions            | Dependencies, peer dependencies  |
+| **Infrastructure** | Terraform / CloudFormation | Services, resources            | Connections, permissions         |
+
+For these domains, the graph already exists in a structured, machine-readable format. You can query it directly rather than building a knowledge graph from unstructured text. The entity extraction and relationship mapping from this module are needed when the graph does not already exist — when you are working with documents, reports, emails, or other unstructured content.
+
+The practical decision framework is:
+
+1. **Check for an implicit graph first.** Does your domain have a structured schema, protocol, or specification that encodes entities and relationships?
+2. **If yes, use it directly.** Write query adapters that translate graph questions into the native query language (SQL for databases, LSP for code, API calls for service catalogs).
+3. **If no, build an explicit graph.** Use the entity extraction and relationship mapping techniques from this module to construct one from unstructured data.
+
+> **Key Insight:** The most expensive part of a knowledge graph is not the storage or traversal — it is the construction and maintenance. When you can derive the graph from a structured source, you eliminate the hardest part of the problem.
+
+---
+
 ## Quiz
 
 ### Question 1 (Easy)
@@ -1473,6 +940,34 @@ You have a knowledge base of 500 technical documents. Users mostly ask "how-to" 
 - D) Use graph RAG only — it can handle both types of queries
 
 **Answer: C** — A full Graph RAG system for all 500 documents is expensive and unnecessary for "how-to" queries. Ignoring the 20% dependency queries leaves a significant gap. The optimal approach is vector RAG as the default (handles 80% of queries well) with a targeted graph just for service dependency relationships (handles the 20%). A router or classifier can detect dependency-type questions and activate graph retrieval only when needed, keeping costs low while improving quality where it matters most.
+
+### Question 6 (Medium)
+
+What advantage does an LSP-derived knowledge graph have over a manually constructed one for code?
+
+a) LSP graphs support more entity types
+b) LSP graphs are always correct and never stale because they are computed directly from the source code, eliminating the extraction pipeline and maintenance burden
+c) LSP graphs are stored more efficiently
+d) LSP graphs can represent business rules that code cannot express
+
+**Answer: B**
+
+**Explanation:** An LSP-derived graph is computed from the source of truth (the code itself). When code changes, the graph updates automatically — there is no extraction pipeline to run, no entity resolution to maintain, and no risk of stale data. A manually constructed knowledge graph requires re-extraction whenever code changes and can drift from reality between updates. The trade-off is flexibility: LSP only captures code structure, not business rules or architectural decisions.
+
+---
+
+### Question 7 (Hard)
+
+You are deciding whether to build an explicit knowledge graph for a new domain. The domain has a well-defined API specification (OpenAPI) that describes all endpoints, schemas, and their relationships. What should you do?
+
+a) Build a knowledge graph from the API documentation using entity extraction
+b) Ignore the API specification and use vector search only
+c) Use the OpenAPI spec directly as an implicit graph — it already encodes entities (endpoints, schemas) and relationships (request/response, dependencies) in a structured, machine-readable format
+d) Convert the OpenAPI spec to unstructured text before building the graph
+
+**Answer: C**
+
+**Explanation:** The OpenAPI specification is an implicit graph that already encodes the entities and relationships you would extract. Endpoints are nodes, request/response schemas define edges, and dependencies between schemas capture relationships. Writing query adapters that translate graph questions into spec lookups is far cheaper and more reliable than building an explicit graph from the same information. The general principle: check for implicit graphs first, and only build explicit ones when no structured source exists.
 
 ---
 
@@ -1623,5 +1118,7 @@ In this module, you learned:
 6. **Graph RAG:** Combining graph traversal with vector search provides both relationship context and text content for comprehensive answers.
 7. **Graph consistency:** Entity deduplication and resolution handle the inevitable duplicate entities from multi-document extraction.
 8. **Decision framework:** Use vector RAG for content questions, graph RAG for relationship questions, and hybrid for applications with both.
+9. **Implicit knowledge graphs:** LSP provides a zero-maintenance knowledge graph over code — entities, relationships, and traversal derived directly from the source, always up-to-date.
+10. **When graphs are free:** Code (LSP), databases (schema), and APIs (OpenAPI) provide inherent graph structure. Recognize these implicit graphs before investing in explicit graph construction from unstructured data.
 
 In Module 13, you will extend your pipeline to handle multi-modal inputs — images, diagrams, screenshots, and audio — adding visual understanding to your retrieval and generation capabilities.
