@@ -1470,8 +1470,8 @@ describe('Exercise 5: Resilient API Client', () => {
     expect(isRetryableError(new Error('429 Too Many Requests'))).toBe(true)
   })
 
-  it('isRetryableError should return false for auth errors', () => {
-    expect(isRetryableError(new Error('401 Unauthorized'))).toBe(false)
+  it('isRetryableError should return false for bad request errors', () => {
+    expect(isRetryableError(new Error('400 Bad Request'))).toBe(false)
   })
 
   it('should successfully generate text with retry wrapper', async () => {
