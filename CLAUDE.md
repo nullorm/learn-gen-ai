@@ -97,3 +97,4 @@ Rules:
 - When explaining code patterns, use short inline snippets (1-3 lines) to illustrate syntax, not full implementations
 - Guide with questions: "What should happen when the env var is missing?" not "Here's the error handling code"
 - If the student is stuck after 2 hints, offer to show a minimal skeleton (signature + comments only, no body)
+- **Tests must use assertions, not logging** — every test should verify behavior with `expect()`. Never write tests that use `console.log`, `console.table`, `process.stdout.write`, or any other output for the student to visually inspect
