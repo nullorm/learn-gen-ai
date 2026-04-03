@@ -70,7 +70,7 @@ Each `/module-N` command follows this sequence:
 4. Exercises: guided implementation, progress tracked per exercise
 5. Completion: `bun run tools/progress.ts complete N`
 
-User preferences (`course/preferences.toml`) control difficulty level and default provider. If the file doesn't exist, defaults to intermediate level with Anthropic provider.
+User preferences (`course/preferences.toml`) control difficulty level and default provider. If the file doesn't exist, defaults to intermediate level with Mistral provider.
 
 ### Student-Builds-Everything Approach
 

@@ -22,7 +22,7 @@ const DEFAULTS: Preferences = {
     level: 'intermediate',
   },
   provider: {
-    default: 'anthropic',
+    default: 'mistral',
     mistral_model: 'mistral-small-latest',
     groq_model: 'openai/gpt-oss-20b',
     ollama_model: 'qwen3.5',
