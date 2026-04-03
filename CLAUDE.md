@@ -56,7 +56,7 @@ Tests mirror `src/` under `tests/`. Test runner config in `bunfig.toml` sets roo
 - **ESM imports only** — no `require()`, always use `.js` extensions in relative imports (e.g., `from './provider.js'`)
 - **Ollama thinking mode** — Qwen3/3.5 models default to thinking mode which consumes all tokens in `<think>` tags. Disable via the model constructor: `ollama('qwen3.5', { think: false })`. The `ai-sdk-ollama` provider handles this natively
 - **Prettier** — no semicolons, single quotes, trailing commas (es5), 120 char width
-- **Vercel AI SDK patterns** — `generateText`, `streamText`, `Output.object()` for all LLM calls
+- **Vercel AI SDK patterns** — `generateText`, `streamText`, `Output.object()` for all LLM calls. Message type is `ModelMessage` (imported from `'ai'`). **Never use `CoreMessage`** — it was removed in earlier versions and no longer exists
 - **Zod v4 patterns** — use top-level APIs: `z.int()`, `z.email()`, `z.url()`, `z.uuid()`, `z.iso.date()`. Chaining works: `z.int().min(1).max(10)`. Use Zod for all tool definitions, structured output, and validation
 - **Provider-agnostic** — default provider is Mistral (free tier: 1 RPS, 500K tokens/min, 1B tokens/month per model), with Groq, Anthropic, OpenAI, and Ollama as alternatives
 
