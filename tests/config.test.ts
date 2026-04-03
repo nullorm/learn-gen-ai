@@ -7,6 +7,8 @@ describe('loadPreferences', () => {
     const prefs = loadPreferences('/nonexistent/path.toml')
     expect(prefs.background.level).toBe('intermediate')
     expect(prefs.provider.default).toBe('anthropic')
+    expect(prefs.provider.mistral_model).toBe('mistral-small-latest')
+    expect(prefs.provider.groq_model).toBe('openai/gpt-oss-20b')
     expect(prefs.provider.ollama_model).toBe('qwen3.5')
     expect(prefs.data.vector_store).toBe('lancedb')
   })

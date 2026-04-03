@@ -7,7 +7,9 @@ export interface Preferences {
     level: 'beginner' | 'intermediate' | 'advanced'
   }
   provider: {
-    default: 'anthropic' | 'openai' | 'ollama'
+    default: 'mistral' | 'groq' | 'anthropic' | 'openai' | 'ollama'
+    mistral_model: string
+    groq_model: string
     ollama_model: string
   }
   data: {
@@ -21,6 +23,8 @@ const DEFAULTS: Preferences = {
   },
   provider: {
     default: 'anthropic',
+    mistral_model: 'mistral-small-latest',
+    groq_model: 'openai/gpt-oss-20b',
     ollama_model: 'qwen3.5',
   },
   data: {
