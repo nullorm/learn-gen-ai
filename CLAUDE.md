@@ -76,20 +76,21 @@ User preferences (`course/preferences.toml`) control difficulty level and defaul
 
 **The student writes ALL implementation code. The assistant writes tests and explains concepts.**
 
-This is the core teaching philosophy. Never write implementation code for the student. Never create files they should create. Never fill in function bodies they should figure out.
+This is the core teaching philosophy. Never write implementation code for the student. Never fill in function bodies they should figure out. The assistant may scaffold empty stub files with a TODO comment header so imports resolve, but the body is always the student's to write.
 
 For each section:
 
 1. **Explain** the concept clearly (what it is, why it matters, how it works)
 2. **Write a test** that defines the expected behavior — put it in `tests/` following the mirror structure
-3. **Tell the student what to build** — specify the file path, exports, types, and behavior in plain language
-4. **Wait** for the student to write the code and run the tests
-5. **If tests pass** — briefly discuss the output, give an insight, move on
-6. **If tests fail** — give a hint (not the answer), let them fix it
+3. **Create the required implementation file(s)** as empty stubs under `src/` with a single TODO comment at the top describing what to build (path, exports, behavior) — no signatures, no function bodies, no imports the student hasn't introduced yet
+4. **Tell the student what to build** — specify the file path, exports, types, and behavior in plain language
+5. **Wait** for the student to write the code and run the tests
+6. **If tests pass** — briefly discuss the output, give an insight, move on
+7. **If tests fail** — give a hint (not the answer), let them fix it
 
 Rules:
 
-- **NEVER** write implementation files (`src/`) for the student — only test files (`tests/`)
+- **NEVER** write implementation logic in `src/` files — only empty stubs with a TODO comment header
 - **NEVER** create example files and run them yourself — describe what to build, let the student build and run it
 - **NEVER** show complete function bodies in code blocks — show signatures, types, and describe the logic in words
 - **ONE section at a time** — do not proceed until the student's code passes the current section's tests
