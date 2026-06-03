@@ -11,6 +11,8 @@
 - Implement incremental processing that detects changes and updates embeddings efficiently
 - Design strategies for processing large documents (500+ pages) without losing context
 
+> *Module 11 is part of **Part III: Advanced Retrieval**, building toward the **RAG Builder** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -254,6 +256,8 @@ Recursive character splitting tries to split at natural boundaries, in order of 
 4. **Word breaks** (spaces)
 5. **Character breaks** (last resort)
 
+> **Try it:** Run your splitter on a markdown doc with headings, then on the same text with every newline stripped out. Watch the chunk boundaries move — that's the recursion falling back from section breaks to sentences to raw characters. The structure you feed it determines the chunks you get back.
+
 ### Implementation
 
 ```typescript
@@ -336,6 +340,8 @@ Good metadata includes:
 - **Document metadata:** Title, author, date, source URL
 - **Semantic metadata:** Topics, entities, key terms
 - **Technical metadata:** Chunk index, content hash, processing timestamp
+
+> **Gotcha:** The moment you split a document, every chunk loses its context — which section it came from, what document, what date. If you don't attach that as metadata *at split time*, it's gone: chunk #47 is just an anonymous paragraph the retriever can't filter or attribute. Capture structural metadata during chunking, not after.
 
 ### Automatic Metadata Extraction
 
@@ -802,7 +808,26 @@ function routeFile(path: string): FileProcessor {
 
 The routing pattern normalizes diverse document types into a common `Chunk` format before they enter the embedding and retrieval pipeline. This separation of concerns — detection, routing, processing, normalization — keeps each processor focused and testable.
 
-> **Note: LSP and Structure-Aware Processing** — This module teaches chunking strategies that try to respect code structure: split by functions, preserve class boundaries, keep imports together. Language Server Protocol provides the exact structural understanding that chunking approximates. LSP knows precisely where every function starts and ends, what its parameters are, and what it calls. When you chunk source code by function boundaries, you are approximating what a language server already knows exactly. This comparison motivates why structure-preserving chunking matters: the closer your chunks align with actual code structure, the better your retrieval quality.
+> **Advanced Note: LSP and Structure-Aware Processing** — This module teaches chunking strategies that try to respect code structure: split by functions, preserve class boundaries, keep imports together. Language Server Protocol provides the exact structural understanding that chunking approximates. LSP knows precisely where every function starts and ends, what its parameters are, and what it calls. When you chunk source code by function boundaries, you are approximating what a language server already knows exactly. This comparison motivates why structure-preserving chunking matters: the closer your chunks align with actual code structure, the better your retrieval quality.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Document types:** PDF, HTML, markdown, and code each require different extraction strategies.
+2. **Text extraction:** PDF parsing, HTML cleaning with boilerplate removal, and markdown structural parsing.
+3. **Recursive character splitting:** Split text at natural boundaries (sections, paragraphs, sentences) rather than fixed character counts, with configurable overlap.
+4. **Metadata extraction:** Rule-based extraction for structured patterns (dates, emails, URLs) and LLM-based extraction for semantic fields (topics, document type, summaries).
+5. **Structured extraction:** LLMs can recover tables, key-value pairs, and other structured data from unstructured text.
+6. **Document hierarchies:** Parent-child chunk relationships provide precise retrieval with contextual expansion.
+7. **Incremental processing:** Content hashing and change detection enable efficient updates when documents change.
+8. **Large document strategies:** Hierarchical summarization, sliding windows, and multi-level indexing handle documents that exceed context windows.
+9. **Bounded reading:** Enforcing token budgets, file size limits, and pagination at the reading layer prevents documents from consuming more context than they are worth.
+10. **File type routing:** Detecting file types and routing to specialized processors (markdown heading splitter, PDF page extractor, code function splitter) produces higher-quality chunks than one-size-fits-all splitting.
+
+In Module 12, you will learn how to extract entities and relationships from documents to build knowledge graphs — a complementary retrieval strategy that captures connections that vector search alone cannot.
 
 ---
 
@@ -1179,20 +1204,3 @@ describe('Exercise 11.4: Incremental Processing with Hashing', () => {
 ```
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Document types:** PDF, HTML, markdown, and code each require different extraction strategies.
-2. **Text extraction:** PDF parsing, HTML cleaning with boilerplate removal, and markdown structural parsing.
-3. **Recursive character splitting:** Split text at natural boundaries (sections, paragraphs, sentences) rather than fixed character counts, with configurable overlap.
-4. **Metadata extraction:** Rule-based extraction for structured patterns (dates, emails, URLs) and LLM-based extraction for semantic fields (topics, document type, summaries).
-5. **Structured extraction:** LLMs can recover tables, key-value pairs, and other structured data from unstructured text.
-6. **Document hierarchies:** Parent-child chunk relationships provide precise retrieval with contextual expansion.
-7. **Incremental processing:** Content hashing and change detection enable efficient updates when documents change.
-8. **Large document strategies:** Hierarchical summarization, sliding windows, and multi-level indexing handle documents that exceed context windows.
-9. **Bounded reading:** Enforcing token budgets, file size limits, and pagination at the reading layer prevents documents from consuming more context than they are worth.
-10. **File type routing:** Detecting file types and routing to specialized processors (markdown heading splitter, PDF page extractor, code function splitter) produces higher-quality chunks than one-size-fits-all splitting.
-
-In Module 12, you will learn how to extract entities and relationships from documents to build knowledge graphs — a complementary retrieval strategy that captures connections that vector search alone cannot.
