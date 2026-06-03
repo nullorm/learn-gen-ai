@@ -8,6 +8,8 @@
 - Understand message roles (system, user, assistant) and how they shape model behavior
 - Handle errors, configure model parameters, and build resilient LLM applications
 
+> *Module 1 opens **Part I: First Contact** — the first three modules earn you the **First Contact** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -117,7 +119,7 @@ Bun handles TypeScript natively, but we want a strict configuration for LLM deve
 
 > **Advanced Note:** The `"moduleResolution": "nodenext"` setting enforces strict ESM — TypeScript will error if you forget `.js` extensions on relative imports. This is stricter than `"bundler"` but catches issues early.
 
-> **Important: ESM Import Extensions** — Always use `.js` extensions in relative imports, even though the source files are `.ts`. This is the correct ESM convention: `import { createModel } from './provider.js'`, not `from './provider'`. TypeScript resolves `.js` to the corresponding `.ts` file at compile time. Omitting extensions works in some bundlers but breaks in strict ESM environments.
+> **Gotcha: ESM Import Extensions** — Always use `.js` extensions in relative imports, even though the source files are `.ts`. This is the correct ESM convention: `import { createModel } from './provider.js'`, not `from './provider'`. TypeScript resolves `.js` to the corresponding `.ts` file at compile time. Omitting extensions works in some bundlers but breaks in strict ESM environments.
 
 ### Project Structure
 
@@ -347,7 +349,9 @@ const model = createModel({ provider: 'anthropic', modelId: 'claude-haiku-4-5-20
 
 This factory pattern becomes increasingly valuable as your application grows. You can read the provider name from a config file, a CLI argument, or an environment variable — keeping your application code provider-agnostic.
 
-> **Scale Note: 75+ Providers via AI SDK** — The Vercel AI SDK supports 75+ providers through its unified interface — the same `generateText` and `streamText` functions you are learning here. Production coding agents use this exact pattern with the `models.dev` registry to support every major provider through a single SDK. This validates the provider-agnostic approach: your code stays the same whether you use Mistral, Anthropic, OpenAI, Google, or any other supported provider. Production systems also configure model **variants** with provider-specific options — for example, thinking budget levels for Anthropic models or reasoning effort levels for OpenAI — passed via `providerOptions` in `generateText`/`streamText` calls.
+> **Decision:** Which provider should you default to? Pick by constraint, not hype. **Mistral** (free tier) for learning and high-volume development; **Groq** when latency is the priority; **Anthropic** for the hardest reasoning and the largest context; **Ollama** when data must never leave the machine. Thanks to the factory above, switching is a one-line change — so default to the cheapest provider that passes your evals and escalate only where quality demands it.
+
+> **Production Patterns: 75+ Providers via AI SDK** — The Vercel AI SDK supports 75+ providers through its unified interface — the same `generateText` and `streamText` functions you are learning here. Production coding agents use this exact pattern with the `models.dev` registry to support every major provider through a single SDK. This validates the provider-agnostic approach: your code stays the same whether you use Mistral, Anthropic, OpenAI, Google, or any other supported provider. Production systems also configure model **variants** with provider-specific options — for example, thinking budget levels for Anthropic models or reasoning effort levels for OpenAI — passed via `providerOptions` in `generateText`/`streamText` calls.
 
 ---
 
@@ -1107,6 +1111,40 @@ The wrapper should:
 
 ---
 
+## Going Further: Troubleshooting Setup
+
+### Common Setup Issues
+
+| Problem | Cause | Solution |
+| --- | --- | --- |
+| `Missing required environment variable: MISTRAL_API_KEY` | `.env` file missing or key not set | Copy `.env.example` to `.env` and add your key |
+| `Error: 401 Unauthorized` | Invalid API key | Verify key at console.mistral.ai |
+| `Cannot find module 'ai'` | Dependencies not installed | Run `bun install` |
+| `TypeError: mistral is not a function` | Wrong import syntax | Use `import { mistral } from '@ai-sdk/mistral'` |
+| `ECONNREFUSED 127.0.0.1:11434` | Ollama not running | Start Ollama with `ollama serve` |
+| Response is empty string | Model returned no content | Check your prompt — it may be too vague |
+
+> **Advanced Note: AI SDK Middleware** — The Vercel AI SDK supports a middleware system via `wrapLanguageModel()` that lets you intercept and transform model calls. You can add logging, caching, guardrails, or custom logic as composable wrappers around any model — without changing your application code. You'll see patterns throughout this course (observability in Module 23, guardrails in Module 21, caching in Module 22) that can all be implemented as middleware. We'll use direct implementations for clarity, but know that middleware is the idiomatic way to compose these concerns in production.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Project setup:** How to initialize a Bun + TypeScript project with the Vercel AI SDK and configure environment variables.
+2. **Providers:** How the provider abstraction works and how to configure Mistral, Groq, Anthropic, OpenAI, and Ollama.
+3. **generateText:** How to make synchronous LLM calls, understand the result object, and use system prompts.
+4. **Roles:** The system/user/assistant message roles and how to build multi-turn conversations.
+5. **streamText:** How to stream responses for real-time output and measure timing metrics.
+6. **Parameters:** How temperature, top-P, max tokens, and penalties shape model behavior.
+7. **Error handling:** How to handle API errors, implement retries with exponential backoff, and set timeouts.
+8. **Resilient API clients:** How to build production retry wrappers with exponential backoff and jitter to handle transient failures automatically.
+
+You now have the foundation to build any LLM application. In Module 2, we will use these tools to master the art and science of prompt engineering.
+
+---
+
 ## Quiz
 
 ### Question 1 (Easy)
@@ -1485,35 +1523,3 @@ describe('Exercise 5: Resilient API Client', () => {
 ```
 
 ---
-
-## Troubleshooting
-
-### Common Setup Issues
-
-| Problem                                                  | Cause                              | Solution                                        |
-| -------------------------------------------------------- | ---------------------------------- | ----------------------------------------------- |
-| `Missing required environment variable: MISTRAL_API_KEY` | `.env` file missing or key not set | Copy `.env.example` to `.env` and add your key  |
-| `Error: 401 Unauthorized`                                | Invalid API key                    | Verify key at console.mistral.ai                |
-| `Cannot find module 'ai'`                                | Dependencies not installed         | Run `bun install`                               |
-| `TypeError: mistral is not a function`                   | Wrong import syntax                | Use `import { mistral } from '@ai-sdk/mistral'` |
-| `ECONNREFUSED 127.0.0.1:11434`                           | Ollama not running                 | Start Ollama with `ollama serve`                |
-| Response is empty string                                 | Model returned no content          | Check your prompt — it may be too vague         |
-
-> **Looking Ahead: AI SDK Middleware** — The Vercel AI SDK supports a middleware system via `wrapLanguageModel()` that lets you intercept and transform model calls. You can add logging, caching, guardrails, or custom logic as composable wrappers around any model — without changing your application code. You'll see patterns throughout this course (observability in Module 23, guardrails in Module 21, caching in Module 22) that can all be implemented as middleware. We'll use direct implementations for clarity, but know that middleware is the idiomatic way to compose these concerns in production.
-
----
-
-## Summary
-
-In this module, you learned:
-
-1. **Project setup:** How to initialize a Bun + TypeScript project with the Vercel AI SDK and configure environment variables.
-2. **Providers:** How the provider abstraction works and how to configure Mistral, Groq, Anthropic, OpenAI, and Ollama.
-3. **generateText:** How to make synchronous LLM calls, understand the result object, and use system prompts.
-4. **Roles:** The system/user/assistant message roles and how to build multi-turn conversations.
-5. **streamText:** How to stream responses for real-time output and measure timing metrics.
-6. **Parameters:** How temperature, top-P, max tokens, and penalties shape model behavior.
-7. **Error handling:** How to handle API errors, implement retries with exponential backoff, and set timeouts.
-8. **Resilient API clients:** How to build production retry wrappers with exponential backoff and jitter to handle transient failures automatically.
-
-You now have the foundation to build any LLM application. In Module 2, we will use these tools to master the art and science of prompt engineering.
