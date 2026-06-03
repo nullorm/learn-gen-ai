@@ -11,6 +11,8 @@
 - Extract structured data from images including tables, forms, and charts
 - Recognize the limitations and failure modes of multi-modal models
 
+> *Module 13 closes **Part III: Advanced Retrieval** — complete it to earn the **RAG Builder** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -23,7 +25,7 @@ This module teaches you how to send images to multi-modal models via the Vercel 
 
 The practical impact is immediate. Instead of asking users to describe their error, you can ask them to screenshot it. Instead of manually transcribing whiteboard diagrams, you can photograph them. Instead of ignoring the charts in a report, you can extract the data they contain.
 
-> **Provider Note:** Vision/image features require a multi-modal provider. This module uses Anthropic (`claude-sonnet-4-20250514`). Mistral's Pixtral models or OpenAI GPT-4 are alternatives.
+> **Provider Tip:** Vision/image features require a multi-modal provider. This module uses Anthropic (`claude-sonnet-4-20250514`). Mistral's Pixtral models or OpenAI GPT-4 are alternatives.
 
 ---
 
@@ -90,7 +92,7 @@ Think about: what should happen when no model matches all requested modalities? 
 
 > **Beginner Note:** The course default provider is Mistral, but Mistral does not support image or audio input. This module uses Anthropic for image examples because Claude has strong vision capabilities. If you are using Anthropic, you have image input but not audio. For audio, you will need the OpenAI provider or a separate transcription step (Section 5).
 >
-> **Important:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-20250514')` for all image-related calls. If you prefer a different provider, OpenAI (`openai('gpt-4o')`) and Mistral's Pixtral (`mistral('pixtral-large-latest')`) also support image input. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
+> **Provider Tip:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-20250514')` for all image-related calls. If you prefer a different provider, OpenAI (`openai('gpt-4o')`) and Mistral's Pixtral (`mistral('pixtral-large-latest')`) also support image input. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
 
 ---
 
@@ -523,6 +525,8 @@ Why is the confidence field important for chart extraction specifically? How doe
 
 Multi-modal models have systematic failure modes that you need to know about and design around.
 
+> **Gotcha:** Vision models hallucinate *confidently*. A model will read a number off a blurry chart and state it as fact — no hedging, no "I'm not sure." The failure mode isn't refusal, it's plausible fabrication. For anything that matters (numbers, dates, IDs), build in verification or a confidence gate; never trust a single uncorroborated read.
+
 Create `src/multimodal/limitations.ts`. Start by defining and exporting a `KNOWN_LIMITATIONS` array of objects with this shape:
 
 ```typescript
@@ -589,9 +593,13 @@ Implement the token estimation logic based on image tiling. Most providers tile 
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 9: Image Preprocessing Pipeline
+## Going Further: Production Multi-modal Pipelines
 
-### Why Preprocess?
+Sections 1–8 cover what multi-modal models can do and where they fail. These last three are the production plumbing — preprocessing, token cost, file-type routing — that you add once you're shipping images at scale.
+
+### Image Preprocessing Pipeline
+
+#### Why Preprocess?
 
 Production systems never send raw user images directly to the API. Images arrive in unexpected formats, at absurd resolutions, or with file sizes that blow through API limits. A preprocessing pipeline validates and normalizes images before they reach the model.
 
@@ -622,9 +630,9 @@ For resizing, maintain the aspect ratio and cap the longest dimension. Most visi
 
 ---
 
-## Section 10: Token Cost of Images
+### Token Cost of Images
 
-### Images Are Expensive
+#### Images Are Expensive
 
 Image tokens are a significant cost driver in multi-modal applications. A single high-resolution image can consume as many tokens as several pages of text. Understanding this relationship lets you make informed trade-offs.
 
@@ -654,9 +662,9 @@ When building multi-modal applications, track image token usage separately from 
 
 ---
 
-## Section 11: File Type Routing for Multi-modal
+### File Type Routing for Multi-modal
 
-### Connecting Document Processing to Vision
+#### Connecting Document Processing to Vision
 
 In **Module 11 (Document Processing)**, you built file readers that extract text from documents. Multi-modal models extend this: files that are images should not be read as text — they should be sent as visual content to a vision model.
 
@@ -681,6 +689,26 @@ function routeFile(filePath: string, mimeType: string): FileHandler {
 The key insight is that the router makes multi-modal processing transparent to the rest of your pipeline. Upstream code sends files in, downstream code receives processed content — whether that content came from text extraction or image analysis.
 
 > **Advanced Note:** For PDFs, the routing decision is not always clear. A scanned PDF is really a collection of images and should be processed with vision. A text-heavy PDF should be extracted as text. Production systems detect this by checking if the PDF has extractable text layers — if yes, use text extraction; if no, render pages as images.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Multi-modal models:** Current models can process text, images, and (some) audio. The Vercel AI SDK provides a unified interface across providers.
+2. **Image input:** Three methods — base64, URL, and file buffer — for sending images to multi-modal models.
+3. **Vision use cases:** OCR, diagram understanding, and screenshot analysis are practical applications that work today.
+4. **Image + text prompting:** Effective multi-modal prompts are specific, labeled, and provide context for what the model should look at.
+5. **Audio transcription:** Whisper-based pipelines convert audio to text for LLM processing, enabling meeting notes extraction and voice-based Q&A.
+6. **Multi-modal RAG:** The "describe then embed" approach makes images searchable alongside text in standard vector stores.
+7. **Structured extraction:** Tables, forms, and charts in images can be converted to structured data (JSON, CSV) with LLM vision.
+8. **Limitations:** Hallucinated text, spatial reasoning errors, counting failures, and resolution sensitivity are systematic failure modes. Build confidence scoring and human verification into critical workflows.
+9. **Image preprocessing:** Production systems validate format (via magic bytes, not extension), resize to optimal dimensions, and strip metadata before sending images to the model, preventing API errors and reducing token waste.
+10. **Token cost of images:** Image tokens scale with resolution — resizing a 3000x3000 image to 1568x1568 cuts cost by roughly 75% with negligible quality loss for most vision tasks.
+11. **File type routing for multi-modal:** A router directs text files to text extraction and image files to vision processing, making multi-modal handling transparent to the rest of the pipeline.
+
+This completes Part III: Advanced Retrieval. You now have a comprehensive retrieval toolkit — vector search, hybrid search, reranking, knowledge graphs, document processing, and multi-modal understanding. In Part IV, you will learn to build agents that use these retrieval capabilities as tools, orchestrating complex multi-step workflows autonomously.
 
 ---
 
@@ -1055,21 +1083,3 @@ describe('Exercise 13: Token Cost Experiment', () => {
 > **Local Alternative (Ollama):** For vision tasks, use `ollama('ministral-3')` which has native vision support for image understanding, screenshot analysis, and visual question answering. For audio transcription, Whisper can be run locally via `whisper.cpp`. Multi-modal RAG works with local vision models for image understanding combined with `qwen3-embedding:0.6b` for text embeddings.
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Multi-modal models:** Current models can process text, images, and (some) audio. The Vercel AI SDK provides a unified interface across providers.
-2. **Image input:** Three methods — base64, URL, and file buffer — for sending images to multi-modal models.
-3. **Vision use cases:** OCR, diagram understanding, and screenshot analysis are practical applications that work today.
-4. **Image + text prompting:** Effective multi-modal prompts are specific, labeled, and provide context for what the model should look at.
-5. **Audio transcription:** Whisper-based pipelines convert audio to text for LLM processing, enabling meeting notes extraction and voice-based Q&A.
-6. **Multi-modal RAG:** The "describe then embed" approach makes images searchable alongside text in standard vector stores.
-7. **Structured extraction:** Tables, forms, and charts in images can be converted to structured data (JSON, CSV) with LLM vision.
-8. **Limitations:** Hallucinated text, spatial reasoning errors, counting failures, and resolution sensitivity are systematic failure modes. Build confidence scoring and human verification into critical workflows.
-9. **Image preprocessing:** Production systems validate format (via magic bytes, not extension), resize to optimal dimensions, and strip metadata before sending images to the model, preventing API errors and reducing token waste.
-10. **Token cost of images:** Image tokens scale with resolution — resizing a 3000x3000 image to 1568x1568 cuts cost by roughly 75% with negligible quality loss for most vision tasks.
-11. **File type routing for multi-modal:** A router directs text files to text extraction and image files to vision processing, making multi-modal handling transparent to the rest of the pipeline.
-
-This completes Part III: Advanced Retrieval. You now have a comprehensive retrieval toolkit — vector search, hybrid search, reranking, knowledge graphs, document processing, and multi-modal understanding. In Part IV, you will learn to build agents that use these retrieval capabilities as tools, orchestrating complex multi-step workflows autonomously.
