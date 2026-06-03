@@ -62,6 +62,19 @@ describe('lintModule', () => {
     expect(lintModule('m99.md', c)).toEqual([])
   })
 
+  test('accepts an approved label with a topic suffix', () => {
+    const c = wellFormed.replace(
+      '## Section 1: First\nbody',
+      '## Section 1: First\n\n> **Provider Tip: Native Citations** use them\n\n> **Local Alternative (Ollama)** swap the provider'
+    )
+    expect(lintModule('m99.md', c)).toEqual([])
+  })
+
+  test('still flags a bare off-vocabulary label like "Note"', () => {
+    const c = wellFormed.replace('## Section 1: First\nbody', '## Section 1: First\n\n> **Note:** too vague')
+    expect(lintModule('m99.md', c).some(e => e.includes('unapproved callout label "Note"'))).toBe(true)
+  })
+
   test('ignores headings inside code fences', () => {
     const c = wellFormed.replace('## Section 1: First\nbody', '## Section 1: First\n\n```md\n## Section 99: fake\n```')
     expect(lintModule('m99.md', c)).toEqual([])

@@ -23,6 +23,20 @@ export interface Heading {
   line: number
 }
 
+// A callout label is approved if it equals an approved label, or starts with
+// one followed by a boundary (":" or " ") — so "Provider Tip: Native Citations"
+// and "Local Alternative (Ollama)" pass, while "Note" / "Important" do not.
+export function isApprovedCallout(label: string): boolean {
+  for (const a of APPROVED_CALLOUTS) {
+    if (label === a) return true
+    if (label.startsWith(a)) {
+      const next = label.charAt(a.length)
+      if (next === ':' || next === ' ') return true
+    }
+  }
+  return false
+}
+
 export function parseHeadings(content: string): Heading[] {
   const headings: Heading[] = []
   const lines = content.split('\n')
@@ -107,7 +121,7 @@ export function lintModule(name: string, content: string): string[] {
     const cm = line.match(calloutRe)
     if (cm) {
       const label = cm[1]!.replace(/:$/, '').trim()
-      if (!APPROVED_CALLOUTS.has(label)) {
+      if (!isApprovedCallout(label)) {
         errors.push(`line ${i + 1}: unapproved callout label "${label}"`)
       }
     }
