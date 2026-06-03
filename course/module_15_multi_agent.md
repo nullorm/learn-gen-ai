@@ -11,6 +11,8 @@
 - Implement agent handoff for transferring conversations between specialists
 - Handle sub-agent failures with retries, fallbacks, and graceful degradation
 
+> *Module 15 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -50,6 +52,8 @@ Split a complex task into roles, give each role to a dedicated agent. Each agent
 The contrast: a single do-everything agent with 10+ tools and a sprawling system prompt, versus three focused agents -- a researcher (with search tools, prompt focused on gathering facts), a writer (no tools, prompt focused on readability), and a reviewer (no tools, prompt focused on finding issues).
 
 Each agent is an async function that takes an input string and returns a string. The pipeline runs them sequentially -- the researcher's output feeds the writer, and the writer's output feeds the reviewer.
+
+> **Decision:** Which coordination pattern? Use **orchestrator-worker** when one agent can plan and farm out independent sub-tasks (§2); use **handoff** when control passes between specialists in sequence, each owning a phase (§7); use **shared state** when agents work concurrently on the same evolving artifact (§4). Real systems combine them — but reach for the simplest that fits before adding coordination machinery.
 
 ```typescript
 import { generateText, stepCountIs } from 'ai'
@@ -613,9 +617,13 @@ When building a multi-agent system, define your agent types first. The types bec
 
 ---
 
-## Section 11: Workspace Isolation
+## Going Further: Claude-Code-Style Agent Systems
 
-### Preventing Conflicts in Parallel Work
+Sections 1–10 are multi-agent patterns that work with any model and runtime. These last four describe how one class of coding agents implements them — worktree isolation, a primary/subagent split, markdown-defined agents, @-mention invocation. Useful if you're building on or inside such a system.
+
+### Workspace Isolation
+
+#### Preventing Conflicts in Parallel Work
 
 When multiple agents work on related tasks simultaneously, they can conflict — two agents editing the same file, or one agent's changes breaking another's assumptions. Workspace isolation prevents this by giving each agent its own working directory.
 
@@ -639,9 +647,9 @@ The trade-off is overhead: copying files takes time, and merging results adds co
 
 ---
 
-## Section 12: Primary and Subagent Architecture
+### Primary and Subagent Architecture
 
-### Agent Lifecycle and Scope
+#### Agent Lifecycle and Scope
 
 Production multi-agent systems distinguish between two categories of agents:
 
@@ -662,9 +670,9 @@ async function invokeSubagent(agentType: AgentType, task: string, parentContext?
 
 ---
 
-## Section 13: Agent Configuration via Markdown
+### Agent Configuration via Markdown
 
-### Declarative Agent Definitions
+#### Declarative Agent Definitions
 
 Instead of hardcoding agent types in source code, define them declaratively in markdown files with YAML frontmatter. The filename becomes the agent ID, the frontmatter specifies configuration, and the body becomes the system prompt.
 
@@ -701,9 +709,9 @@ The advantages are composability and transparency. A new agent type is just a ne
 
 ---
 
-## Section 14: @Mention Invocation
+### @Mention Invocation
 
-### Explicit Agent Targeting
+#### Explicit Agent Targeting
 
 Production systems let users (or parent agents) invoke a specific subagent with `@agent_name` syntax. The mentioned agent runs with its own context, tools, and system prompt, and results return inline to the parent conversation.
 
@@ -723,6 +731,29 @@ The routing flow:
 This is delegation with explicit targeting. Instead of the orchestrator deciding which agent to use, the caller names the specialist directly. Both patterns are useful — automatic routing for end users who do not know the available agents, explicit mentions for power users and parent agents that know exactly what they need.
 
 > **Advanced Note:** @mention invocation composes naturally with agent configuration via markdown. The agent name in the @mention maps to the markdown filename. Adding a new specialist is: create a markdown file, restart, and `@new_agent` is available.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Why multiple agents:** Single agents suffer from prompt dilution and tool overload. Multi-agent systems assign focused roles with curated tools and prompts.
+2. **Orchestrator-worker pattern:** An orchestrator breaks tasks into sub-tasks, delegates to specialized workers, and synthesizes results. Workers can be registered dynamically.
+3. **Agent communication:** Structured handoff documents and message-passing protocols enable agents to share context without coupling.
+4. **Shared state:** Use shared state for task-level information (goals, findings, status) and private state for agent-internal details (reasoning traces, scratchpads).
+5. **Delegation strategies:** Route by capability (matching skills to tasks) or by topic (matching domains to specialists).
+6. **Parallel execution:** Run independent agents concurrently with concurrency limits and map-reduce patterns for throughput.
+7. **Agent handoff:** Transfer conversations between specialists with context summaries so users do not repeat themselves.
+8. **Error handling:** Retries with exponential backoff, fallback agents, and circuit breakers create resilient multi-agent systems.
+9. **Agent pool coordinator:** A coordinator manages a pool of workers with concurrency limits, dispatching sub-tasks in a sliding window pattern and aggregating results.
+10. **Agent type specialization:** Production systems define agent types with focused prompts, curated tool sets, and per-type step limits — making capabilities explicit and structural.
+11. **Workspace isolation:** Parallel agents that might conflict work in separate directories (or git worktrees), with results merged back by the coordinator.
+12. **Primary and subagent architecture:** Primary agents are persistent and user-facing; subagents are task-scoped, invoked on demand with fresh context, and return results to the caller.
+13. **Agent configuration via markdown:** Declarative agent definitions in markdown files with YAML frontmatter make agent types versionable, shareable, and editable by non-developers.
+14. **@Mention invocation:** Users or parent agents invoke specific subagents with `@agent_name` syntax, enabling explicit delegation alongside automatic routing.
+
+In Module 16, you will learn about workflows and chains — a more deterministic alternative to autonomous multi-agent systems for tasks with well-defined steps.
 
 ---
 
@@ -1259,29 +1290,8 @@ describe('Exercise 15: Workspace Isolation', () => {
 })
 ```
 
-> **Looking Ahead: Agent SDKs** — This module teaches multi-agent orchestration from scratch, which is valuable for understanding the patterns. In production, consider the official Agent SDKs: Anthropic's Claude Agent SDK, OpenAI's Agents SDK, and Mistral's Agents API all provide built-in primitives for structured handoffs between agents, built-in guardrails, tracing, and orchestration — handling many of the patterns you've implemented manually here. Mistral's Agents API additionally offers built-in connectors (web search, code execution, image generation), persistent memory across conversations, and native multi-agent orchestration.
+> **Advanced Note: Agent SDKs** — This module teaches multi-agent orchestration from scratch, which is valuable for understanding the patterns. In production, consider the official Agent SDKs: Anthropic's Claude Agent SDK, OpenAI's Agents SDK, and Mistral's Agents API all provide built-in primitives for structured handoffs between agents, built-in guardrails, tracing, and orchestration — handling many of the patterns you've implemented manually here. Mistral's Agents API additionally offers built-in connectors (web search, code execution, image generation), persistent memory across conversations, and native multi-agent orchestration.
 
 > **Local Alternative (Ollama):** Multi-agent orchestration works with `ollama('qwen3.5')`. The orchestrator-worker pattern, delegation, and shared state are all code-level patterns independent of the model provider. You can even mix providers — use a capable API model as the orchestrator and local models as cheaper workers.
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Why multiple agents:** Single agents suffer from prompt dilution and tool overload. Multi-agent systems assign focused roles with curated tools and prompts.
-2. **Orchestrator-worker pattern:** An orchestrator breaks tasks into sub-tasks, delegates to specialized workers, and synthesizes results. Workers can be registered dynamically.
-3. **Agent communication:** Structured handoff documents and message-passing protocols enable agents to share context without coupling.
-4. **Shared state:** Use shared state for task-level information (goals, findings, status) and private state for agent-internal details (reasoning traces, scratchpads).
-5. **Delegation strategies:** Route by capability (matching skills to tasks) or by topic (matching domains to specialists).
-6. **Parallel execution:** Run independent agents concurrently with concurrency limits and map-reduce patterns for throughput.
-7. **Agent handoff:** Transfer conversations between specialists with context summaries so users do not repeat themselves.
-8. **Error handling:** Retries with exponential backoff, fallback agents, and circuit breakers create resilient multi-agent systems.
-9. **Agent pool coordinator:** A coordinator manages a pool of workers with concurrency limits, dispatching sub-tasks in a sliding window pattern and aggregating results.
-10. **Agent type specialization:** Production systems define agent types with focused prompts, curated tool sets, and per-type step limits — making capabilities explicit and structural.
-11. **Workspace isolation:** Parallel agents that might conflict work in separate directories (or git worktrees), with results merged back by the coordinator.
-12. **Primary and subagent architecture:** Primary agents are persistent and user-facing; subagents are task-scoped, invoked on demand with fresh context, and return results to the caller.
-13. **Agent configuration via markdown:** Declarative agent definitions in markdown files with YAML frontmatter make agent types versionable, shareable, and editable by non-developers.
-14. **@Mention invocation:** Users or parent agents invoke specific subagents with `@agent_name` syntax, enabling explicit delegation alongside automatic routing.
-
-In Module 16, you will learn about workflows and chains — a more deterministic alternative to autonomous multi-agent systems for tasks with well-defined steps.
