@@ -826,9 +826,9 @@ Format: Use markdown tables for data.`,
 }
 ```
 
-### GPT-4 (OpenAI)
+### GPT-5.5 (OpenAI)
 
-GPT-4 tends to:
+GPT-5.5 tends to:
 
 - Be more willing to engage with edge cases
 - Follow format instructions well but may add extra commentary
@@ -836,7 +836,7 @@ GPT-4 tends to:
 - Sometimes ignore system prompt instructions if user message is strong
 
 ```typescript
-// GPT-4 tip: be explicit about what NOT to include
+// GPT-5.5 tip: be explicit about what NOT to include
 const gptPrompt = {
   system: `You are a data analyst. Analyze the given data.
 Do NOT include disclaimers or caveats.
@@ -989,7 +989,7 @@ In this module, you learned:
 5. **Prompt templates:** How to build typed, reusable template functions in TypeScript.
 6. **Prompt management:** How to version, store, and A/B test prompts as your application scales.
 7. **Common pitfalls:** How to defend against prompt injection, avoid ambiguity, and handle over-constraining.
-8. **Provider differences:** How Claude, GPT-4, and open-source models handle prompts differently, and how to write portable prompts.
+8. **Provider differences:** How Claude, GPT-5.5, and open-source models handle prompts differently, and how to write portable prompts.
 9. **Prompt composition:** How to dynamically assemble system prompts from multiple sources (base instructions, project config, environment, user preferences) at runtime.
 10. **Hierarchical rule files:** How directory-scoped instruction files are resolved by walking up the directory tree, enabling project- and subdirectory-level prompt overrides.
 
@@ -1053,14 +1053,14 @@ What is the primary risk of prompt injection?
 
 ### Question 5 (Hard)
 
-You have a classification prompt that works perfectly with Claude but returns inconsistent results with GPT-4. The system prompt is 800 words with 15 rules. Which combination of changes is most likely to fix the GPT-4 issue?
+You have a classification prompt that works perfectly with Claude but returns inconsistent results with GPT-5.5. The system prompt is 800 words with 15 rules. Which combination of changes is most likely to fix the GPT-5.5 issue?
 
 - A) Increase the temperature to 1.0
 - B) Add more rules to the system prompt to be more explicit
 - C) Shorten the system prompt, prioritize key rules, and add 3-4 few-shot examples
-- D) Switch to a different GPT-4 model variant
+- D) Switch to a different GPT-5.5 model variant
 
-**Answer: C** — GPT-4 sometimes underperforms with very long system prompts because later instructions may be given less weight. Shortening the prompt, prioritizing the most critical rules, and adding few-shot examples (which work reliably across all providers) is the best portable fix.
+**Answer: C** — GPT-5.5 sometimes underperforms with very long system prompts because later instructions may be given less weight. Shortening the prompt, prioritizing the most critical rules, and adding few-shot examples (which work reliably across all providers) is the best portable fix.
 
 ---
 

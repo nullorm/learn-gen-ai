@@ -241,7 +241,7 @@ In the Vercel AI SDK, a **provider** is an adapter that translates the SDK's uni
 
 This abstraction has profound implications:
 
-1. **Portability:** Switch from Claude to GPT-4 by changing one line of code.
+1. **Portability:** Switch from Claude to GPT-5.5 by changing one line of code.
 2. **Testing:** Use a cheap/fast model for development, a powerful model for production.
 3. **Resilience:** Fall back to a different provider if one is down.
 4. **Cost management:** Route simple tasks to cheaper models, complex tasks to expensive ones.
@@ -284,7 +284,7 @@ Anthropic's Claude models are a premium option — highly capable but require a 
 
 Create `src/providers/anthropic.ts` following the same pattern. Import `anthropic` from `'@ai-sdk/anthropic'`. Export constants for commonly used models and a factory function.
 
-Anthropic reads `ANTHROPIC_API_KEY` from the environment automatically. Common model IDs: `"claude-sonnet-4-20250514"` (best speed/quality balance), `"claude-opus-4-20250514"` (most capable), `"claude-haiku-4-5-20251001"` (fastest, cheapest).
+Anthropic reads `ANTHROPIC_API_KEY` from the environment automatically. Common model IDs: `"claude-sonnet-4-6"` (best speed/quality balance), `"claude-opus-4-8"` (most capable), `"claude-haiku-4-5-20251001"` (fastest, cheapest).
 
 ### Setting Up the OpenAI Provider
 
@@ -292,7 +292,7 @@ If you want to experiment with GPT models as an alternative:
 
 Create `src/providers/openai.ts` following the same pattern. Import `openai` from `'@ai-sdk/openai'`.
 
-OpenAI reads `OPENAI_API_KEY` from the environment automatically. Common model IDs: `"gpt-5.4"` (latest, fast and capable), `"gpt-5-mini"` (smaller, cheaper, faster).
+OpenAI reads `OPENAI_API_KEY` from the environment automatically. Common model IDs: `"gpt-5.5"` (latest, fast and capable), `"gpt-5-mini"` (smaller, cheaper, faster).
 
 ### Setting Up Ollama (Local Models)
 
@@ -304,7 +304,7 @@ Prerequisites: Install Ollama from https://ollama.com, pull a model with `ollama
 
 Recommended local models: `"qwen3.5"` (primary choice — best all-rounder), `"ministral-3"` (lightweight alternative). Cloud variants: `"qwen3.5:cloud"`, `"ministral-3:cloud"`, `"mistral-large-3:cloud"` (frontier-class).
 
-> **Advanced Note:** Ollama models are significantly less capable than Claude or GPT-4 for complex tasks. Use them for quick iteration and testing, but validate important behavior with a frontier model. The quality gap is especially apparent in structured output (Module 3) and tool use (Module 7).
+> **Advanced Note:** Ollama models are significantly less capable than Claude or GPT-5.5 for complex tasks. Use them for quick iteration and testing, but validate important behavior with a frontier model. The quality gap is especially apparent in structured output (Module 3) and tool use (Module 7).
 
 > **Gotcha: Thinking Mode on Qwen3/3.5** — Qwen3 and Qwen3.5 models default to "thinking mode," where the model spends tokens inside `<think>` tags before responding. The AI SDK strips these tags, so you often get an empty `text` response because all tokens were consumed by thinking. To disable it, pass `{ think: false }` as the second argument to the `ollama()` model constructor: `ollama('qwen3.5', { think: false })`. The `ai-sdk-ollama` provider handles this natively — no custom fetch hacks or `providerOptions` needed.
 
@@ -1280,8 +1280,8 @@ describe('Exercise 1: First Call', () => {
 2. Define a type `ProviderName = 'anthropic' | 'openai'`
 3. Export a function `createModel(provider: ProviderName, modelId?: string): LanguageModel`
 4. If no `modelId` is provided, use sensible defaults:
-   - Anthropic: `"claude-sonnet-4-20250514"`
-   - OpenAI: `"gpt-5.4"`
+   - Anthropic: `"claude-sonnet-4-6"`
+   - OpenAI: `"gpt-5.5"`
 5. Throw a descriptive error for unknown providers
 6. Export a function `testModel(provider: ProviderName, modelId?: string): Promise<string>` that uses `createModel` to generate a response to `"Say hello in one word."` and returns the text
 
