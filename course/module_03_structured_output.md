@@ -10,6 +10,8 @@
 - Validate and error-handle structured output with Zod's parse and safeParse
 - Stream structured output with `streamText` and `Output.object()` for real-time partial results
 
+> *Module 3 closes **Part I: First Contact** — complete it to earn the **First Contact** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -268,7 +270,7 @@ Think about: why does `temperature: 0` matter for classification tasks? What wou
 
 > **Beginner Note:** The `temperature: 0` setting is important for structured output. You want deterministic, consistent results — not creative variation. Always use temperature 0 for classification, extraction, and analysis tasks.
 
-> **Provider Quirk:** Mistral requires `topP: 1` (or omitting `topP`) when using `temperature: 0` (greedy sampling). Other providers like Anthropic and OpenAI silently ignore `topP` during greedy decoding. If you pass both `temperature: 0` and `topP: 0.9` to Mistral, you'll get a 400 error. When writing provider-agnostic code, either omit `topP` when using temperature 0, or use a small non-zero temperature (e.g., `0.1`) when you need both parameters.
+> **Gotcha:** Mistral requires `topP: 1` (or omitting `topP`) when using `temperature: 0` (greedy sampling). Other providers like Anthropic and OpenAI silently ignore `topP` during greedy decoding. If you pass both `temperature: 0` and `topP: 0.9` to Mistral, you'll get a 400 error. When writing provider-agnostic code, either omit `topP` when using temperature 0, or use a small non-zero temperature (e.g., `0.1`) when you need both parameters.
 
 ---
 
@@ -775,7 +777,7 @@ The weak schema relies on the model inferring meaning from field names. The stro
 3. **State constraints in words** — "A rating from 1 to 5 where 1 is worst" complements `.min(1).max(5)`
 4. **Keep them concise** — one sentence is ideal, two at most
 
-> **Looking Ahead: Tool Schemas in Module 7** — The Zod schemas you are learning here are the same pattern used to define tool interfaces in Module 7. Every tool has an input schema (what arguments it accepts) and the LLM reads `.describe()` annotations to decide how to call the tool. A 2-line preview:
+> **Advanced Note: Tool Schemas in Module 7** — The Zod schemas you are learning here are the same pattern used to define tool interfaces in Module 7. Every tool has an input schema (what arguments it accepts) and the LLM reads `.describe()` annotations to decide how to call the tool. A 2-line preview:
 >
 > ```typescript
 > const params = z.object({
@@ -785,7 +787,26 @@ The weak schema relies on the model inferring meaning from field names. The stro
 >
 > When you get to tool definitions, you will already know how to write schemas that guide the model effectively.
 
-> **Production Validation: Custom Tool Schemas** — Production coding agents let users define custom tools as TypeScript files using Zod for argument schemas and the AI SDK's `tool()` function for type safety. The filename becomes the tool name, `.describe()` annotations serve as documentation for the LLM, and `safeParse` validates arguments before execution. This is the exact same pattern you are learning in this module — your Zod skills transfer directly to building real tool systems.
+> **Production Patterns: Custom Tool Schemas** — Production coding agents let users define custom tools as TypeScript files using Zod for argument schemas and the AI SDK's `tool()` function for type safety. The filename becomes the tool name, `.describe()` annotations serve as documentation for the LLM, and `safeParse` validates arguments before execution. This is the exact same pattern you are learning in this module — your Zod skills transfer directly to building real tool systems.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **The problem with free text:** Why parsing unstructured model output is fragile, and how `generateText` with `Output.object()` eliminates it.
+2. **Zod basics:** How to define schemas with types, constraints, and descriptions that guide the model.
+3. **generateText with Output.object():** How to constrain model output to exact TypeScript types with compile-time safety and runtime validation.
+4. **Nested schemas:** How to model complex, hierarchical data structures.
+5. **Enum constraints:** How to limit the model's output to a finite set of valid values.
+6. **Optional fields and defaults:** How to handle missing information gracefully.
+7. **Schema design patterns:** Classification, extraction, multi-step analysis, comparison, and error reporting patterns.
+8. **Validation and error handling:** How to use parse/safeParse, post-validate computed fields, and retry on failure.
+9. **Streaming structured output:** How to use `streamText` with `Output.object()` for progressive display and early abort.
+10. **Schema descriptions as prompt engineering:** How `.describe()` annotations act as prompt instructions for each field, guiding the model toward precise, correctly formatted output.
+
+In Module 4, you will combine structured output with conversation management to build multi-turn applications that maintain state across interactions.
 
 ---
 
@@ -1010,20 +1031,3 @@ describe('Exercise 5: Schema Composition', () => {
 ```
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **The problem with free text:** Why parsing unstructured model output is fragile, and how `generateText` with `Output.object()` eliminates it.
-2. **Zod basics:** How to define schemas with types, constraints, and descriptions that guide the model.
-3. **generateText with Output.object():** How to constrain model output to exact TypeScript types with compile-time safety and runtime validation.
-4. **Nested schemas:** How to model complex, hierarchical data structures.
-5. **Enum constraints:** How to limit the model's output to a finite set of valid values.
-6. **Optional fields and defaults:** How to handle missing information gracefully.
-7. **Schema design patterns:** Classification, extraction, multi-step analysis, comparison, and error reporting patterns.
-8. **Validation and error handling:** How to use parse/safeParse, post-validate computed fields, and retry on failure.
-9. **Streaming structured output:** How to use `streamText` with `Output.object()` for progressive display and early abort.
-10. **Schema descriptions as prompt engineering:** How `.describe()` annotations act as prompt instructions for each field, guiding the model toward precise, correctly formatted output.
-
-In Module 4, you will combine structured output with conversation management to build multi-turn applications that maintain state across interactions.
