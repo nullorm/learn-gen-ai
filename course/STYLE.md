@@ -70,8 +70,11 @@ Retriever → Tool Smith → Agent Builder → Eval Master → LLM Architect.
 ## Callout Vocabulary
 
 Plain blockquotes, no emoji. These are the **only** label *roots* the linter allows.
-Use **2–4 per module** — more than that and they stop breaking the rhythm and
-become the rhythm. Format: `> **Label:** text`. A label may carry a topic suffix
+Use the four **cadence-breakers** (Try it, Gotcha, Before / After, Decision)
+sparingly — about **2–4 per module**, so they keep their punch. The explanatory
+asides (Beginner Note, Advanced Note, Production Patterns, Provider Tip, Local
+Alternative) are used as needed and don't count against that budget.
+Format: `> **Label:** text`. A label may carry a topic suffix
 after a `:` or a space — e.g. `> **Provider Tip: Native Citations**` or
 `> **Local Alternative (Ollama)**` — but the leading root must be one of the
 labels below. Bare off-vocabulary labels (`Note`, `Important`, `Key Insight`,
