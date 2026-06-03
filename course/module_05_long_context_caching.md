@@ -9,6 +9,8 @@
 - Apply context compression techniques to reduce token usage and cost
 - Build a decision framework for caching vs RAG in production systems
 
+> *Module 5 is part of **Part II: Core Patterns**, building toward the **Core Patterns** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -177,7 +179,9 @@ Anthropic requires explicit cache markers. Instead of a single string for the us
 
 The dynamic question goes in a separate content block without cache markers. After the call, check `usage` for `cacheReadInputTokens` and `cacheCreationInputTokens` to see cache behavior.
 
-> **Intermediate Note:** The `cache_control: { type: 'ephemeral' }` marker tells Anthropic "cache everything up to this point." The cache lives about 5 minutes (refreshed each time you use it). You only pay the cache creation cost on the first call. Anthropic's cache offers up to 90% savings on cached tokens — a deeper discount than Groq's 50%, but requires explicit markers and has a shorter TTL.
+> **Advanced Note:** The `cache_control: { type: 'ephemeral' }` marker tells Anthropic "cache everything up to this point." The cache lives about 5 minutes (refreshed each time you use it). You only pay the cache creation cost on the first call. Anthropic's cache offers up to 90% savings on cached tokens — a deeper discount than Groq's 50%, but requires explicit markers and has a shorter TTL.
+
+> **Before / After:** A 10,000-token system prompt sent on each of 100 requests bills ~1M input tokens. Mark it cacheable and after the first call those tokens cost a fraction — up to 90% off on Anthropic, 50% on Groq. Same prompt, same output, a fraction of the bill. Caching is the rare optimization with no quality trade-off.
 
 ### OpenAI Automatic Caching
 
@@ -217,7 +221,7 @@ Build a class that maintains a conversation with a cached prefix. The constructo
 
 The `send` method pushes the user message onto the internal messages array, calls `generateText` with the system content followed by all accumulated messages, pushes the assistant response, and returns both the text and a cache-hit boolean. How does the growing conversation history after the cached prefix affect cache behavior? (Hint: only the prefix is cached — the conversation turns after it are always computed fresh.)
 
-> **Intermediate Note:** With Anthropic's explicit caching, you would add `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` to the system message content block. Anthropic also has minimum size requirements (1024 tokens for Claude Sonnet 4, 2048 tokens for Claude Haiku 4.5) — content smaller than this threshold will not be cached. Groq's minimum is lower (128–1024 tokens depending on model) and requires no explicit markers.
+> **Advanced Note:** With Anthropic's explicit caching, you would add `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` to the system message content block. Anthropic also has minimum size requirements (1024 tokens for Claude Sonnet 4, 2048 tokens for Claude Haiku 4.5) — content smaller than this threshold will not be cached. Groq's minimum is lower (128–1024 tokens depending on model) and requires no explicit markers.
 
 ### Comparing Caching Approaches
 
