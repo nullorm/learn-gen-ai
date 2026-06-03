@@ -11,6 +11,8 @@
 - Implement LLM-navigated tree search as an alternative to vector similarity for structured document retrieval
 - Build a systematic RAG assessment framework with precision, recall, faithfulness, and relevance metrics
 
+> *Module 10 opens **Part III: Advanced Retrieval** — finish the Part to earn the **RAG Builder** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -172,7 +174,9 @@ Also create `src/advanced-rag/multi-hyde.ts` with a `multiHyDE` function that ge
 
 ## Section 3: Hybrid Search
 
-> **Building on Module 9:** You built a simple hybrid retrieval in Module 9 Section 5. This section upgrades it with a full BM25 implementation.
+> **Beginner Note:** You built a simple hybrid retrieval in Module 9 Section 5. This section upgrades it with a full BM25 implementation.
+
+> **Decision:** Reach for query transformation when users write terse or messy queries; hybrid search when exact terms matter (names, error codes, API symbols) alongside meaning; reranking when you can afford a second pass and precision is critical. They compose — but each adds latency and cost, so layer them in that order only as your eval numbers demand.
 
 ### Why Combine Semantic and Keyword Search?
 
@@ -581,7 +585,7 @@ async function assembleMultiSourceContext(sources: ContextSource[]): Promise<str
 
 The design challenge is not the retrieval itself but the orchestration: how to prioritize sources, allocate token budgets, and handle failures gracefully when one source is slow or unavailable.
 
-> **Note: Rule-Based Contextual Selection** — Not all retrieval is query-driven. Production systems use rule-based selection to inject relevant context based on what the user is doing. If the user is editing test files, inject testing guidelines. If they are debugging, inject common error patterns. This is a form of RAG where the "query" is the user's current intent, and the retrieval is a rule-based lookup rather than vector similarity. Sometimes you know exactly what to retrieve — no embeddings needed.
+> **Advanced Note: Rule-Based Contextual Selection** — Not all retrieval is query-driven. Production systems use rule-based selection to inject relevant context based on what the user is doing. If the user is editing test files, inject testing guidelines. If they are debugging, inject common error patterns. This is a form of RAG where the "query" is the user's current intent, and the retrieval is a rule-based lookup rather than vector similarity. Sometimes you know exactly what to retrieve — no embeddings needed.
 
 ---
 
@@ -611,9 +615,13 @@ This pattern is critical for any long-running RAG application. Without re-retrie
 
 ---
 
-## Section 11: LSP-Augmented Retrieval
+## Going Further: Code-Intelligence Retrieval
 
-> **What is LSP?** Language Server Protocol is a standard for code intelligence — it lets editors understand code structure (go-to-definition, find-references, type information) by communicating with a language-specific server. Think of it as structured code understanding that complements text-based search.
+Sections 1–10 are advanced RAG for any corpus. These last two are RAG over *code* — using a language server and compiler diagnostics as retrieval sources. This is the canonical treatment of LSP-as-retrieval that Modules 19 and 23 point back to.
+
+### LSP-Augmented Retrieval
+
+> **Beginner Note:** Language Server Protocol (LSP) is a standard for code intelligence — it lets editors understand code structure (go-to-definition, find-references, type information) by communicating with a language-specific server. Think of it as structured code understanding that complements text-based search.
 
 When building RAG over codebases, Language Server Protocol (LSP) provides a retrieval source that vector search cannot match. LSP gives structured code intelligence — go-to-definition, find-all-references, call hierarchies, type hierarchies — with perfect precision.
 
@@ -641,7 +649,7 @@ LSP-augmented retrieval is specific to code, but the principle is general: when 
 
 ---
 
-## Section 12: Diagnostic-Driven Context
+### Diagnostic-Driven Context
 
 Not all retrieval is triggered by the user's query. Some of the most valuable context comes from automated analysis that surfaces problems the user may not have articulated.
 
@@ -663,7 +671,28 @@ function buildDiagnosticContext(diagnostics: DiagnosticContext[], maxItems: numb
 
 The pattern generalizes beyond code. Any domain where automated analysis can surface relevant signals — linting, validation, schema checks, test results — benefits from diagnostic-driven context. The RAG pipeline retrieves not just from a document store but from analysis tools that proactively identify what matters.
 
-> **Key Insight:** Retrieval does not have to be reactive. Proactive retrieval from automated analysis (type checkers, linters, test runners) often surfaces the most actionable context — problems the user needs to fix but has not yet asked about.
+> **Advanced Note:** Retrieval does not have to be reactive. Proactive retrieval from automated analysis (type checkers, linters, test runners) often surfaces the most actionable context — problems the user needs to fix but has not yet asked about.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Naive RAG failures:** Wrong chunks, missed context, and hallucination are predictable failure modes with specific solutions.
+2. **Query transformation and HyDE:** Rewriting, expansion, decomposition, and hypothetical document embeddings improve retrieval by transforming user queries into better search queries — or into hypothetical answers that are structurally similar to corpus documents.
+3. **Hybrid search:** Combining semantic (embedding) and keyword (BM25) search gives you meaning-understanding with exact-match precision.
+4. **Reranking:** A second pass with a cross-encoder or LLM dramatically improves precision by scoring each candidate carefully.
+5. **Structure-aware retrieval:** Vector similarity does not equal relevance — tree indexing preserves document structure as a navigable hierarchy for more precise retrieval on structured documents.
+6. **Building a tree index:** Parsing documents into tree nodes with LLM-generated summaries creates a structure that supports top-down navigation without embeddings or vector databases.
+7. **LLM-navigated tree search:** An LLM can navigate a tree index top-down, reading summaries to find the most relevant sections — an alternative to vector search for structured documents.
+8. **Assessment framework:** Systematic measurement of context relevance, faithfulness, answer relevance, and correctness lets you compare pipeline configurations objectively.
+9. **Multi-source retrieval:** Production RAG systems combine multiple retrieval sources (files, shell commands, memory, vector search) with different strategies, orchestrated by priority and token budgets.
+10. **Re-retrieval after context loss:** When conversation compaction drops important context, re-retrieving relevant memories from a session store restores continuity.
+11. **LSP-augmented retrieval:** Structured code intelligence (definitions, references, call hierarchies) provides precise retrieval that complements fuzzy vector search for code-specific RAG.
+12. **Diagnostic-driven context:** Proactive retrieval from automated analysis (type errors, lint warnings) surfaces actionable context without waiting for the user to ask.
+
+In Module 11, you will tackle the other side of the RAG pipeline — document processing. Better ingestion, chunking, and metadata extraction feed directly into the retrieval quality improvements you built here.
 
 ---
 
@@ -884,27 +913,8 @@ describe('Exercise 10: Hybrid Search', () => {
 })
 ```
 
-> **Advanced Technique: Contextual Retrieval** — A technique (originally published by Anthropic) that dramatically improves retrieval quality: before embedding each chunk, prepend a short context summary explaining where the chunk sits in the original document. For example, a chunk about "Q3 revenue" gets prefixed with "This chunk is from Acme Corp's 2025 Annual Report, specifically the Financial Results section." This gives the embedding model crucial context that's lost during chunking. You can generate these context prefixes with a cheap, fast model (`mistral('mistral-small-latest')` or `groq('openai/gpt-oss-20b')`) at ingestion time. Combined with the hybrid search from this module, contextual retrieval can reduce retrieval failures by up to 67%.
+> **Advanced Note: Contextual Retrieval** — A technique (originally published by Anthropic) that dramatically improves retrieval quality: before embedding each chunk, prepend a short context summary explaining where the chunk sits in the original document. For example, a chunk about "Q3 revenue" gets prefixed with "This chunk is from Acme Corp's 2025 Annual Report, specifically the Financial Results section." This gives the embedding model crucial context that's lost during chunking. You can generate these context prefixes with a cheap, fast model (`mistral('mistral-small-latest')` or `groq('openai/gpt-oss-20b')`) at ingestion time. Combined with the hybrid search from this module, contextual retrieval can reduce retrieval failures by up to 67%.
 
 > **Local Alternative (Ollama):** Advanced RAG techniques (HyDE, query decomposition, tree indexing) work with `ollama('qwen3.5')` — they're prompt-based strategies, not provider features. LLM-based reranking also works locally, though it will be slower than API reranking services. For hybrid search, the BM25 + semantic combination is fully local.
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Naive RAG failures:** Wrong chunks, missed context, and hallucination are predictable failure modes with specific solutions.
-2. **Query transformation and HyDE:** Rewriting, expansion, decomposition, and hypothetical document embeddings improve retrieval by transforming user queries into better search queries — or into hypothetical answers that are structurally similar to corpus documents.
-3. **Hybrid search:** Combining semantic (embedding) and keyword (BM25) search gives you meaning-understanding with exact-match precision.
-4. **Reranking:** A second pass with a cross-encoder or LLM dramatically improves precision by scoring each candidate carefully.
-5. **Structure-aware retrieval:** Vector similarity does not equal relevance — tree indexing preserves document structure as a navigable hierarchy for more precise retrieval on structured documents.
-6. **Building a tree index:** Parsing documents into tree nodes with LLM-generated summaries creates a structure that supports top-down navigation without embeddings or vector databases.
-7. **LLM-navigated tree search:** An LLM can navigate a tree index top-down, reading summaries to find the most relevant sections — an alternative to vector search for structured documents.
-8. **Assessment framework:** Systematic measurement of context relevance, faithfulness, answer relevance, and correctness lets you compare pipeline configurations objectively.
-9. **Multi-source retrieval:** Production RAG systems combine multiple retrieval sources (files, shell commands, memory, vector search) with different strategies, orchestrated by priority and token budgets.
-10. **Re-retrieval after context loss:** When conversation compaction drops important context, re-retrieving relevant memories from a session store restores continuity.
-11. **LSP-augmented retrieval:** Structured code intelligence (definitions, references, call hierarchies) provides precise retrieval that complements fuzzy vector search for code-specific RAG.
-12. **Diagnostic-driven context:** Proactive retrieval from automated analysis (type errors, lint warnings) surfaces actionable context without waiting for the user to ask.
-
-In Module 11, you will tackle the other side of the RAG pipeline — document processing. Better ingestion, chunking, and metadata extraction feed directly into the retrieval quality improvements you built here.
