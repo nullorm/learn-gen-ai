@@ -9,6 +9,8 @@
 - Handle backpressure, flow control, and error recovery in streaming pipelines
 - Build UI patterns for streaming responses including typewriter effects and progressive disclosure
 
+> *Module 6 is part of **Part II: Core Patterns** — finish the Part to earn the **Core Patterns** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -48,6 +50,8 @@ async function measureStreaming(): Promise<void>
 Build two functions that demonstrate the TTFT difference. `measureNonStreaming` uses `generateText` — record `performance.now()` before the call, then log the elapsed time after the response arrives. The user sees nothing until the entire response is ready.
 
 `measureStreaming` uses `streamText` and iterates over `result.textStream` with `for await`. Record when the first chunk arrives (the TTFT) and when iteration completes (total time). How do you track first-token time? Set a variable to `null` initially, and only set it on the first iteration. What do you expect the total time to be relative to the non-streaming version?
+
+> **Try it:** Before running, write down your prediction — which version *finishes* sooner, and which *shows output* sooner? Run both. The gap between "starts showing output" and "finishes" is the entire reason streaming exists.
 
 Typical results:
 
@@ -215,6 +219,8 @@ async function streamRecipe(dish: string): Promise<Recipe>
 Build a function that streams a structured recipe. Call `streamText` with `output: Output.object({ schema: RecipeSchema })`. Iterate over `result.partialOutputStream` — each iteration yields a partial object where some fields may be populated and others still undefined. Display a live status showing which fields have arrived (name, prep time, ingredient count, step count). After iteration, `await result.output` gives the final complete, validated object. How should you handle fields that are still undefined in the partial object?
 
 > **Beginner Note:** The partial object may have missing or incomplete fields. A string field might contain only the first few words. An array might have only the first item. Your UI should handle these partial states gracefully.
+
+> **Gotcha:** Even fields your Zod schema marks as *required* arrive `undefined` in the partial stream — validation only runs on the final `await result.output`. So `partial.confidence.toFixed(2)` throws mid-stream. Guard every field access until the object resolves; that's exactly what the `safeDisplay` helper below is for.
 
 ### Progressive UI Updates
 
@@ -484,15 +490,19 @@ Build a function that reports progress through a callback. Call `onStatus` with 
 
 > **Advanced Note:** In browser-based UIs, consider implementing a "thinking" indicator that appears during the TTFT gap (before the first token arrives). This gives users immediate feedback that their request is being processed. Combine this with streaming text display for the best perceived performance.
 
+> **Decision:** Which UI pattern fits? Use the **typewriter** effect for chat-style prose where a human rhythm feels natural; use **progressive disclosure** when the output has structure (sections, a report) so users read finished parts while the rest streams; use a **status indicator** for long single-shot generations where there's nothing partial worth showing yet. Pick the one that matches your output's shape — don't stack all three.
+
 > **Local Alternative (Ollama):** All streaming patterns in this module (`streamText`, `streamText` with `Output.object()`, backpressure, AbortController) work identically with `ollama('qwen3.5')`. Local models actually benefit more from streaming since inference is slower — streaming lets users see output immediately rather than waiting for full generation. SSE endpoints work the same regardless of provider.
 
 ---
 
-> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+## Going Further: Production Streaming Patterns
 
-## Section 9: NDJSON Streaming
+The core arc above is everything you need to build and ship streaming. These last patterns are the ones you reach for at scale — shorter and more conceptual. Skip them on a first pass; come back when you hit the problem each one solves.
 
-### Newline-Delimited JSON for Programmatic Consumers
+### NDJSON Streaming
+
+#### Newline-Delimited JSON for Programmatic Consumers
 
 SSE is designed for browser clients, but many LLM applications are consumed by other programs — CLIs, SDKs, CI pipelines, or backend services. For these consumers, NDJSON (newline-delimited JSON) is simpler and more natural. Each line is a complete, self-contained JSON object:
 
@@ -506,7 +516,7 @@ SSE is designed for browser clients, but many LLM applications are consumed by o
 
 The consumer reads line by line, parses each line as JSON, and processes events incrementally — no buffering the entire response, no SSE protocol overhead, no event type headers. This is the format production CLIs and SDK modes use for structured streaming output.
 
-### NDJSON vs SSE
+#### NDJSON vs SSE
 
 | Feature      | SSE                           | NDJSON                           |
 | ------------ | ----------------------------- | -------------------------------- |
@@ -519,9 +529,9 @@ Both formats carry the same typed events — the difference is the transport enc
 
 ---
 
-## Section 10: Abort Controller Trees
+### Abort Controller Trees
 
-### Hierarchical Cancellation
+#### Hierarchical Cancellation
 
 The AbortController from Section 7 handles single-operation cancellation. Production streaming systems need hierarchical cancellation — aborting a parent operation should abort all its children (streaming, tool execution, sub-queries), and aborting a child should not affect the parent.
 
@@ -543,15 +553,15 @@ In a streaming pipeline with tool calls, the hierarchy looks like:
 
 When the user cancels, the session controller aborts, which cascades to the request controller (stopping the stream) and the tool controller (stopping any in-progress tool execution). Each level cleans up its own resources.
 
-### Why Not a Single Controller?
+#### Why Not a Single Controller?
 
 A single global AbortController means any cancellation aborts everything. With a hierarchy, you can cancel one tool execution without aborting the entire stream, or cancel the current request without ending the session.
 
 ---
 
-## Section 11: Enhanced Backpressure with Buffered Writer
+### Enhanced Backpressure with Buffered Writer
 
-### Buffering Output Writes
+#### Buffering Output Writes
 
 Section 5 covered backpressure at the token level. A buffered writer is the concrete implementation: instead of writing every token immediately (which can block on I/O), batch small writes into larger chunks and flush them on a schedule or when the buffer is full.
 
@@ -577,9 +587,9 @@ This prevents I/O from blocking the LLM processing loop. In terminal UIs, the ba
 
 ---
 
-## Section 12: Headless/CI Streaming Mode
+### Headless/CI Streaming Mode
 
-### Non-Interactive Execution
+#### Non-Interactive Execution
 
 Production streaming applications support a headless mode for CI/CD pipelines and programmatic use. Instead of an interactive terminal UI, the application accepts a prompt via command-line arguments or stdin, emits structured output (NDJSON or simplified text), and exits with a status code.
 
@@ -608,6 +618,8 @@ if (isHeadless) {
 ```
 
 This pattern lets the same streaming application serve both human users and automated pipelines.
+
+> **Production Patterns:** Module 24 owns the full headless story — exit codes, CI integration, SDK/MCP output modes. Here the scope is narrower: how the *stream itself* is encoded when no human is watching.
 
 ---
 
