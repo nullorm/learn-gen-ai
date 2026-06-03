@@ -9,6 +9,8 @@
 - Build semantic search systems that find relevant documents by meaning, not keywords
 - Evaluate embedding dimensions, trade-offs, and similarity thresholds
 
+> *Module 8 is part of **Part II: Core Patterns** — embeddings are the bridge from text to the retrieval modules ahead.*
+
 ---
 
 ## Why Should I Care?
@@ -19,7 +21,7 @@ Embeddings are the foundation of retrieval-augmented generation (RAG), recommend
 
 Understanding embeddings gives you a mental model for how LLMs "understand" text. It also gives you practical tools for building search systems that work with meaning rather than pattern matching. This module teaches both the theory and the implementation.
 
-> **Provider Note:** This module uses OpenAI embeddings for examples. You will need an `OPENAI_API_KEY`. Mistral embeddings (`mistral.embedding('mistral-embed')`) are available as a free alternative — see the provider table in Section 1.
+> **Provider Tip:** This module uses OpenAI embeddings for examples. You will need an `OPENAI_API_KEY`. Mistral embeddings (`mistral.embedding('mistral-embed')`) are available as a free alternative — see the provider table in Section 1.
 
 ---
 
@@ -85,7 +87,7 @@ Different providers offer different embedding models:
 | Ollama    | qwen3-embedding:0.6b   | up to 4096 | 32768      | Free (local)     |
 | Ollama    | qwen3-embedding:8b     | up to 4096 | 40960      | Free (local)     |
 
-> **Note:** Groq does not offer embedding models. For embeddings, use Mistral (free API), OpenAI (paid), or Ollama (free local).
+> **Provider Tip:** Groq does not offer embedding models. For embeddings, use Mistral (free API), OpenAI (paid), or Ollama (free local).
 
 ### Provider Setup
 
@@ -178,7 +180,7 @@ The function should:
 
 Test it with simple 3D vectors: `[1,0,0]` vs `[1,0,0]` (same direction, expect 1.0), vs `[0,1,0]` (perpendicular, expect 0.0), vs `[-1,0,0]` (opposite, expect -1.0). We implement it manually here to understand the math.
 
-> **SDK Shortcut:** The AI SDK exports `cosineSimilarity` from `'ai'` — use that in production. We implement it here to understand the math.
+> **Advanced Note:** The AI SDK exports `cosineSimilarity` from `'ai'` — use that in production. We implement it here to understand the math.
 
 ### Comparing Real Embeddings
 
@@ -194,6 +196,8 @@ Embed a set of texts that include semantically similar pairs and unrelated ones,
 
 Compare the first text against all others using cosine similarity. The semantically similar texts should score around 0.7-0.9, while unrelated ones should score around 0.1-0.3. Do your results match these expectations?
 
+> **Try it:** Before computing, rank those five texts yourself by similarity to the first one. Then run it. The interesting cases are the near-misses — does the model reward genuine meaning, or surface word-overlap you didn't expect?
+
 > **Beginner Note:** Cosine similarity values for real embeddings typically range from 0.1 (unrelated) to 0.95+ (near identical). Values below 0.3 usually indicate no meaningful relationship. Values above 0.7 indicate strong semantic similarity. These thresholds vary by model.
 
 ### Other Distance Metrics
@@ -203,6 +207,8 @@ Implement two additional distance metrics:
 1. **`euclideanDistance(a, b)`** — the L2 distance between two vectors. Lower values mean more similar. Range: `[0, infinity)`. Compute `sqrt(sum of (a_i - b_i)^2)`.
 
 2. **`dotProduct(a, b)`** — the raw dot product. For normalized vectors (like OpenAI's), the dot product gives the same ranking as cosine similarity. Why is cosine similarity still preferred? Because it is bounded between -1 and 1, making thresholds portable.
+
+> **Decision:** Which metric? For normalized embeddings (OpenAI, Mistral), cosine and dot product rank identically — use **dot product** for raw speed, **cosine** when you want a bounded, portable threshold. Reach for **Euclidean** only when magnitude carries meaning (most text embeddings normalize it away). When in doubt, cosine.
 
 ---
 
@@ -247,7 +253,7 @@ Filter with SQL-like expressions:
 const filtered = await table.query().nearestTo(queryVector).where("category = 'api'").limit(10).toArray()
 ```
 
-> **Note:** LanceDB data persists to `data/vectors/`. This directory is already in `.gitignore`.
+> **Beginner Note:** LanceDB data persists to `data/vectors/`. This directory is already in `.gitignore`.
 
 ### The VectorStore Interface
 
@@ -312,7 +318,7 @@ LanceDB supports SQL-like `WHERE` clauses on any column. Since metadata is store
 
 > **Beginner Note:** LanceDB uses exact nearest-neighbor search by default (brute-force scan). This works perfectly for thousands of documents. For millions of vectors, you can create an IVF-PQ index on the table for approximate nearest-neighbor search — but you do not need that for learning.
 
-> **Production Note:** LanceDB works great up to millions of vectors. For larger scale, use pgvector (PostgreSQL) or Elasticsearch. See Module 24.
+> **Production Patterns:** LanceDB works great up to millions of vectors. For larger scale, use pgvector (PostgreSQL) or Elasticsearch. See Module 24.
 
 ---
 
@@ -359,7 +365,7 @@ Index at least 3 documents covering different topics (e.g., Bun runtime, TypeScr
 
 This is a pure retrieval system — no generation step. In Module 9, you will combine this with LLM generation to build a complete RAG pipeline.
 
-> **Looking Ahead:** In Module 9, you will combine this semantic search with LLM generation to build a complete RAG pipeline. For now, we focus on retrieval only — finding the most relevant documents for a query.
+> **Advanced Note:** In Module 9, you will combine this semantic search with LLM generation to build a complete RAG pipeline. For now, we focus on retrieval only — finding the most relevant documents for a query.
 
 ---
 
@@ -628,7 +634,7 @@ In this module, you learned:
 7. **Batch embedding:** How to use `embedMany` efficiently and manage rate limits when embedding large document collections.
 8. **Similarity thresholds:** How to choose, calibrate, and adapt similarity thresholds per use case, and why thresholds are not portable across embedding models.
 
-> **Production Note:** Embedding API calls are relatively cheap per call but add up fast when re-embedding unchanged content. Production systems cache aggressively — keying embeddings by content hash so identical text is never embedded twice. An LRU cache with a reasonable size cap (e.g., 10,000 entries) prevents unbounded memory growth while keeping hot embeddings in memory. This caching discipline applies broadly to any embedding-heavy workflow and connects to the cost management patterns in Module 22.
+> **Production Patterns:** Embedding API calls are relatively cheap per call but add up fast when re-embedding unchanged content. Production systems cache aggressively — keying embeddings by content hash so identical text is never embedded twice. An LRU cache with a reasonable size cap (e.g., 10,000 entries) prevents unbounded memory growth while keeping hot embeddings in memory. This caching discipline applies broadly to any embedding-heavy workflow and connects to the cost management patterns in Module 22.
 
 In Module 9, you will combine embeddings with LLM generation to build complete RAG pipelines that ground model responses in your own data.
 

@@ -12,6 +12,8 @@
 - Compare human evaluation with automated evaluation and know when to use each
 - Systematically A/B test prompt versions and measure improvements
 
+> *Module 19 opens **Part V: Quality & Safety** — finish the Part to earn the **Quality Gate** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -155,7 +157,7 @@ Build this function. When `requireAll` is true (the default), every phrase must 
 
 ### Semantic Similarity
 
-> **Note:** This section uses OpenAI embeddings for semantic similarity. Substitute `mistral.embedding('mistral-embed')` if you only have a Mistral key.
+> **Provider Tip:** This section uses OpenAI embeddings for semantic similarity. Substitute `mistral.embedding('mistral-embed')` if you only have a Mistral key.
 
 Use embeddings to measure whether two texts have similar meaning, regardless of phrasing. The AI SDK provides `embed` and `cosineSimilarity` — see Module 8 for the math.
 
@@ -615,6 +617,8 @@ How do you map the LLM's generated objects to your `TestCase` format? What defau
 
 Human evaluation and automated evaluation serve different purposes. Understanding when to use each is critical for building reliable eval systems.
 
+> **Decision:** Use auto-eval for anything you can define a check for — exact match, schema validity, latency, cost, and especially deterministic tools (a type-checker never hallucinates). Use human eval for the subjective axes auto-eval can't see: helpfulness, tone, whether the answer actually solved the problem. The trap is paying an LLM judge where a cheap deterministic check would do — gate on the compiler before you pay for a judge.
+
 ```typescript
 interface EvalStrategy {
   evalType: 'human' | 'auto' | 'hybrid'
@@ -820,7 +824,7 @@ console.log(`Recommendation: ${abResult.recommendation}`)
 
 > **Advanced Note:** Cohen's d values of 0.2, 0.5, and 0.8 are conventionally considered small, medium, and large effects. In LLM evaluation, even small effects (d = 0.2) can be meaningful at scale. Consider the business impact alongside statistical significance.
 
-> **Production Note:** In production, eval suites become **deployment gates** — CI/CD steps that block merging if quality metrics drop below a threshold. The eval code you write in this module is exactly what runs in that gate. Maintain a golden dataset (50-100 curated examples), run your suite on every PR, and reject changes that regress accuracy. Tools like Promptfoo and Braintrust provide frameworks for this.
+> **Production Patterns:** In production, eval suites become **deployment gates** — CI/CD steps that block merging if quality metrics drop below a threshold. The eval code you write in this module is exactly what runs in that gate. Maintain a golden dataset (50-100 curated examples), run your suite on every PR, and reject changes that regress accuracy. Tools like Promptfoo and Braintrust provide frameworks for this.
 
 > **Local Alternative (Ollama):** Eval frameworks are model-agnostic — exact match, fuzzy match, and semantic similarity scorers work with any provider. For LLM-as-judge evaluation, `ollama('qwen3.5')` can serve as the judge model, though larger models produce more reliable judgments. Running evals locally means zero API cost for iterating on your test suite.
 
@@ -828,9 +832,13 @@ console.log(`Recommendation: ${abResult.recommendation}`)
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 10: Cost as Evaluation Dimension
+## Going Further: Eval Infrastructure
 
-### Evaluating More Than Quality
+Sections 1–9 are the methodology — judges, frameworks, suites, benchmarks, regression testing. These last four are the production infrastructure around evals: treating cost as a metric, capturing failures, flag-gated A/B tests, and using compilers as cheap evaluators.
+
+### Cost as Evaluation Dimension
+
+#### Evaluating More Than Quality
 
 A response that costs 10x more for 5% better quality may fail the eval. Production evaluation systems track cost alongside quality:
 
@@ -854,9 +862,9 @@ When comparing two prompt versions, the cheaper one wins if quality is equivalen
 
 ---
 
-## Section 11: Diagnostic Capture
+### Diagnostic Capture
 
-### Debugging Eval Failures
+#### Debugging Eval Failures
 
 When an eval fails, you need more than the score — you need the full context that led to the failure. Diagnostic capture records:
 
@@ -872,9 +880,9 @@ The pattern is evaluation-as-debugging: apply eval techniques not just to measur
 
 ---
 
-## Section 12: Feature Flag A/B Testing
+### Feature Flag A/B Testing
 
-### Practical A/B Testing with Feature Flags
+#### Practical A/B Testing with Feature Flags
 
 The A/B testing in Section 9 compares prompt versions manually. Feature flags make this operational — different users get different prompt versions automatically, and metrics are collected per variant.
 
@@ -890,15 +898,15 @@ The core logic: hash the concatenation of `userId` and `experimentId` into a num
 
 Each variant maps to a different prompt version. Evaluation metrics are tagged with the variant, enabling comparison after enough requests have been served. The flag system handles rollout control (percentage-based), so you can start at 5% treatment and increase as confidence grows.
 
-> **Key Insight:** Feature flags decouple deployment from release. You deploy both prompt versions simultaneously, but the flag controls which one a given user sees. This eliminates the need to coordinate deploys with A/B test schedules.
+> **Advanced Note:** Feature flags decouple deployment from release. You deploy both prompt versions simultaneously, but the flag controls which one a given user sees. This eliminates the need to coordinate deploys with A/B test schedules.
 
 ---
 
-## Section 13: LSP Diagnostics as Eval Signal
+### Code Quality as an Eval Signal
 
-(See Module 10 Section 11 for LSP background.)
+(See Module 10 §11 for LSP background — there it's a *retrieval* source; here it's an *evaluator*.)
 
-### Compilers and Linters as Evaluators
+#### Compilers and Linters as Evaluators
 
 For generated code, deterministic tools — type checkers, linters, compilers — are better evaluators than LLM judges for syntactic and type correctness. They are faster, cheaper, and never hallucinate.
 

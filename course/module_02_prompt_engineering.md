@@ -10,6 +10,8 @@
 - Manage prompt versions, run A/B comparisons, and avoid common pitfalls
 - Understand how prompt behavior differs across providers (Mistral, Groq, Claude, GPT, Ollama)
 
+> *Module 2 is part of **Part I: First Contact** — the first three modules earn you the **First Contact** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -97,6 +99,8 @@ Prompts live on a spectrum from vague to hyper-specific:
 | Hyper-specific | Full system prompt with role, examples, output schema, error cases | High-stakes tasks    |
 
 The right level depends on how predictable you need the output to be. Classification tasks need hyper-specific prompts. Creative brainstorming can be more general.
+
+> **Before / After:** Send "Help me with code" and the model asks what you mean — or worse, guesses. Send "Find type-safety issues in this function; list each with a one-line fix" and you get a scannable list. Same model, same code: specificity is the cheapest quality lever you have.
 
 ### Demonstrating the Four Components
 
@@ -890,9 +894,13 @@ Why does accepting a `LanguageModel` parameter make this function portable acros
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 9: Prompt Composition
+## Going Further: Prompt Architecture at Scale
 
-### Beyond Static System Prompts
+The eight sections above are the core craft of writing a prompt. These last two patterns are about *organizing* prompts once you have many of them — assembled from fragments, layered across directories. Useful at scale; not needed for the exercises.
+
+### Prompt Composition
+
+#### Beyond Static System Prompts
 
 Production LLM applications rarely use a single hardcoded system prompt. Instead, they **compose** the system prompt dynamically from multiple sources at runtime:
 
@@ -904,7 +912,7 @@ Production LLM applications rarely use a single hardcoded system prompt. Instead
 
 The effective system prompt is assembled fresh for each request by concatenating these sources in priority order.
 
-### The Composition Pattern
+#### The Composition Pattern
 
 The core pattern is a function that takes an array of prompt sources and merges them into a single string:
 
@@ -926,19 +934,19 @@ function composeSystemPrompt(sources: PromptSource[]): string {
 
 This is different from template interpolation (Section 5). Templates fill in variables within a single prompt. Composition merges independent prompt _fragments_ from different origins into one coherent instruction set.
 
-### Why Composition Matters
+#### Why Composition Matters
 
 When you build tools with system prompts that include per-tool instructions, project-specific rules, and user preferences, the prompt grows organically. Without a composition pattern, you end up with monolithic prompts that are hard to maintain, test, or customize per-project.
 
 Composition keeps each concern in its own source: the tool definitions file knows about tools, the project config knows about coding standards, and the user preferences file knows about the user. None of them need to know about each other.
 
-> **Looking Ahead:** In Module 7 (Tool Use), every tool definition has its own prompt fragment that gets injected into the system prompt. This is prompt composition in action — tool-specific instructions co-located with tool definitions rather than jammed into one giant prompt.
+> **Advanced Note:** In Module 7 (Tool Use), every tool definition has its own prompt fragment that gets injected into the system prompt. This is prompt composition in action — tool-specific instructions co-located with tool definitions rather than jammed into one giant prompt.
 
 ---
 
-## Section 10: Hierarchical Rule Files
+### Hierarchical Rule Files
 
-### Directory-Scoped Instructions
+#### Directory-Scoped Instructions
 
 Production coding agents search for instruction files walking up from the current working directory to the repository root to global config directories. Each level can override or extend the previous:
 
@@ -950,7 +958,7 @@ Production coding agents search for instruction files walking up from the curren
 
 This is **hierarchical prompt composition** — the effective system prompt is the merged result of multiple instruction layers, with more specific (closer to the working directory) taking precedence.
 
-### The Resolution Pattern
+#### The Resolution Pattern
 
 The resolution algorithm walks up the directory tree, collects instruction files, and merges them:
 
@@ -966,7 +974,26 @@ The resolution algorithm walks up the directory tree, collects instruction files
 
 This supports both additive semantics (append rules from each level) and override semantics (a subdirectory can replace a section entirely). The simplest implementation concatenates all levels, relying on the LLM's tendency to weight later instructions more heavily.
 
-> **Plan vs Build Mode Switching** — Some production agents switch their entire system prompt based on an operational mode. In "plan mode," the agent analyzes and proposes changes but cannot modify files. In "build mode," the agent has full edit permissions. The same tools, same conversation — but different behavioral constraints enforced entirely through prompt switching. This shows that system prompts are not just instructions but **behavioral policies**: changing the prompt changes what the agent is allowed to do.
+> **Production Patterns: Plan vs Build Mode Switching** — Some production agents switch their entire system prompt based on an operational mode. In "plan mode," the agent analyzes and proposes changes but cannot modify files. In "build mode," the agent has full edit permissions. The same tools, same conversation — but different behavioral constraints enforced entirely through prompt switching. This shows that system prompts are not just instructions but **behavioral policies**: changing the prompt changes what the agent is allowed to do.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Prompt anatomy:** The four components — role, task, constraints, format — that structure effective prompts.
+2. **System prompts:** How to define persona, behavioral rules, and output format specifications.
+3. **Few-shot prompting:** How to teach by example, select good examples, and build reusable few-shot classifiers.
+4. **Chain-of-thought:** How to improve reasoning by requiring step-by-step thinking.
+5. **Prompt templates:** How to build typed, reusable template functions in TypeScript.
+6. **Prompt management:** How to version, store, and A/B test prompts as your application scales.
+7. **Common pitfalls:** How to defend against prompt injection, avoid ambiguity, and handle over-constraining.
+8. **Provider differences:** How Claude, GPT-4, and open-source models handle prompts differently, and how to write portable prompts.
+9. **Prompt composition:** How to dynamically assemble system prompts from multiple sources (base instructions, project config, environment, user preferences) at runtime.
+10. **Hierarchical rule files:** How directory-scoped instruction files are resolved by walking up the directory tree, enabling project- and subdirectory-level prompt overrides.
+
+In Module 3, you will combine these prompt engineering techniques with Zod schemas to generate type-safe, structured output from LLMs.
 
 ---
 
@@ -1206,25 +1233,8 @@ describe('Exercise 6: Prompt Composer', () => {
 })
 ```
 
-> **Looking Ahead: Extended Thinking** — This module teaches chain-of-thought via prompting ("Let's think step by step"). Claude and OpenAI's o-series models now support native reasoning tokens — a dedicated "thinking budget" where the model reasons internally before answering. Instead of prompting for CoT, you allocate thinking tokens (e.g., 10,000) and the model uses them automatically. This produces dramatically better results on math, logic, and multi-step problems. The Vercel AI SDK exposes this via provider options.
+> **Advanced Note: Extended Thinking** — This module teaches chain-of-thought via prompting ("Let's think step by step"). Claude and OpenAI's o-series models now support native reasoning tokens — a dedicated "thinking budget" where the model reasons internally before answering. Instead of prompting for CoT, you allocate thinking tokens (e.g., 10,000) and the model uses them automatically. This produces dramatically better results on math, logic, and multi-step problems. The Vercel AI SDK exposes this via provider options.
 
 > **Provider Tip: Prefilled Responses** — Claude allows you to start the assistant's response with a prefix by including a partial `assistant` message. For example, adding `{ role: 'assistant', content: '{"result":' }` forces the model to continue from that point, steering output format without wasting system prompt tokens. This is a powerful technique for structured output when you want more control than `Output.object()` provides.
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Prompt anatomy:** The four components — role, task, constraints, format — that structure effective prompts.
-2. **System prompts:** How to define persona, behavioral rules, and output format specifications.
-3. **Few-shot prompting:** How to teach by example, select good examples, and build reusable few-shot classifiers.
-4. **Chain-of-thought:** How to improve reasoning by requiring step-by-step thinking.
-5. **Prompt templates:** How to build typed, reusable template functions in TypeScript.
-6. **Prompt management:** How to version, store, and A/B test prompts as your application scales.
-7. **Common pitfalls:** How to defend against prompt injection, avoid ambiguity, and handle over-constraining.
-8. **Provider differences:** How Claude, GPT-4, and open-source models handle prompts differently, and how to write portable prompts.
-9. **Prompt composition:** How to dynamically assemble system prompts from multiple sources (base instructions, project config, environment, user preferences) at runtime.
-10. **Hierarchical rule files:** How directory-scoped instruction files are resolved by walking up the directory tree, enabling project- and subdirectory-level prompt overrides.
-
-In Module 3, you will combine these prompt engineering techniques with Zod schemas to generate type-safe, structured output from LLMs.

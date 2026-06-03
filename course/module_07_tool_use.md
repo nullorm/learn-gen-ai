@@ -10,6 +10,8 @@
 - Apply tool design patterns for granularity, naming, and composability
 - Address security considerations including input validation, sandboxing, and allowlists
 
+> *Module 7 is part of **Part II: Core Patterns** — tools are what turn a chatbot into something that acts.*
+
 ---
 
 ## Why Should I Care?
@@ -63,7 +65,7 @@ Model: "The weather in Tokyo is 22°C and sunny."
 
 > **Beginner Note:** The model never runs your code directly. It generates a JSON object describing which function to call and what arguments to pass. You are always in control of what actually executes. This is a critical security property.
 
-> **Under the Hood: Native Function Calling**
+> **Advanced Note: Native Function Calling**
 > Each LLM provider has its own native function calling API — Anthropic uses `tool_use` content blocks, OpenAI/Groq use `tool_calls` in the assistant message, and Mistral uses a similar `tool_calls` format. The Vercel AI SDK's `tools` parameter is a unified abstraction over all of these. When you define a tool in the SDK, it translates your Zod schema into the provider's expected format, sends it with the request, and parses the structured response back into a consistent shape. You never need to work with the raw provider APIs directly, but knowing this mapping exists helps when debugging or reading provider documentation.
 
 ### Why Not Just Use Prompt Engineering?
@@ -268,6 +270,8 @@ Guidelines for `stepCountIs()`:
 | `stepCountIs(10+)`  | Agent-like behavior (careful: cost and latency add up)    | Open-ended research                     |
 
 Each step is a full model call, so cost and latency scale linearly with steps. Each step includes the full conversation history.
+
+> **Gotcha:** A high `stepCountIs(N)` is a budget *ceiling*, not a target — and a cost trap. Because each step replays the whole conversation, `stepCountIs(20)` on a chatty agent can mean 20 calls each larger than the last. Set it as low as the task allows, and log the actual step count in production so one runaway request doesn't quietly 20× your bill.
 
 ### Monitoring Step Execution
 
@@ -500,7 +504,7 @@ What information should you avoid logging (think about PII and credentials in to
 
 > **Advanced Note:** For high-security applications, consider running tool execution in a separate process or container with restricted permissions. Tools that interact with databases should use read-only connections unless writes are explicitly required. Tools that access the filesystem should use chroot or similar isolation.
 
-> **Looking Ahead: Model Context Protocol (MCP)** — In this module, you defined tools by hand in your application code. Anthropic's [Model Context Protocol](https://modelcontextprotocol.io) is an open standard that lets tools be discovered dynamically from external servers. Instead of hardcoding a `weatherTool`, your agent connects to an MCP server and discovers available tools at runtime. The Vercel AI SDK supports this via `@ai-sdk/mcp`:
+> **Advanced Note: Model Context Protocol (MCP)** — In this module, you defined tools by hand in your application code. Anthropic's [Model Context Protocol](https://modelcontextprotocol.io) is an open standard that lets tools be discovered dynamically from external servers. Instead of hardcoding a `weatherTool`, your agent connects to an MCP server and discovers available tools at runtime. The Vercel AI SDK supports this via `@ai-sdk/mcp`:
 >
 > ```typescript
 > import { createMCPClient } from '@ai-sdk/mcp'
@@ -520,9 +524,13 @@ What information should you avoid logging (think about PII and credentials in to
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 10: Production Tool Architecture
+## Going Further: Production Tool Patterns
 
-### Self-Contained Tool Directories
+The nine sections above are everything you need to define, call, loop over, and secure tools. These last patterns are how tool systems get organized in production agents — lifecycle hooks, permissions, user-defined tools. Reference material, not prerequisites.
+
+### Production Tool Architecture
+
+#### Self-Contained Tool Directories
 
 When an application grows beyond a handful of tools, keeping tool definitions inline becomes unmaintainable. Production systems organize each tool as a self-contained directory:
 
@@ -546,9 +554,9 @@ This pattern scales to dozens of tools. Adding a new tool means adding a new dir
 
 ---
 
-## Section 11: Tool Lifecycle Hooks
+### Tool Lifecycle Hooks
 
-### Pre- and Post-Execution Hooks
+#### Pre- and Post-Execution Hooks
 
 Production tool systems run code before and after every tool execution. These hooks form a pipeline around the core execute function:
 
@@ -579,9 +587,9 @@ type PostToolHook = (call: { name: string; args: unknown; result: unknown; durat
 
 ---
 
-## Section 12: Tool Result Management
+### Tool Result Management
 
-### Truncation for Context Budget
+#### Truncation for Context Budget
 
 Tool results can be enormous — a file read might return thousands of lines, a search might return dozens of documents. Every token in a tool result consumes context window space that could be used for conversation or reasoning. Production systems enforce result size limits.
 
@@ -599,9 +607,9 @@ Why preserve both the head and tail instead of just truncating at the end? What 
 
 ---
 
-## Section 13: Tool Permissions
+### Tool Permissions
 
-### Three-Tier Permission System
+#### Three-Tier Permission System
 
 Production systems categorize tool operations into three permission levels:
 
@@ -611,7 +619,7 @@ Production systems categorize tool operations into three permission levels:
 
 Permission rules are declarative and checked before tool execution (in the preToolUse hook). This is the simplest version of the pattern — Module 21 (Safety) covers guardrails in depth.
 
-### Glob-Based Permission Rules
+#### Glob-Based Permission Rules
 
 For finer-grained control, production systems match permission rules against the full command or argument string using glob patterns:
 
@@ -628,9 +636,9 @@ The last matching rule wins. Rules can be scoped per-project (in a project confi
 
 ---
 
-## Section 14: Custom Tools as TypeScript Files
+### Custom Tools as TypeScript Files
 
-### User-Defined Tools with Zod Schemas
+#### User-Defined Tools with Zod Schemas
 
 Some production systems let users extend the tool set by placing `.ts` files in a configuration directory. Each file exports one or more tools using the same `tool()` + Zod pattern the Vercel AI SDK uses:
 
@@ -654,9 +662,9 @@ The `execute` function can receive a `context` parameter with session informatio
 
 ---
 
-## Section 15: Context-Providing Tools (LSP Pattern)
+### Context-Providing Tools (LSP Pattern)
 
-### Tools That Inform Rather Than Act
+#### Tools That Inform Rather Than Act
 
 Not all tools perform actions. Some tools exist to give the LLM better information for decision-making. The strongest example is Language Server Protocol (LSP) integration, where tools expose code intelligence operations: go-to-definition, find-references, hover info, and workspace symbol search.
 

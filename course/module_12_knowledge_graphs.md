@@ -11,6 +11,8 @@
 - Handle graph consistency challenges including deduplication and entity resolution
 - Know when to use Graph RAG vs Vector RAG for different use cases
 
+> *Module 12 is part of **Part III: Advanced Retrieval**, building toward the **RAG Builder** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -130,7 +132,7 @@ You encounter these dependency graphs in any non-trivial system: microservice ar
 
 ## Section 2: Entity Extraction with LLMs
 
-> **Building on Module 11:** You already built entity extraction with `Output.object` in Module 11 Section 5. Here we extend it to extract relationships between entities.
+> **Beginner Note:** You already built entity extraction with `Output.object` in Module 11 Section 5. Here we extend it to extract relationships between entities.
 
 ### Defining Entities
 
@@ -817,9 +819,11 @@ Before building Graph RAG, verify these prerequisites:
 
 ---
 
-> **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
+## Going Further: Graphs You Don't Have to Build
 
-## Section 9: LSP as an Implicit Knowledge Graph
+The eight sections above build a knowledge graph from unstructured text. But sometimes the graph already exists — these last two patterns are about recognizing and reusing graphs you'd otherwise pay to construct.
+
+### LSP as an Implicit Knowledge Graph
 
 (See Module 10 Section 11 for LSP background.)
 
@@ -852,7 +856,7 @@ The trade-off is flexibility. LSP graphs only know about code structure — they
 
 ---
 
-## Section 10: When Graphs Are Free
+### When Graphs Are Free
 
 Some domains provide graph structure inherently — you do not have to build it. Recognizing these "free graphs" saves you the cost and complexity of explicit graph construction:
 
@@ -872,7 +876,26 @@ The practical decision framework is:
 2. **If yes, use it directly.** Write query adapters that translate graph questions into the native query language (SQL for databases, LSP for code, API calls for service catalogs).
 3. **If no, build an explicit graph.** Use the entity extraction and relationship mapping techniques from this module to construct one from unstructured data.
 
-> **Key Insight:** The most expensive part of a knowledge graph is not the storage or traversal — it is the construction and maintenance. When you can derive the graph from a structured source, you eliminate the hardest part of the problem.
+> **Decision:** Before building a knowledge graph, ask whether one already exists. The most expensive part of a graph is never storage or traversal — it's construction and maintenance. If your domain has a structured source (a database schema, an API spec, an LSP), query that directly and skip the build entirely.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Why knowledge graphs:** Vector search finds similar text but cannot traverse relationships between entities. Knowledge graphs store and query structured relationships.
+2. **Entity extraction:** LLMs extract entities (people, organizations, projects, technologies) from documents with structured output, including aliases and attributes.
+3. **Relationship extraction:** Subject-predicate-object triples capture how entities are connected, with predicate normalization ensuring consistency.
+4. **Building a graph:** An in-memory adjacency list with forward and reverse edges supports efficient traversal without a specialized graph database.
+5. **Graph traversal:** Neighborhood retrieval, path finding, and subgraph extraction answer multi-hop relationship questions.
+6. **Graph RAG:** Combining graph traversal with vector search provides both relationship context and text content for comprehensive answers.
+7. **Graph consistency:** Entity deduplication and resolution handle the inevitable duplicate entities from multi-document extraction.
+8. **Decision framework:** Use vector RAG for content questions, graph RAG for relationship questions, and hybrid for applications with both.
+9. **Implicit knowledge graphs:** LSP provides a zero-maintenance knowledge graph over code — entities, relationships, and traversal derived directly from the source, always up-to-date.
+10. **When graphs are free:** Code (LSP), databases (schema), and APIs (OpenAPI) provide inherent graph structure. Recognize these implicit graphs before investing in explicit graph construction from unstructured data.
+
+In Module 13, you will extend your pipeline to handle multi-modal inputs — images, diagrams, screenshots, and audio — adding visual understanding to your retrieval and generation capabilities.
 
 ---
 
@@ -1105,20 +1128,3 @@ describe('Exercise 12: Graph RAG', () => {
 > **Local Alternative (Ollama):** Entity extraction and relationship mapping use `generateText` with `Output.object` and Zod schemas — this works with `ollama('qwen3.5')`. Knowledge graph construction and graph-augmented retrieval are model-agnostic patterns. Cloud models (`qwen3.5:cloud`) will produce better entity extraction for complex documents.
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Why knowledge graphs:** Vector search finds similar text but cannot traverse relationships between entities. Knowledge graphs store and query structured relationships.
-2. **Entity extraction:** LLMs extract entities (people, organizations, projects, technologies) from documents with structured output, including aliases and attributes.
-3. **Relationship extraction:** Subject-predicate-object triples capture how entities are connected, with predicate normalization ensuring consistency.
-4. **Building a graph:** An in-memory adjacency list with forward and reverse edges supports efficient traversal without a specialized graph database.
-5. **Graph traversal:** Neighborhood retrieval, path finding, and subgraph extraction answer multi-hop relationship questions.
-6. **Graph RAG:** Combining graph traversal with vector search provides both relationship context and text content for comprehensive answers.
-7. **Graph consistency:** Entity deduplication and resolution handle the inevitable duplicate entities from multi-document extraction.
-8. **Decision framework:** Use vector RAG for content questions, graph RAG for relationship questions, and hybrid for applications with both.
-9. **Implicit knowledge graphs:** LSP provides a zero-maintenance knowledge graph over code — entities, relationships, and traversal derived directly from the source, always up-to-date.
-10. **When graphs are free:** Code (LSP), databases (schema), and APIs (OpenAPI) provide inherent graph structure. Recognize these implicit graphs before investing in explicit graph construction from unstructured data.
-
-In Module 13, you will extend your pipeline to handle multi-modal inputs — images, diagrams, screenshots, and audio — adding visual understanding to your retrieval and generation capabilities.

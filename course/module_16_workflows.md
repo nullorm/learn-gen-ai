@@ -11,6 +11,8 @@
 - Monitor pipelines with logging, timing, and token usage tracking
 - Choose between chains and agents for a given problem
 
+> *Module 16 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -288,6 +290,8 @@ How deep should the tree go? What are the latency implications of each classific
 
 Individual chain steps can fail due to API errors, malformed output, or timeouts. Robust chains include retry logic and fallbacks.
 
+> **Gotcha:** Retry only what's *idempotent*. Retrying a step that already charged a card, sent an email, or appended to a file replays the side effect — now you've double-charged. Make side-effecting steps idempotent (dedupe keys, upserts) before wrapping them in retry, or you've built an automatic way to do the wrong thing twice.
+
 Build `withRetry<T>(name: string, fn: () => Promise<T>, config: RetryConfig): Promise<T>`:
 
 ```typescript
@@ -472,6 +476,8 @@ Think about: what metric would you alert on in production? Duration spikes? Toke
 
 ## Section 8: When to Use Chains vs Agents
 
+> **Decision:** Chain or agent? If you can write the steps down in advance, use a **chain** — it's cheaper, debuggable, and predictable. If the path depends on what intermediate results say, use an **agent**. If most of it is fixed but one stage must adapt, use a **hybrid**: a chain with one agent-powered step. Default to the most constrained option that does the job.
+
 ### Decision Framework
 
 Build `recommendApproach(taskDescription: string): Promise<{ recommendation: 'chain' | 'agent' | 'hybrid'; reasoning: string; factors: Record<string, string> }>`:
@@ -512,9 +518,13 @@ Test it with a few examples to see how the recommendations differ:
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 9: Workflow Middleware and Hooks
+## Going Further: Production Workflow Patterns
 
-### Intercepting Workflow Execution
+Sections 1–8 are everything you need to design and run a workflow. These last four are the production layer — middleware, background tasks, undo/redo, headless execution — that you add when workflows graduate to infrastructure.
+
+### Workflow Middleware and Hooks
+
+#### Intercepting Workflow Execution
 
 A hook system lets you insert logic at lifecycle points in a workflow without modifying the steps themselves. Hooks run before and after each step, enabling cross-cutting concerns like logging, validation, timing, and authorization.
 
@@ -559,9 +569,9 @@ Hooks and middleware keep your step functions clean — each step does one thing
 
 ---
 
-## Section 10: Background Execution
+### Background Execution
 
-### Parallel Background Tasks
+#### Parallel Background Tasks
 
 Some workflow branches do not need to complete before the main flow continues. A background task runs independently — the main workflow proceeds immediately while the background task works in parallel.
 
@@ -592,9 +602,11 @@ For tasks that the workflow eventually needs, use a future/promise pattern: star
 
 ---
 
-## Section 11: Undo/Redo for Workflow Steps
+### Undo/Redo for Workflow Steps
 
-### Reversible Workflows
+*Related: Module 17 applies this same reversibility idea to code edits.*
+
+#### Reversible Workflows
 
 Workflows that modify state — editing files, updating databases, calling external APIs — benefit from reversibility. An undo/redo system tracks what each step changed and can roll back or reapply those changes.
 
@@ -626,9 +638,11 @@ For file-based workflows, undo means restoring the previous file content. For da
 
 ---
 
-## Section 12: Headless Execution for CI/CD
+### Headless Execution for CI/CD
 
-### Non-Interactive Workflows
+*Module 24 (Deployment) owns the full headless/CI story; here the focus is the workflow logic itself.*
+
+#### Non-Interactive Workflows
 
 Any workflow system that only works interactively is limited to human-in-the-loop use cases. Headless execution lets the same workflow logic run non-interactively — accepting input via function arguments or stdin, executing all steps without prompts, and returning structured results.
 
@@ -660,6 +674,27 @@ async function runWorkflow(input: string, mode: WorkflowMode): Promise<WorkflowR
 The same workflow function supports both modes. In interactive mode, it prompts for confirmation between steps and displays progress. In headless mode, it executes all steps automatically and returns structured JSON. The workflow logic does not change — only the I/O layer differs.
 
 Design workflows for headless execution from the start. Avoid hardcoded `console.log` or `readline` calls in step functions. Instead, emit events that the I/O layer can handle differently based on the mode.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Chains vs agents:** Chains have predefined steps for predictable, debuggable pipelines. Agents decide their own steps for flexible, adaptive behavior. Choose based on how well-defined the task is.
+2. **Sequential chains:** Each step's output feeds the next step. Type-safe chain builders catch errors at compile time.
+3. **Parallel chains:** Independent steps run concurrently to reduce total latency. Use `Promise.all` with concurrency limits.
+4. **Branching:** Conditional routing based on LLM classification creates adaptive chains without full agent autonomy. Multi-level branching handles complex routing trees.
+5. **Retry and fallback:** Retry with exponential backoff handles transient errors. Fallbacks provide degraded but functional results when primary steps fail. Validation between steps catches bad data early.
+6. **Composable chain functions:** Small, focused step functions compose into larger pipelines. Factory patterns create configurable pipeline variants.
+7. **Pipeline monitoring:** Track timing, token usage, and costs at each step. Production pipelines need persistent metrics for debugging and cost forecasting.
+8. **When to use which:** Start with chains when steps are known. Move to agents when flexibility is needed. Use hybrids when you need both structure and adaptability.
+9. **Workflow middleware and hooks:** PreStep, PostStep, OnError, and OnComplete hooks inject cross-cutting concerns (logging, validation, timing) without modifying step functions.
+10. **Background execution:** Fire-and-forget tasks (analytics, cache warming, notifications) run in parallel without blocking the main workflow, using `.catch()` to prevent unhandled rejections.
+11. **Undo/redo for workflow steps:** Recording state snapshots before each side-effecting step enables reversible workflows — undo reverts outcomes while preserving decision history.
+12. **Headless execution:** The same workflow logic supports interactive and non-interactive modes, enabling CI/CD integration, scheduled tasks, and batch processing without code changes.
+
+In Module 17, you will apply chain and agent patterns to code generation — a domain where iterative refinement and test-driven approaches produce the best results.
 
 ---
 
@@ -1127,22 +1162,3 @@ describe('Exercise 16: Model Fallback Chain', () => {
 > **Local Alternative (Ollama):** Workflows and chains are code-level orchestration — sequential steps, parallel execution, branching, and retries work identically with `ollama('qwen3.5')`. Workflows are especially well-suited to local models because each step is a focused, bounded LLM call rather than a complex open-ended generation.
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Chains vs agents:** Chains have predefined steps for predictable, debuggable pipelines. Agents decide their own steps for flexible, adaptive behavior. Choose based on how well-defined the task is.
-2. **Sequential chains:** Each step's output feeds the next step. Type-safe chain builders catch errors at compile time.
-3. **Parallel chains:** Independent steps run concurrently to reduce total latency. Use `Promise.all` with concurrency limits.
-4. **Branching:** Conditional routing based on LLM classification creates adaptive chains without full agent autonomy. Multi-level branching handles complex routing trees.
-5. **Retry and fallback:** Retry with exponential backoff handles transient errors. Fallbacks provide degraded but functional results when primary steps fail. Validation between steps catches bad data early.
-6. **Composable chain functions:** Small, focused step functions compose into larger pipelines. Factory patterns create configurable pipeline variants.
-7. **Pipeline monitoring:** Track timing, token usage, and costs at each step. Production pipelines need persistent metrics for debugging and cost forecasting.
-8. **When to use which:** Start with chains when steps are known. Move to agents when flexibility is needed. Use hybrids when you need both structure and adaptability.
-9. **Workflow middleware and hooks:** PreStep, PostStep, OnError, and OnComplete hooks inject cross-cutting concerns (logging, validation, timing) without modifying step functions.
-10. **Background execution:** Fire-and-forget tasks (analytics, cache warming, notifications) run in parallel without blocking the main workflow, using `.catch()` to prevent unhandled rejections.
-11. **Undo/redo for workflow steps:** Recording state snapshots before each side-effecting step enables reversible workflows — undo reverts outcomes while preserving decision history.
-12. **Headless execution:** The same workflow logic supports interactive and non-interactive modes, enabling CI/CD integration, scheduled tasks, and batch processing without code changes.
-
-In Module 17, you will apply chain and agent patterns to code generation — a domain where iterative refinement and test-driven approaches produce the best results.

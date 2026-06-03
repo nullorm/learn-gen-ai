@@ -12,6 +12,8 @@
 - Handle scaling considerations including concurrency, queue-based processing, and backpressure
 - Manage environment configuration and secrets securely
 
+> *Module 24 is the finale of **Part VI: Production** — ship it to earn the **Production Ready** badge and the **LLM Architect** rank.*
+
 ---
 
 ## Why Should I Care?
@@ -41,6 +43,8 @@ This module teaches you to build production-ready API servers for LLM applicatio
 ### Choosing the Right Deployment Model
 
 LLM applications have different runtime characteristics than traditional web applications. Understanding these characteristics helps you choose the right deployment model.
+
+> **Decision:** Match the runtime to the workload, not the hype. **Serverless** (Lambda, Vercel) suits spiky, bursty traffic where cold starts are tolerable — but a 60-second streamed response blows past most function timeouts. **Long-running servers** (containers, VMs) handle streaming and sustained load. **Edge** is great for low-latency routing and auth, rarely for the model call itself. The deciding factor is usually max request duration.
 
 ```typescript
 // Deployment model comparison
@@ -312,6 +316,8 @@ Why do you need both global and per-user rate limits? What happens if you only h
 
 LLM providers occasionally experience outages, rate limiting, or degraded performance. A failover system automatically routes requests to backup providers when the primary is unavailable.
 
+> **Before / After:** Without failover, a single provider's 3 a.m. outage is *your* outage — every request 500s until someone wakes up. With a failover chain (primary → secondary → cheap fallback) behind a circuit breaker, the same outage is a latency blip and a log line. The cost is one extra provider integration; the payoff is not getting paged for someone else's incident.
+
 Build a `ProviderFailover` class with circuit breaker support:
 
 ```typescript
@@ -549,7 +555,11 @@ process.on('SIGINT', async () => {
 
 Without graceful shutdown, users lose their conversation state and in-progress work when the process is interrupted.
 
-## Section 14: Multi-Target Deployment
+## Going Further: Distribution & Integration
+
+Sections 1–13 are everything you need to deploy and operate an LLM API. These last five are about *shape* — how the same engine reaches users through different surfaces: multiple targets, a client/server split, headless CI, an MCP server, and multiple frontends.
+
+### Multi-Target Deployment
 
 A single codebase can serve multiple deployment targets by separating the core logic from the I/O layer:
 
@@ -560,7 +570,7 @@ A single codebase can serve multiple deployment targets by separating the core l
 
 **Pattern:** Refactor your server so the core LLM logic lives in a shared module. Entry points are thin shells that handle I/O and call into the core. This is the same pattern web applications use — API server + CLI tool + library, all sharing one implementation.
 
-## Section 15: Client/Server Architecture
+### Client/Server Architecture
 
 Production coding agents decouple the backend (LLM processing, tool execution, state management) from the frontend (terminal UI, desktop app, IDE extension). The terminal is just one client connecting to a backend.
 
@@ -572,7 +582,7 @@ This architecture enables:
 
 **Pattern:** The LLM service is a server. Everything else is a client. This is the same separation that web applications use (API server + multiple frontends), applied to AI tooling. The interface boundary is an HTTP/WebSocket API that any client can consume.
 
-## Section 16: Headless CI Execution
+### Headless CI Execution
 
 Production systems support non-interactive execution for automation:
 
@@ -583,13 +593,13 @@ Production systems support non-interactive execution for automation:
 
 This enables CI/CD integration (run code review as a pipeline step), scripted workflows (chain agent invocations in shell scripts), and batch processing (process multiple files programmatically). The headless mode shares the same core module as the interactive mode — only the I/O layer differs.
 
-## Section 17: MCP Server Mode
+### MCP Server Mode
 
 Production coding agents can act as both an MCP client (consuming external tools) AND an MCP server (exposing their own capabilities). This bidirectional MCP support enables tool composition — one agent can use another agent as a tool.
 
 Being an MCP server means the agent's capabilities (code search, file editing, RAG retrieval) are available to any MCP client, not just the agent's own UI. This is the microservices pattern applied to AI tools — each agent exposes a well-defined interface that other agents can consume.
 
-## Section 18: Multi-Frontend Distribution
+### Multi-Frontend Distribution
 
 Production coding agents ship as multiple form factors from a single codebase:
 

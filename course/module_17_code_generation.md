@@ -11,6 +11,8 @@
 - Use LLMs for code review with actionable feedback
 - Apply security best practices when executing LLM-generated code
 
+> *Module 17 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -178,7 +180,7 @@ What are the risks of multi-file generation compared to single-function generati
 
 ## Section 4: Isolated Subprocess Execution
 
-> **Security Warning:** This subprocess approach provides timeout protection and output capture, but NOT security isolation. Generated code runs with the same OS permissions as your application. For true sandboxing in production, use container-based solutions (Docker, Firecracker) or WebAssembly runtimes.
+> **Gotcha:** This subprocess approach provides timeout protection and output capture, but NOT security isolation. Generated code runs with the same OS permissions as your application. For true sandboxing in production, use container-based solutions (Docker, Firecracker) or WebAssembly runtimes.
 
 ### Running Generated Code Safely
 
@@ -225,6 +227,8 @@ When running generated code, always apply these protections:
 ### Generate Code to Pass Tests
 
 The most reliable code generation pattern: write the tests first, then have the LLM generate code that passes them. Build a system with these types:
+
+> **Try it:** An LLM happily generates a `parseDuration('1h30m')` that returns the right answer for the example — and silently returns `0` for `'1h'` (no minutes segment). It looks correct and passes the happy path. Before reading on, decide: what single test catches this whole class of bug? (Hint: the input the model never saw.) That's *why* you write the test first — so the model can't talk you into trusting its output.
 
 ```typescript
 interface TestSpec {
@@ -417,7 +421,7 @@ The uniqueness constraint is critical — if `old_string` matches multiple locat
 
 When a single logical change touches multiple locations (e.g., adding an import at the top and using it in a function below), you can either issue multiple edit operations or use a unified diff patch that contains multiple hunks applied atomically.
 
-> **Key Insight:** String replacement is safest for single-site edits. Multi-hunk unified diff patches are better when one logical change spans multiple locations in a file — either all hunks apply or none do.
+> **Advanced Note:** String replacement is safest for single-site edits. Multi-hunk unified diff patches are better when one logical change spans multiple locations in a file — either all hunks apply or none do.
 
 ---
 
@@ -441,9 +445,15 @@ These checks form a write guard that wraps every file write in the code generati
 
 ---
 
-## Section 11: Edit History and Reversibility
+## Going Further: Hardening Generated-Code Execution
 
-### Tracking Changes for Undo
+Sections 1–10 cover generating, testing, reviewing, and safely editing code. These last two are the production hardening layer — reversible edits and real sandboxing — that you add when generated code runs unattended.
+
+### Edit History and Reversibility
+
+*Related: Module 16 applies this same undo/redo pattern to workflow steps.*
+
+#### Tracking Changes for Undo
 
 Every generated code change should be tracked and reversible. An edit history log records the file path, old content, new content, and timestamp for each edit. This enables:
 
@@ -466,9 +476,9 @@ A simple stack-based history (push on edit, pop on undo) covers most use cases. 
 
 ---
 
-## Section 12: Enhanced Sandboxing
+### Enhanced Sandboxing
 
-### Production Execution Constraints
+#### Production Execution Constraints
 
 The sandboxed execution from Section 4 provides the foundation. Production systems add additional constraints:
 
@@ -480,6 +490,27 @@ The sandboxed execution from Section 4 provides the foundation. Production syste
 These constraints compose with the existing sandbox. Each is a guard that runs before or after execution, and each can be independently tested.
 
 > **Advanced Note:** For full isolation, production systems use container-based sandboxing (Docker, Firecracker) that provides kernel-level enforcement of CPU, memory, network, and filesystem limits. Subprocess isolation is a starting point, not a finish line.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **LLMs as code generators:** They excel at boilerplate and common patterns but struggle with edge cases, security, and novel logic. Always verify generated code.
+2. **Prompting for code:** Specific prompts with function signatures, examples, constraints, and edge cases produce dramatically better code than vague requests.
+3. **Structured code output:** Use `generateText` with `Output.object` and schemas to extract clean code, dependencies, and metadata from LLM responses.
+4. **Sandboxed execution:** Never run generated code in your main process. Use subprocesses with stripped environment variables, timeouts, and resource limits.
+5. **Test-driven generation:** Write tests first, then generate code iteratively until the tests pass. This is the most reliable code generation pattern.
+6. **Iterative refinement:** The generate-run-fix loop combines generation, execution, error analysis, and fixing into a powerful cycle that converges on working code.
+7. **Code review by LLM:** LLMs catch logic errors, security issues, and style problems that static analysis misses. Combine review with automated fixing for a review-and-improve pipeline.
+8. **Security considerations:** Defense in depth with static analysis, sandboxed execution, output validation, and rate limiting protects against the risks of running untrusted code.
+9. **Diff-based code editing:** Producing targeted find-replace edits instead of regenerating entire files is safer, cheaper, and easier to review — with a uniqueness constraint to prevent ambiguous edits.
+10. **Safe code writing:** Write guards that enforce read-before-write, path validation, overwrite confirmation, and parent directory creation prevent accidental damage from generated code.
+11. **Edit history and reversibility:** Tracking every code change with old/new content enables undo, redo, and debugging while keeping file state decoupled from conversation state.
+12. **Enhanced sandboxing:** Production execution adds timeout limits, output size caps, directory restrictions, and permission checks on top of basic subprocess isolation.
+
+In Module 18, you will learn how to add human oversight to these automated systems — approval gates for high-stakes actions, feedback integration for continuous improvement, and audit trails for compliance.
 
 ---
 
@@ -1000,22 +1031,3 @@ describe('Exercise 17: Edit History', () => {
 ```
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **LLMs as code generators:** They excel at boilerplate and common patterns but struggle with edge cases, security, and novel logic. Always verify generated code.
-2. **Prompting for code:** Specific prompts with function signatures, examples, constraints, and edge cases produce dramatically better code than vague requests.
-3. **Structured code output:** Use `generateText` with `Output.object` and schemas to extract clean code, dependencies, and metadata from LLM responses.
-4. **Sandboxed execution:** Never run generated code in your main process. Use subprocesses with stripped environment variables, timeouts, and resource limits.
-5. **Test-driven generation:** Write tests first, then generate code iteratively until the tests pass. This is the most reliable code generation pattern.
-6. **Iterative refinement:** The generate-run-fix loop combines generation, execution, error analysis, and fixing into a powerful cycle that converges on working code.
-7. **Code review by LLM:** LLMs catch logic errors, security issues, and style problems that static analysis misses. Combine review with automated fixing for a review-and-improve pipeline.
-8. **Security considerations:** Defense in depth with static analysis, sandboxed execution, output validation, and rate limiting protects against the risks of running untrusted code.
-9. **Diff-based code editing:** Producing targeted find-replace edits instead of regenerating entire files is safer, cheaper, and easier to review — with a uniqueness constraint to prevent ambiguous edits.
-10. **Safe code writing:** Write guards that enforce read-before-write, path validation, overwrite confirmation, and parent directory creation prevent accidental damage from generated code.
-11. **Edit history and reversibility:** Tracking every code change with old/new content enables undo, redo, and debugging while keeping file state decoupled from conversation state.
-12. **Enhanced sandboxing:** Production execution adds timeout limits, output size caps, directory restrictions, and permission checks on top of basic subprocess isolation.
-
-In Module 18, you will learn how to add human oversight to these automated systems — approval gates for high-stakes actions, feedback integration for continuous improvement, and audit trails for compliance.

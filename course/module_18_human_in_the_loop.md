@@ -11,6 +11,8 @@
 - Create audit trails that log all decisions for compliance and debugging
 - Handle graceful degradation when no human is available
 
+> *Module 18 closes **Part IV: Agents & Orchestration** — complete it to earn the **Agent Deployer** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -135,6 +137,8 @@ Think about: how do you decide which tools need approval? What data structure le
 ### Auto-Approve High Confidence, Escalate Low Confidence
 
 Not every action needs human review. Route based on the agent's confidence. Define the configuration and proposal types:
+
+> **Decision:** Where do you set the thresholds? It's a cost-of-error question, not a model question. For reversible, low-stakes actions, set `autoApproveThreshold` low and let most through. For irreversible or costly actions (deletes, payments, outbound email), there is no safe auto-approve threshold — route them to a human regardless of confidence. Confidence routing saves human attention; it never substitutes for it on the actions that matter.
 
 ```typescript
 interface ConfidenceConfig {
@@ -442,9 +446,13 @@ The function should try reviewers in priority order, skipping unavailable ones a
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 9: Declarative Permission Rules
+## Going Further: Permission & Approval Systems
 
-### Rules Instead of Code
+Sections 1–8 are the HITL principles — when and how to involve a human. These last five are the machinery production agents use to enforce those decisions: declarative rules, autonomy modes, denial memory, approval levels, and command-level permissions.
+
+### Declarative Permission Rules
+
+#### Rules Instead of Code
 
 Production permission systems define access control declaratively — as data, not logic. Each rule specifies a pattern (glob or regex) and a decision (allow, deny, or ask). Rules are checked before every tool execution.
 
@@ -469,9 +477,9 @@ Declarative rules are easier to audit, version, and share than imperative permis
 
 ---
 
-## Section 10: Permission Modes
+### Permission Modes
 
-### Configurable Autonomy Levels
+#### Configurable Autonomy Levels
 
 The autonomy spectrum from Section 1 becomes concrete through permission modes — named configurations that change which rules apply:
 
@@ -481,13 +489,13 @@ The autonomy spectrum from Section 1 becomes concrete through permission modes �
 
 Switching modes changes the active rule set, not the code. The permission engine stays the same; only the rules differ.
 
-> **Key Insight:** Modes let you match the autonomy level to the task. A code review task needs restrictive mode; a scaffolding task can use autonomous mode. The user chooses the mode, not the agent.
+> **Advanced Note:** Modes let you match the autonomy level to the task. A code review task needs restrictive mode; a scaffolding task can use autonomous mode. The user chooses the mode, not the agent.
 
 ---
 
-## Section 11: Denial Adaptation
+### Denial Adaptation
 
-### Learning from "No"
+#### Learning from "No"
 
 When a human denies an action, the agent must not retry the same operation. Instead, it should:
 
@@ -506,9 +514,9 @@ The pattern is simple: denied actions go into a "do not retry" set for the sessi
 
 ---
 
-## Section 12: Three Approval Modes
+### Three Approval Modes
 
-### Suggest, Auto-Edit, and Full-Auto
+#### Suggest, Auto-Edit, and Full-Auto
 
 Production coding agents implement three distinct autonomy levels that go beyond simple ask/don't-ask:
 
@@ -524,9 +532,9 @@ The full-auto pattern demonstrates **compensating controls** — relaxing one co
 
 ---
 
-## Section 13: Glob-Based Command Permissions
+### Glob-Based Command Permissions
 
-### Fine-Grained Shell Command Control
+#### Fine-Grained Shell Command Control
 
 For shell command execution, glob patterns provide precise control over what is allowed, what needs confirmation, and what is blocked:
 
@@ -543,6 +551,28 @@ const commandRules = [
 Rules are evaluated in order with last-match-wins semantics. This allows layering — a project defines baseline rules, and the user adds overrides on top. Glob patterns are more readable than regex and compose naturally.
 
 The matcher compares the full command string against each rule's pattern. Wildcards (`*`) match any sequence of characters within a single argument. Double wildcards (`**`) are not typically needed for flat command strings.
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **Why human-in-the-loop:** Trust, accuracy, and compliance require human oversight for high-stakes AI actions. Place each action on the autonomy spectrum based on its risk level.
+2. **Approval flows:** Agents propose actions and humans approve, reject, or modify them. Use callbacks for programmatic environments and stdin for CLI contexts.
+3. **Confidence-based routing:** Auto-approve high-confidence, low-risk actions. Escalate low-confidence or high-risk actions to humans. Notify on moderate cases.
+4. **Feedback integration:** Store human corrections and use them as context in future prompts. Track approval rates to identify systematic issues.
+5. **Active learning:** Proactive agents identify their own uncertainty and ask for clarification before acting. This is more efficient than acting and being rejected.
+6. **Review interfaces:** CLI-based and programmatic review queues let humans efficiently review batches of agent proposals.
+7. **Audit trails:** Log every decision with enough detail for compliance review. Include who, what, when, why, and the outcome.
+8. **Graceful degradation:** When no human is available, fall back to safe behaviors — auto-approve low-risk actions, queue high-risk ones, or reject everything. Never auto-approve critical actions.
+9. **Declarative permission rules:** Defining access control as data (pattern + decision) instead of logic makes permissions auditable, versionable, and composable with last-match-wins semantics.
+10. **Permission modes:** Named configurations (restrictive, normal, autonomous) let users match the autonomy level to the task by switching rule sets, not code.
+11. **Denial adaptation:** Recording denied actions and including them as context prevents the agent from retrying rejected operations and teaches it to propose alternatives.
+12. **Three approval modes:** Suggest (read-only), auto-edit (file writes allowed), and full-auto (all operations, but network disabled) provide distinct autonomy levels with compensating controls.
+13. **Glob-based command permissions:** Fine-grained shell command control using glob patterns enables layered rules — project defaults with user overrides — for precise command execution governance.
+
+This completes Part IV: Agents and Orchestration. You now have the patterns to build autonomous agents, coordinate multiple agents, design deterministic pipelines, generate code iteratively, and add human oversight — the full toolkit for production LLM applications.
 
 ---
 
@@ -1070,23 +1100,3 @@ describe('Exercise 18: Permission Modes', () => {
 ```
 
 ---
-
-## Summary
-
-In this module, you learned:
-
-1. **Why human-in-the-loop:** Trust, accuracy, and compliance require human oversight for high-stakes AI actions. Place each action on the autonomy spectrum based on its risk level.
-2. **Approval flows:** Agents propose actions and humans approve, reject, or modify them. Use callbacks for programmatic environments and stdin for CLI contexts.
-3. **Confidence-based routing:** Auto-approve high-confidence, low-risk actions. Escalate low-confidence or high-risk actions to humans. Notify on moderate cases.
-4. **Feedback integration:** Store human corrections and use them as context in future prompts. Track approval rates to identify systematic issues.
-5. **Active learning:** Proactive agents identify their own uncertainty and ask for clarification before acting. This is more efficient than acting and being rejected.
-6. **Review interfaces:** CLI-based and programmatic review queues let humans efficiently review batches of agent proposals.
-7. **Audit trails:** Log every decision with enough detail for compliance review. Include who, what, when, why, and the outcome.
-8. **Graceful degradation:** When no human is available, fall back to safe behaviors — auto-approve low-risk actions, queue high-risk ones, or reject everything. Never auto-approve critical actions.
-9. **Declarative permission rules:** Defining access control as data (pattern + decision) instead of logic makes permissions auditable, versionable, and composable with last-match-wins semantics.
-10. **Permission modes:** Named configurations (restrictive, normal, autonomous) let users match the autonomy level to the task by switching rule sets, not code.
-11. **Denial adaptation:** Recording denied actions and including them as context prevents the agent from retrying rejected operations and teaches it to propose alternatives.
-12. **Three approval modes:** Suggest (read-only), auto-edit (file writes allowed), and full-auto (all operations, but network disabled) provide distinct autonomy levels with compensating controls.
-13. **Glob-based command permissions:** Fine-grained shell command control using glob patterns enables layered rules — project defaults with user overrides — for precise command execution governance.
-
-This completes Part IV: Agents and Orchestration. You now have the patterns to build autonomous agents, coordinate multiple agents, design deterministic pipelines, generate code iteratively, and add human oversight — the full toolkit for production LLM applications.

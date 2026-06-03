@@ -11,6 +11,8 @@
 - Iterate on fine-tuning through dataset improvement and augmentation
 - Perform cost analysis comparing training investment against inference savings
 
+> *Module 20 is part of **Part V: Quality & Safety**, building toward the **Quality Gate** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -80,7 +82,7 @@ Use `Output.object` with a Zod schema to get structured output. The system promp
 
 > **Beginner Note:** Think of it this way — prompt engineering tells the model what to do each time, RAG gives it information to work with, and fine-tuning changes what the model is. You prompt-engineer a model to write like Shakespeare; you fine-tune a model to be a Shakespeare-writing model.
 
-> **Prompt Caching as Middle Ground:** Before jumping to fine-tuning to reduce long system prompt costs, consider prompt caching. Providers like Anthropic and OpenAI cache repeated system prompt prefixes, so the same 2,000-token system prompt is only billed once and reused across requests. This achieves some of the same cost and latency benefits as fine-tuning (shorter effective prompt, faster responses) without any training. Prompt caching is the right choice when your system prompt is stable and your main cost concern is repeatedly sending the same instructions.
+> **Decision:** Before jumping to fine-tuning to reduce long system prompt costs, consider prompt caching. Providers like Anthropic and OpenAI cache repeated system prompt prefixes, so the same 2,000-token system prompt is only billed once and reused across requests. This achieves some of the same cost and latency benefits as fine-tuning (shorter effective prompt, faster responses) without any training. Prompt caching is the right choice when your system prompt is stable and your main cost concern is repeatedly sending the same instructions.
 
 ### Cost-Benefit Analysis
 
@@ -206,7 +208,7 @@ Build three conversion functions:
 
 > **Beginner Note:** JSONL is just regular JSON objects, one per line. Each line is a complete, valid JSON object. This format is efficient for streaming processing — you can process one example at a time without loading the entire file into memory.
 
-> **Production Insight: Implicit Training Data from Sessions.** Production AI tools generate high-quality fine-tuning data as a byproduct of normal operation. Every multi-turn session is a conversation with tool calls, results, and user approvals or denials baked in. Session summaries extract key patterns, and user feedback (approvals, rejections, edits) provides preference signals. If you run a production AI assistant, your logs are a potential fine-tuning dataset — the data you need may already exist.
+> **Production Patterns:** Production AI tools generate high-quality fine-tuning data as a byproduct of normal operation. Every multi-turn session is a conversation with tool calls, results, and user approvals or denials baked in. Session summaries extract key patterns, and user feedback (approvals, rejections, edits) provides preference signals. If you run a production AI assistant, your logs are a potential fine-tuning dataset — the data you need may already exist.
 
 ---
 
@@ -215,6 +217,8 @@ Build three conversion functions:
 ### Data Quality Filtering
 
 The quality of your fine-tuning output is directly proportional to the quality of your training data. Bad data in means bad model out.
+
+> **Gotcha:** Fine-tune on too few examples and the model overfits — it parrots your training phrasing and gets *worse* at everything else. The failure is invisible on the training set (which it memorized) and obvious in production. Always hold out a test set the model never sees, and watch for it getting more confident yet less general — the signature of overfitting.
 
 ```typescript
 interface QualityFilter {

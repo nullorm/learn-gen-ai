@@ -11,6 +11,8 @@
 - Optimize prompts for cost without sacrificing quality
 - Build monitoring and alerting systems that track spend and enforce budgets
 
+> *Module 22 closes **Part V: Quality & Safety** — complete it to earn the **Quality Gate** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -130,11 +132,13 @@ For the summary, filter events to the time window first, then iterate once to co
 
 ## Section 2: Semantic Caching
 
-> **Note:** This section uses OpenAI embeddings for the semantic cache. Substitute your preferred embedding provider.
+> **Provider Tip:** This section uses OpenAI embeddings for the semantic cache. Substitute your preferred embedding provider.
 
 ### Why Semantic Caching?
 
 Traditional caching requires exact key matches. LLM queries are rarely identical -- "What is the weather?" and "What's the weather like?" should return the same cached response. Semantic caching uses embeddings to find similar queries.
+
+> **Before / After:** A cache *miss* costs a full LLM call — say 1,500 input + 400 output tokens. A cache *hit* costs one embedding (a few hundred tokens, ~100× cheaper) and returns in milliseconds. At a 40% hit rate on a busy endpoint, that's nearly half your LLM bill gone — on queries users are effectively asking twice.
 
 ```typescript
 import { embed, cosineSimilarity } from 'ai'
@@ -201,6 +205,8 @@ Think about: What similarity threshold is too aggressive (too many false cache h
 ### Complexity-Based Routing
 
 Not every query needs the most powerful (and expensive) model. Route simple queries to cheap models and complex queries to premium models.
+
+> **Decision:** Where's the routing threshold? Don't guess — measure. Run your eval set (Module 19) against both the cheap and the premium model, then route to premium only the query *classes* where the cheap model measurably fails. A blind "cheap for short prompts" rule sends hard-but-short queries to the wrong tier. Route on measured quality, not prompt length.
 
 ```typescript
 interface RoutingDecision {
@@ -598,7 +604,7 @@ Test with a sample query and log the response, cost, and the list of optimizatio
 
 > **Advanced Note:** Be careful not to over-optimize. Every optimization adds complexity and potential failure modes. Start with the highest-impact, lowest-complexity optimizations (prompt shortening, maxOutputTokens limits) before adding sophisticated systems like semantic caching and model routing. Measure the actual impact of each optimization before adding the next one.
 
-> **Production Tip: Batch APIs** — For workloads that don't need real-time responses (eval suites, bulk classification, synthetic data generation), both Anthropic and OpenAI offer Batch APIs at 50% cost reduction. You submit a batch of requests and receive results within 24 hours. This is ideal for the eval pipelines from Module 19 and the fine-tuning data preparation from Module 20. Check each provider's documentation for current batch API endpoints and limits.
+> **Production Patterns: Batch APIs** — For workloads that don't need real-time responses (eval suites, bulk classification, synthetic data generation), both Anthropic and OpenAI offer Batch APIs at 50% cost reduction. You submit a batch of requests and receive results within 24 hours. This is ideal for the eval pipelines from Module 19 and the fine-tuning data preparation from Module 20. Check each provider's documentation for current batch API endpoints and limits.
 
 > **Local Alternative (Ollama):** Running models locally via Ollama eliminates per-token API costs entirely — your only cost is electricity and hardware. The optimization patterns here (semantic caching, model routing, prompt optimization) still apply: caching saves inference time, routing between model sizes saves GPU memory, and shorter prompts mean faster generation. Cost optimization with local models becomes performance optimization.
 
@@ -606,7 +612,11 @@ Test with a sample query and log the response, cost, and the list of optimizatio
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 9: Real-Time Cost Tracking
+## Going Further: Production Cost Controls
+
+Sections 1–8 are the major cost levers — caching, routing, budgets, batching, prompt trimming, monitoring. These last five are the fine-grained controls you reach for once the big wins are in: per-call tracking, budget allocation, compaction, tool-result caps, and reasoning-effort tuning.
+
+### Real-Time Cost Tracking
 
 Production systems track cost per request in real-time, not as an afterthought. A cost tracking middleware wraps every `generateText` or `streamText` call and records:
 
@@ -626,7 +636,7 @@ const cost = (usage.inputTokens * inputPrice + usage.outputTokens * outputPrice)
 
 Display cumulative cost at the end of each response so the user can make informed decisions about model selection and prompt length.
 
-## Section 10: Token Budget Allocation
+### Token Budget Allocation
 
 The context window is a finite budget that must be allocated across competing needs. Production systems treat it like a resource with priorities:
 
@@ -642,7 +652,7 @@ When the total exceeds the window, something must be cut. A budget allocator enf
 
 **Key insight:** Without explicit allocation, tool results can silently consume most of your context window. A single large file read (10K tokens) might crowd out conversation history that the model needs for coherent responses.
 
-## Section 11: Compaction as Cost Optimization
+### Compaction as Cost Optimization
 
 Module 4 teaches compaction for context window management. Here, view it as a cost technique.
 
@@ -652,7 +662,7 @@ For an application handling 1,000 sessions per day, compaction saves $12,000/day
 
 **When to compact:** Trigger compaction when context usage exceeds a threshold (e.g., 60% of the window). Do not wait until the window is full — by then you have already paid the high-token cost for several calls.
 
-## Section 12: Tool Result Budgeting
+### Tool Result Budgeting
 
 Tool results are one of the largest and least controlled sources of token usage. A file read might return 10K tokens. A search might return 50 results. Without budgets, tool results dominate the context window and inflate costs.
 
@@ -672,7 +682,7 @@ function truncateResult(text: string, maxTokens: number): string {
 }
 ```
 
-## Section 13: Reasoning Effort and Thinking Budget Control
+### Reasoning Effort and Thinking Budget Control
 
 Not every prompt deserves the same reasoning budget. Production systems expose per-provider controls for model reasoning intensity:
 

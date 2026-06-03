@@ -8,6 +8,8 @@
 - Persist conversation history to disk for long-running sessions
 - Estimate token counts to stay within model limits and control costs
 
+> *Module 4 opens **Part II: Core Patterns** — the heart of the course, earning the **Core Patterns** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -804,13 +806,17 @@ Summaries compress everything — important and unimportant alike. Extraction is
 
 Extracted facts also do not drift. A summary of a summary can distort details. A fact like `name: Jordan` stays exact indefinitely.
 
-> **Persistent Memory Directories** — Some production coding agents persist extracted memories to a dedicated directory (e.g., `~/.app/memories/`) that survives across sessions, restarts, and context compaction. Each memory is a file with metadata (timestamp, source, category). At session start, relevant memories are loaded and injected into the system prompt. This is fundamentally different from session persistence — it stores **curated knowledge**, not raw conversation history.
+> **Production Patterns: Persistent Memory Directories** — Some production coding agents persist extracted memories to a dedicated directory (e.g., `~/.app/memories/`) that survives across sessions, restarts, and context compaction. Each memory is a file with metadata (timestamp, source, category). At session start, relevant memories are loaded and injected into the system prompt. This is fundamentally different from session persistence — it stores **curated knowledge**, not raw conversation history.
 
 ---
 
-## Section 10: Token Budget Allocation
+## Going Further: Production Memory Management
 
-### The Context Window as a Budget
+Sections 1–9 cover everything you need to run a multi-turn conversation. These last two patterns are about squeezing more out of a tight context window — reach for them when you're optimizing, not when you're starting.
+
+### Token Budget Allocation
+
+#### The Context Window as a Budget
 
 Production systems treat the context window as a budget to be allocated, not just a limit to avoid hitting. A typical allocation:
 
@@ -824,7 +830,7 @@ Production systems treat the context window as a budget to be allocated, not jus
 
 The key insight is that these allocations are configurable and should be tuned per use case. A coding assistant needs more space for tool results. A creative writing assistant needs more space for recent messages.
 
-### Budget Monitoring
+#### Budget Monitoring
 
 Track token usage per component and trigger compaction when any component exceeds its allocation:
 
@@ -841,9 +847,9 @@ Warning thresholds at 80% and auto-compact at 90% give your application a gracef
 
 ---
 
-## Section 11: Microcompaction
+### Microcompaction
 
-### Surgical Pruning Without Full Summarization
+#### Surgical Pruning Without Full Summarization
 
 Full compaction (summarizing older messages) is a heavyweight operation — it requires an LLM call and replaces detailed history with a compressed summary. Microcompaction is a lighter-weight alternative that surgically removes low-value content without any LLM calls.
 
@@ -854,7 +860,7 @@ Microcompaction targets:
 3. **Redundant assistant messages** — if the assistant said "I'll search for that" followed by the actual search results, the preamble can be removed
 4. **Non-essential metadata** — timestamps, progress updates, and status messages
 
-### The Microcompaction Pattern
+#### The Microcompaction Pattern
 
 ```typescript
 // Microcompaction: remove duplicate tool results, truncate verbose outputs
@@ -865,7 +871,7 @@ The key difference from summarization: microcompaction is deterministic and free
 
 In practice, production systems layer these approaches: microcompaction runs every turn (cheap), summarization runs only when microcompaction is not enough (expensive).
 
-> **Automatic Compaction Agents** — Some production systems run a hidden "compaction agent" — a separate `generateText` call with its own system prompt optimized for compression. Rather than heuristic truncation, the compaction agent produces a compressed summary preserving key decisions, tool results, and task state. It runs automatically and invisibly when the context fills up. This is LLM-assisted memory extraction taken further — the compaction agent maintains conversational coherence while dramatically reducing token count.
+> **Production Patterns: Automatic Compaction Agents** — Some production systems run a hidden "compaction agent" — a separate `generateText` call with its own system prompt optimized for compression. Rather than heuristic truncation, the compaction agent produces a compressed summary preserving key decisions, tool results, and task state. It runs automatically and invisibly when the context fills up. This is LLM-assisted memory extraction taken further — the compaction agent maintains conversational coherence while dramatically reducing token count.
 
 ---
 
@@ -1124,7 +1130,7 @@ export function benchmarkStrategy(
 
 The test provides 24 hardcoded user messages with facts planted in the first 3 messages (name, location, company, language). It also runs recall questions after each benchmark to measure how well each strategy preserves early context. Your job is just the benchmark loop.
 
-> **Note for Claude Code:** When writing the test file for this exercise, generate a realistic 20-30 message conversation yourself and hardcode it. Plant the `TestFacts` values (name, location, company, language) in the first 3 messages. Do not call the LLM to generate test messages at test time — that adds latency and nondeterminism.
+> **Gotcha:** When writing the test file for this exercise, generate a realistic 20-30 message conversation yourself and hardcode it. Plant the `TestFacts` values (name, location, company, language) in the first 3 messages. Do not call the LLM to generate test messages at test time — that adds latency and nondeterminism.
 
 **Try it:** Run `bun test tests/memory/benchmark.test.ts` to validate your implementation.
 

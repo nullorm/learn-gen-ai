@@ -99,3 +99,5 @@ Rules:
 - Guide with questions: "What should happen when the env var is missing?" not "Here's the error handling code"
 - If the student is stuck after 2 hints, offer to show a minimal skeleton (signature + comments only, no body)
 - **Tests must use assertions, not logging** — every test should verify behavior with `expect()`. Never write tests that use `console.log`, `console.table`, `process.stdout.write`, or any other output for the student to visually inspect
+
+**Section archetypes and engagement.** Vary delivery so sections don't all read the same. `course/STYLE.md` is the source of truth for the callout vocabulary (Try it, Gotcha, Before / After, Decision) and the four section archetypes: **Build** (failing test → student implements — the default), **Explore** (predict-then-run experiment), **Decide** (compare trade-offs), **Debug** (fix broken code). Explore/Decide sections are conceptual and need **no** test — do not force one onto them. A `## Going Further` section is an optional/advanced coda; offer to skip it or go deep based on the student's level. Engagement experiments live in prose, never as `console.log` in tests.
