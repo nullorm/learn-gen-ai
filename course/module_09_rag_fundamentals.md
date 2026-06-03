@@ -9,6 +9,8 @@
 - Inject retrieved context into LLM prompts with proper citation attribution
 - Assess RAG pipeline quality using faithfulness, relevance, and correctness metrics
 
+> *Module 9 is part of **Part II: Core Patterns** — RAG is where embeddings, retrieval, and generation finally meet.*
+
 ---
 
 ## Why Should I Care?
@@ -33,7 +35,7 @@ This module teaches you to build a complete RAG pipeline from scratch, from inge
 - **Module 2 (Prompt Engineering)** taught prompt design. The RAG prompt template is one of the most important prompts you will write.
 - **Module 7 (Tool Use)** showed how LLMs can call functions. RAG retrieval can be exposed as a tool for agent-based systems.
 
-> **Building on Module 8:** You already built semantic search that finds relevant documents by embedding similarity. RAG adds the generation step — injecting retrieved documents into an LLM prompt to produce grounded answers.
+> **Beginner Note:** You already built semantic search in Module 8 that finds relevant documents by embedding similarity. RAG adds the generation step — injecting retrieved documents into an LLM prompt to produce grounded answers.
 
 ---
 
@@ -237,6 +239,8 @@ Split by heading regex (`/^(#{1,6}\s.+)$/gm`). Track the current heading and its
 ## Section 4: Chunk Overlap
 
 ### Why Overlap?
+
+> **Gotcha:** A fact split across a chunk boundary becomes invisible to retrieval — neither chunk contains the whole answer, so neither scores high enough to be retrieved. Overlap is the cheap fix, but the deeper lesson is that *where* you cut matters as much as how big the chunks are: cut on semantic boundaries (paragraphs, headings) whenever you can.
 
 Without overlap, information at chunk boundaries gets split:
 
@@ -684,7 +688,11 @@ The key design decision is where retrieved chunks sit in the priority order. In 
 
 ---
 
-## Section 11: Hierarchical Configuration as Retrieval
+## Going Further: Coding-Agent Context Assembly
+
+Sections 1–10 are RAG proper. These last two reframe a coding agent's *own* context assembly — config-file precedence, lazy file loading — as retrieval problems. A useful lens when you work inside coding agents; not needed for the exercises.
+
+### Hierarchical Configuration as Retrieval
 
 Production coding agents use an interesting retrieval pattern: they search for project instructions by walking up the directory tree. Starting from the current file, the system checks for configuration files at each directory level up to the repository root, then to the user's global configuration. Each level can extend or override the previous one.
 
@@ -702,7 +710,7 @@ This mirrors how retrieval systems should rank results by relevance. The "closer
 
 ---
 
-## Section 12: Lazy-Loading Referenced Files
+### Lazy-Loading Referenced Files
 
 Production systems often reference external files in their project instructions — "see coding-standards.md for style rules" or "refer to api-spec.yaml for endpoint details" — but they do not load those files preemptively. They only retrieve and inject the referenced content when the current task makes it relevant.
 
@@ -712,7 +720,7 @@ The pattern is straightforward: instructions contain pointers (file paths or ref
 
 Eager retrieval — loading everything up front — wastes context. In a RAG pipeline, this translates to a practical design principle: do not retrieve all potentially relevant chunks at query time. Instead, retrieve a focused set, generate, and if the answer is insufficient, retrieve additional context in a follow-up step. This is analogous to the "iterative retrieval" pattern where the system retrieves, generates, evaluates, and retrieves again if needed.
 
-> **Key Insight:** Treat references as pointers, not as content to preload. Retrieve late, not early. This applies both to file-based configuration injection and to vector-based RAG pipeline design.
+> **Advanced Note:** Treat references as pointers, not as content to preload. Retrieve late, not early. This applies both to file-based configuration injection and to vector-based RAG pipeline design.
 
 ---
 
