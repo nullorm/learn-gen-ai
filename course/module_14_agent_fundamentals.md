@@ -11,6 +11,8 @@
 - Manage within-session agent memory for multi-step tasks
 - Debug agents by tracing reasoning steps and diagnosing failures
 
+> *Module 14 opens **Part IV: Agents & Orchestration** — complete the Part to earn the **Agent Deployer** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -156,6 +158,8 @@ With reasoning, the agent can:
 - Synthesize information from multiple sources
 - Recognize when it has enough information to answer
 
+> **Before / After:** Ask "what's the population of the capital of the country with the highest GDP?" as a single `generateText` call and the model answers from memory — often stale, never sourced. Give the same question to a ReAct agent with a `searchWeb` tool and it becomes three grounded steps: highest-GDP country → its capital → that capital's population. Same model; the loop is what turns a confident guess into a checkable answer.
+
 > **Beginner Note:** You do not need to implement ReAct from scratch. The combination of a good system prompt and the Vercel AI SDK's `stopWhen: stepCountIs()` gives you ReAct behavior. The system prompt encourages the model to reason explicitly, and `stopWhen` provides the loop.
 
 > **Advanced Note:** Some models handle ReAct-style reasoning better than others. Claude models naturally tend to reason before acting. For models that rush to tool calls without thinking, you can use a "scratchpad" tool that the model calls to write down its thoughts before using action tools.
@@ -205,6 +209,8 @@ Inside the function:
 7. If the loop ends without finishing, return with `finished: false`
 
 How should you handle the case where `response.text` is empty but the model made tool calls? What about the case where the model neither produces text nor calls tools?
+
+> **Gotcha:** The most common agent bug is the loop that never ends. If your exit check only fires on `finishReason === 'stop'` but the model keeps emitting tool calls — or you forget to break when `toolCalls.length === 0` — the loop runs to `maxSteps` every time, burning tokens on nothing. Before adding any feature, prove your loop *halts*: give it a task answerable in one step and confirm it stops at step 1, not step `maxSteps`. `maxSteps` is a backstop, not a design.
 
 ### Adding Step Callbacks
 
@@ -726,9 +732,13 @@ Format tool results consistently. Each result should include the tool name, whet
 
 ---
 
-## Section 13: Extended Thinking
+## Going Further: Production Agent Patterns
 
-### Making the Think Phase Explicit
+The twelve sections above are the complete agent toolkit — loop, reasoning, tool selection, termination, memory, debugging, orchestration. What follows is how production agent systems extend that foundation. Treat it as a reference to return to, not a prerequisite for the exercises.
+
+### Extended Thinking
+
+#### Making the Think Phase Explicit
 
 The ReAct pattern's "think" phase is typically implicit — the model reasons in its output text before deciding on an action. Modern models support **extended thinking**, where the model explicitly allocates tokens to internal reasoning before producing its response.
 
@@ -757,9 +767,9 @@ Thinking tokens are separate from output tokens and are not visible in the final
 
 ---
 
-## Section 14: Plan and Build Agent Modes
+### Plan and Build Agent Modes
 
-### Same Agent, Different Constraints
+#### Same Agent, Different Constraints
 
 Production agents often support multiple behavioral modes using the same underlying architecture. The two most common modes are:
 
@@ -781,9 +791,9 @@ The user toggles between modes explicitly. The system prompt can also vary by mo
 
 ---
 
-## Section 15: Max Steps Configuration and Hidden System Agents
+### Max Steps Configuration and Hidden System Agents
 
-### Per-Agent-Type Step Limits
+#### Per-Agent-Type Step Limits
 
 Different agent types need different step limits based on expected task complexity. A primary agent handling an open-ended task might need 200 steps, while a focused subagent performing a single search should finish in 20.
 
@@ -798,7 +808,7 @@ const AGENT_STEP_LIMITS: Record<string, number> = {
 
 Configure step limits per agent type rather than using a single global value. This prevents lightweight agents from running too long and expensive agents from being cut short.
 
-### Hidden System Agents
+#### Hidden System Agents
 
 Not all agents serve the user directly. Some agents run invisibly to maintain the system itself:
 
@@ -812,9 +822,9 @@ These agents run with their own context and tools, and their results are silentl
 
 ---
 
-## Section 16: Enhanced Debugging with Trace Logging
+### Enhanced Debugging with Trace Logging
 
-### Production Trace Logging
+#### Production Trace Logging
 
 Production agents log every step of the agent loop as structured trace events. A trace logger captures the full reasoning chain — tool calls, arguments, results, decisions, timing, and token usage — in a format that can be searched, filtered, and replayed.
 
@@ -834,6 +844,31 @@ The trace logger wraps the agent loop. Before each tool call, it records the cal
 The trace output enables post-hoc debugging: "The agent failed at step 7 because the search tool returned an empty result, and the agent did not retry with a different query." Without traces, you would only see the final failure with no insight into why.
 
 Store traces alongside the conversation. In development, print them to console. In production, ship them to an observability platform where you can query across conversations: "Show me all agent runs where stuck detection triggered in the last 24 hours."
+
+---
+
+## Summary
+
+In this module, you learned:
+
+1. **What an agent is:** An LLM plus tools plus a loop. The Vercel AI SDK's `stopWhen: stepCountIs()` provides the simplest agent loop, but custom loops give you more control.
+2. **The ReAct pattern:** Think, act, observe — the fundamental cycle that makes agents effective. System prompts encourage explicit reasoning before tool use.
+3. **Agent loop implementation:** How to build a custom loop with step tracking, message management, and callbacks for observability.
+4. **Planning vs reacting:** Reactive agents work step by step; planning agents create a plan first. Choose based on task complexity and structure.
+5. **Tool selection:** Good tool descriptions, typed parameters, and system prompt guidance help agents choose the right tool.
+6. **Observation processing:** Structured tool results, summarization of large observations, and helpful error messages improve agent accuracy.
+7. **Termination conditions:** Max steps, stuck detection, error thresholds, and token budgets prevent runaway agents.
+8. **Agent memory:** Conversation history management, context window compaction, and structured working memory keep agents effective across many steps.
+9. **Debugging agents:** Trace logging, step-by-step inspection, and common failure patterns help you diagnose and fix agent issues.
+10. **Production termination:** Beyond max steps, production agents check token budgets, abort signals, error thresholds, and stuck detection (repeated identical tool calls) on every iteration.
+11. **Tool orchestration:** When the model returns multiple tool calls, the orchestrator decides whether to run them sequentially or in parallel, using `Promise.allSettled` for per-tool error handling.
+12. **Extended thinking:** Modern models support explicit thinking tokens that improve decision quality for complex tasks, at the cost of additional token usage.
+13. **Plan and build modes:** Behavioral constraints come from tool selection, not prompts — a plan-mode agent literally cannot write files because the write tool is not available.
+14. **Per-agent step limits:** Different agent types need different max step values based on expected task complexity, from 10 steps for lightweight subagents to 200 for primary agents.
+15. **Hidden system agents:** Compaction, titling, and summarization agents run invisibly to maintain the system, using their own context and tools.
+16. **Production trace logging:** Structured trace events (tool calls, results, timing, token usage) enable post-hoc debugging and observability across agent runs.
+
+In Module 15, you will extend these patterns to build systems with multiple agents that coordinate, delegate, and communicate to solve complex tasks.
 
 ---
 
@@ -1376,28 +1411,3 @@ describe('Exercise 14: Tool Orchestration', () => {
 ```
 
 > **Local Alternative (Ollama):** ReAct agents work with `ollama('qwen3.5')`, which supports tool calling. The agent loop, observation-action cycles, and `stopWhen: stepCountIs()` are provider-agnostic. Local agents are slower but fully private. For complex reasoning tasks, consider `ollama('qwen3.5:cloud')` or `ollama('deepseek-r1')` for better planning capabilities.
-
----
-
-## Summary
-
-In this module, you learned:
-
-1. **What an agent is:** An LLM plus tools plus a loop. The Vercel AI SDK's `stopWhen: stepCountIs()` provides the simplest agent loop, but custom loops give you more control.
-2. **The ReAct pattern:** Think, act, observe — the fundamental cycle that makes agents effective. System prompts encourage explicit reasoning before tool use.
-3. **Agent loop implementation:** How to build a custom loop with step tracking, message management, and callbacks for observability.
-4. **Planning vs reacting:** Reactive agents work step by step; planning agents create a plan first. Choose based on task complexity and structure.
-5. **Tool selection:** Good tool descriptions, typed parameters, and system prompt guidance help agents choose the right tool.
-6. **Observation processing:** Structured tool results, summarization of large observations, and helpful error messages improve agent accuracy.
-7. **Termination conditions:** Max steps, stuck detection, error thresholds, and token budgets prevent runaway agents.
-8. **Agent memory:** Conversation history management, context window compaction, and structured working memory keep agents effective across many steps.
-9. **Debugging agents:** Trace logging, step-by-step inspection, and common failure patterns help you diagnose and fix agent issues.
-10. **Production termination:** Beyond max steps, production agents check token budgets, abort signals, error thresholds, and stuck detection (repeated identical tool calls) on every iteration.
-11. **Tool orchestration:** When the model returns multiple tool calls, the orchestrator decides whether to run them sequentially or in parallel, using `Promise.allSettled` for per-tool error handling.
-12. **Extended thinking:** Modern models support explicit thinking tokens that improve decision quality for complex tasks, at the cost of additional token usage.
-13. **Plan and build modes:** Behavioral constraints come from tool selection, not prompts — a plan-mode agent literally cannot write files because the write tool is not available.
-14. **Per-agent step limits:** Different agent types need different max step values based on expected task complexity, from 10 steps for lightweight subagents to 200 for primary agents.
-15. **Hidden system agents:** Compaction, titling, and summarization agents run invisibly to maintain the system, using their own context and tools.
-16. **Production trace logging:** Structured trace events (tool calls, results, timing, token usage) enable post-hoc debugging and observability across agent runs.
-
-In Module 15, you will extend these patterns to build systems with multiple agents that coordinate, delegate, and communicate to solve complex tasks.
