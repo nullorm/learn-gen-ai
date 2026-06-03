@@ -2,7 +2,7 @@
 import { RANKS, XP, PARTS, PART_BADGES, MODULE_NAMES, type ProgressState } from './progress-types.js'
 
 export function getRank(xp: number): string {
-  let rank = RANKS[0].name
+  let rank: string = RANKS[0].name
   for (const r of RANKS) {
     if (xp >= r.xp) rank = r.name
   }
@@ -92,7 +92,7 @@ export function checkBadges(state: ProgressState): string[] {
   // Part completion badges
   for (const [part, { modules }] of Object.entries(PARTS)) {
     if (modules.every(m => state.modules[String(m)]?.status === 'completed')) {
-      const badgeName = PART_BADGES[part].toLowerCase().replace(/ /g, '_')
+      const badgeName = PART_BADGES[part]!.toLowerCase().replace(/ /g, '_')
       if (addBadge(state, badgeName)) newBadges.push(badgeName)
     }
   }

@@ -73,7 +73,7 @@ describe('recordQuiz', () => {
     const state = freshState()
     recordQuiz(state, 1, 4, 5)
     expect(state.xp).toBe(80)
-    expect(state.modules['1'].quiz_score).toBe(4)
+    expect(state.modules['1']!.quiz_score).toBe(4)
   })
   test('awards bonus for perfect quiz', () => {
     const state = freshState()
@@ -87,7 +87,7 @@ describe('recordExercise', () => {
     const state = freshState()
     recordExercise(state, 1, 1)
     expect(state.xp).toBe(30)
-    expect(state.modules['1'].exercises).toEqual([1])
+    expect(state.modules['1']!.exercises).toEqual([1])
   })
   test('does not double-count same exercise', () => {
     const state = freshState()
@@ -101,7 +101,7 @@ describe('completeModule', () => {
   test('marks module completed and awards XP', () => {
     const state = freshState()
     completeModule(state, 1)
-    expect(state.modules['1'].status).toBe('completed')
+    expect(state.modules['1']!.status).toBe('completed')
     expect(state.xp).toBe(100)
   })
 })

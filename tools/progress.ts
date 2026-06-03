@@ -83,7 +83,7 @@ function main(): void {
 
   switch (command) {
     case 'start': {
-      const moduleNum = parseInt(args[1], 10)
+      const moduleNum = parseInt(args[1] ?? '', 10)
       if (!MODULE_NAMES[moduleNum]) {
         console.error(`Unknown module: ${moduleNum}`)
         process.exit(1)
@@ -93,9 +93,9 @@ function main(): void {
       break
     }
     case 'quiz': {
-      const moduleNum = parseInt(args[1], 10)
-      const score = parseInt(args[2], 10)
-      const total = parseInt(args[3], 10)
+      const moduleNum = parseInt(args[1] ?? '', 10)
+      const score = parseInt(args[2] ?? '', 10)
+      const total = parseInt(args[3] ?? '', 10)
       if (!MODULE_NAMES[moduleNum] || isNaN(score) || isNaN(total)) {
         console.error('Usage: quiz <module> <score> <total>')
         process.exit(1)
@@ -106,8 +106,8 @@ function main(): void {
       break
     }
     case 'exercise': {
-      const moduleNum = parseInt(args[1], 10)
-      const exerciseNum = parseInt(args[2], 10)
+      const moduleNum = parseInt(args[1] ?? '', 10)
+      const exerciseNum = parseInt(args[2] ?? '', 10)
       if (!MODULE_NAMES[moduleNum] || isNaN(exerciseNum)) {
         console.error('Usage: exercise <module> <exercise_num>')
         process.exit(1)
@@ -117,7 +117,7 @@ function main(): void {
       break
     }
     case 'complete': {
-      const moduleNum = parseInt(args[1], 10)
+      const moduleNum = parseInt(args[1] ?? '', 10)
       if (!MODULE_NAMES[moduleNum]) {
         console.error(`Unknown module: ${moduleNum}`)
         process.exit(1)

@@ -221,7 +221,7 @@ Build a class that maintains a conversation with a cached prefix. The constructo
 
 The `send` method pushes the user message onto the internal messages array, calls `generateText` with the system content followed by all accumulated messages, pushes the assistant response, and returns both the text and a cache-hit boolean. How does the growing conversation history after the cached prefix affect cache behavior? (Hint: only the prefix is cached — the conversation turns after it are always computed fresh.)
 
-> **Advanced Note:** With Anthropic's explicit caching, you would add `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` to the system message content block. Anthropic also has minimum size requirements (1024 tokens for Claude Sonnet 4, 2048 tokens for Claude Haiku 4.5) — content smaller than this threshold will not be cached. Groq's minimum is lower (128–1024 tokens depending on model) and requires no explicit markers.
+> **Advanced Note:** With Anthropic's explicit caching, you would add `providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } }` to the system message content block. Anthropic also has minimum size requirements (1024 tokens for Claude Sonnet 4.6, 2048 tokens for Claude Haiku 4.5) — content smaller than this threshold will not be cached. Groq's minimum is lower (128–1024 tokens depending on model) and requires no explicit markers.
 
 ### Comparing Caching Approaches
 

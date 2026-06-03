@@ -19,13 +19,13 @@
 
 The world is not text-only. The documents in your RAG pipeline contain diagrams, screenshots, charts, and photos. Your users paste images of error messages instead of typing them. Your knowledge base includes architecture diagrams, whiteboard photos, and PDF scans that are just images wrapped in a PDF container.
 
-Until recently, all of this visual information was invisible to LLMs. You either ignored it (losing valuable context) or ran it through OCR (losing structure and meaning). Multi-modal models change this fundamentally. Claude, GPT-5.4, and Gemini can look at an image and understand what it shows — not just the text in it, but the layout, the relationships, the visual structure.
+Until recently, all of this visual information was invisible to LLMs. You either ignored it (losing valuable context) or ran it through OCR (losing structure and meaning). Multi-modal models change this fundamentally. Claude, GPT-5.5, and Gemini can look at an image and understand what it shows — not just the text in it, but the layout, the relationships, the visual structure.
 
 This module teaches you how to send images to multi-modal models via the Vercel AI SDK, build practical vision applications (OCR, diagram understanding, form extraction), combine visual and textual inputs, and handle audio through transcription pipelines. You will also learn how to build multi-modal RAG systems that can retrieve and reason over both text and images.
 
 The practical impact is immediate. Instead of asking users to describe their error, you can ask them to screenshot it. Instead of manually transcribing whiteboard diagrams, you can photograph them. Instead of ignoring the charts in a report, you can extract the data they contain.
 
-> **Provider Tip:** Vision/image features require a multi-modal provider. This module uses Anthropic (`claude-sonnet-4-20250514`). Mistral's Pixtral models or OpenAI GPT-4 are alternatives.
+> **Provider Tip:** Vision/image features require a multi-modal provider. This module uses Anthropic (`claude-sonnet-4-6`). Mistral's Pixtral models or OpenAI GPT-5.5 are alternatives.
 
 ---
 
@@ -49,8 +49,8 @@ Multi-modal models accept multiple input types and reason across them. Current c
 
 | Modality             | Models                           | What They Can Do                                                               |
 | -------------------- | -------------------------------- | ------------------------------------------------------------------------------ |
-| **Text + Image**     | Claude Sonnet 4, GPT-5.4, Gemini | See photos, diagrams, charts, screenshots, handwriting                         |
-| **Text + Audio**     | GPT-5.4-audio, Gemini            | Hear speech, music, sound effects                                              |
+| **Text + Image**     | Claude Sonnet 4.6, GPT-5.5, Gemini | See photos, diagrams, charts, screenshots, handwriting                         |
+| **Text + Audio**     | GPT-5.5, Gemini            | Hear speech, music, sound effects                                              |
 | **Text + Video**     | Gemini (limited)                 | Watch short video clips                                                        |
 | **Image Generation** | DALL-E, Stable Diffusion         | Generate images from text (not covered — this module focuses on understanding) |
 
@@ -92,7 +92,7 @@ Think about: what should happen when no model matches all requested modalities? 
 
 > **Beginner Note:** The course default provider is Mistral, but Mistral does not support image or audio input. This module uses Anthropic for image examples because Claude has strong vision capabilities. If you are using Anthropic, you have image input but not audio. For audio, you will need the OpenAI provider or a separate transcription step (Section 5).
 >
-> **Provider Tip:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-20250514')` for all image-related calls. If you prefer a different provider, OpenAI (`openai('gpt-4o')`) and Mistral's Pixtral (`mistral('pixtral-large-latest')`) also support image input. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
+> **Provider Tip:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-6')` for all image-related calls. If you prefer a different provider, OpenAI (`openai('gpt-5.5')`) and Mistral's Pixtral (`mistral('pixtral-large-latest')`) also support image input. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
 
 ---
 
@@ -135,7 +135,7 @@ For `analyzeImageFile`: read the file into a buffer and pass the buffer directly
 
 For `compareImages`: read all images into buffers, spread them as separate `{ type: 'image' }` content parts, then append a single `{ type: 'text' }` part with the prompt. This lets the model see multiple images in one message.
 
-All functions should call `generateText` with `anthropic('claude-sonnet-4-20250514')` and return `result.text`.
+All functions should call `generateText` with `anthropic('claude-sonnet-4-6')` and return `result.text`.
 
 ### Image Validation Utility
 
