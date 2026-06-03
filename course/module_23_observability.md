@@ -11,6 +11,8 @@
 - Configure alerting for cost spikes, error rate increases, and latency degradation
 - Handle privacy considerations when logging prompts and completions that may contain PII
 
+> *Module 23 opens **Part VI: Production** — the final stretch, earning the **Production Ready** badge.*
+
 ---
 
 ## Why Should I Care?
@@ -293,6 +295,8 @@ How would you handle the case where `getSummary` is called with no entries recor
 ### Distributed Tracing for LLM Pipelines
 
 A single user request to an LLM application often involves multiple steps: retrieval, reranking, generation, tool calls, validation. Tracing connects all these steps into a single trace so you can see the full journey of a request.
+
+> **Decision:** Trace everything in development; sample in production. Full tracing on every request at scale is expensive (storage, ingestion, latency). Sample at 1–10% for the baseline — but always trace 100% of errors and slow requests, because those are the ones you'll actually open. Set the rate by what you can afford to store, not by what's nice to have.
 
 The core data model for tracing is the **span** -- one unit of work within a trace:
 
@@ -700,6 +704,8 @@ Why is cooldown important? What would happen without it during a sustained outag
 
 Logging LLM interactions creates a tension between debuggability and privacy. Full prompt/response logs are invaluable for debugging but may contain PII, sensitive business data, or information subject to regulatory constraints.
 
+> **Gotcha:** The fastest way to turn an observability win into an incident is to log raw prompts. They contain whatever the user typed — PII, secrets, proprietary data — now sitting in your logging pipeline, your dashboards, and your third-party log vendor, often for years. Redact at the *source* (before the log call), not in the dashboard. When you only need to correlate, log a content hash, not the content.
+
 ### PII Detection Patterns
 
 Start by defining regex patterns for common PII types. Each pattern needs a `name`, a `pattern` (RegExp with the `g` flag), and a `replacement` string:
@@ -841,7 +847,11 @@ Profile your pipeline with real queries and identify the bottleneck. Often it is
 
 **Pattern:** Wrap each pipeline stage in a timed span (using OTel or a simple timer). Log the duration of each stage and compute the percentage of total time each stage consumes. The stage taking the most time is where optimization effort should focus.
 
-## Section 12: Enhanced Structured Logging
+## Going Further: Observability Tooling
+
+Sections 1–11 are the observability core — logging, tracing, metrics, dashboards, alerting, privacy, OpenTelemetry. These last four are extra tooling you layer on: richer logs, context visualization, code-quality signals, and shareable sessions.
+
+### Enhanced Structured Logging
 
 Upgrade from basic logging to production-grade structured logs. Every log entry should be a JSON object with:
 
@@ -866,7 +876,7 @@ logger.info({
 
 Structured JSON logs are machine-parseable, enabling automated alerting, dashboarding, and anomaly detection. Plain text logs require regex parsing and break when the format changes.
 
-## Section 13: Context Visualization
+### Context Visualization
 
 Make the abstract "200K token window" tangible by visualizing what occupies it. A context visualizer shows the composition of the context window as a simple bar or table:
 
@@ -881,9 +891,9 @@ Context Window Usage (42,000 / 200,000 tokens - 21%)
 
 This visualization connects to every earlier module: you can see your system prompt size (Module 2), conversation history (Module 4), tool definitions (Module 6), and RAG context (Module 10) all competing for space.
 
-## Section 14: LSP Diagnostics as Observability Signal
+### Code-Quality Signals
 
-(See Module 10 Section 11 for LSP background.)
+(LSP appears three times across the course — in Module 10 §11 as a *retrieval* source, in Module 19 §13 as an *evaluator*, and here as a *continuous observability metric*. Same tool, three lenses.)
 
 Language Server Protocol (LSP) diagnostics provide a continuous, zero-cost quality signal for generated code. After any code generation or modification, TypeScript compiler diagnostics reveal type errors, missing imports, and unused variables immediately — without running a test suite or paying for an LLM-as-judge call.
 
@@ -891,7 +901,7 @@ Language Server Protocol (LSP) diagnostics provide a continuous, zero-cost quali
 
 This is an always-on quality signal: unlike tests (which must be run explicitly) or LLM-as-judge (which costs tokens), LSP diagnostics are free and immediate after initial setup.
 
-## Section 15: Session Sharing for Debugging
+### Session Sharing for Debugging
 
 Agent conversations are shareable debug artifacts. When an agent produces a bad result, the team can review the exact sequence of decisions — prompts, tool calls, results, and responses — rather than trying to reproduce the issue.
 
