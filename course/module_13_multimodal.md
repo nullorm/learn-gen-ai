@@ -25,8 +25,6 @@ This module teaches you how to send images to multi-modal models via the Vercel 
 
 The practical impact is immediate. Instead of asking users to describe their error, you can ask them to screenshot it. Instead of manually transcribing whiteboard diagrams, you can photograph them. Instead of ignoring the charts in a report, you can extract the data they contain.
 
-> **Provider Tip:** Vision/image features require a multi-modal provider. This module uses Anthropic (`claude-sonnet-4-6`). Mistral's Pixtral models or OpenAI GPT-5.5 are alternatives.
-
 ---
 
 ## Connection to Other Modules
@@ -90,9 +88,7 @@ The function should find the first capability entry matching all requested modal
 
 Think about: what should happen when no model matches all requested modalities? What if the preferred provider does not support video but another does?
 
-> **Beginner Note:** The course default provider is Mistral, but Mistral does not support image or audio input. This module uses Anthropic for image examples because Claude has strong vision capabilities. If you are using Anthropic, you have image input but not audio. For audio, you will need the OpenAI provider or a separate transcription step (Section 5).
->
-> **Provider Tip:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-6')` for all image-related calls. If you prefer a different provider, OpenAI (`openai('gpt-5.5')`) and Mistral's Pixtral (`mistral('pixtral-large-latest')`) also support image input. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
+> **Provider Tip:** Vision/image input requires a multi-modal provider. The code in this module uses `anthropic('claude-sonnet-4-6')` for all image-related calls; OpenAI (`openai('gpt-5.5')`) also works. The course default is Mistral — Mistral's default text models don't accept images, but Pixtral (`mistral('pixtral-large-latest')`) does. None of these vision models takes audio input: for audio you need the OpenAI provider or the separate transcription step in Section 5. Non-vision code (text-only analysis, audio post-processing) continues to use your default provider.
 
 ---
 
@@ -159,7 +155,7 @@ For `resizeForVision`: use the `sharp` package (`bun add sharp`) to read image m
 
 > **Beginner Note:** Start with the file-based method (`analyzeImageFile`). It is the most straightforward: read the file, pass the buffer. URL-based input is useful when images are hosted online. Base64 is useful when you receive images from APIs or user uploads as strings.
 
-> **Advanced Note:** Image token costs are significant. A single high-resolution image can cost 1600+ tokens — equivalent to about 1200 words of text. For applications that process many images, resize them to the minimum resolution that preserves the information you need. A screenshot at 800x600 pixels costs much less than the same screenshot at 4K resolution, and for most analysis tasks, the results are identical.
+> **Advanced Note:** A single high-resolution image can cost 1,600+ tokens (about 1,200 words of text) — the Going Further section at the end of this module covers image token costs and resizing strategy in detail.
 
 ---
 
@@ -525,7 +521,7 @@ Why is the confidence field important for chart extraction specifically? How doe
 
 Multi-modal models have systematic failure modes that you need to know about and design around.
 
-> **Gotcha:** Vision models hallucinate *confidently*. A model will read a number off a blurry chart and state it as fact — no hedging, no "I'm not sure." The failure mode isn't refusal, it's plausible fabrication. For anything that matters (numbers, dates, IDs), build in verification or a confidence gate; never trust a single uncorroborated read.
+> **Gotcha:** Vision models hallucinate *confidently*. A model will read a number off a blurry chart and state it as fact — no hedging, no "I'm not sure." The failure mode isn't refusal, it's plausible fabrication. For anything that matters (numbers, dates, IDs), build in verification or a confidence gate; never trust a single uncorroborated read — and never use extracted financial, legal, or medical data without human verification.
 
 Create `src/multimodal/limitations.ts`. Start by defining and exporting a `KNOWN_LIMITATIONS` array of objects with this shape:
 
@@ -585,8 +581,6 @@ function estimateImageCost(widthPx: number, heightPx: number, provider?: 'anthro
 
 Implement the token estimation logic based on image tiling. Most providers tile images into fixed blocks. For Anthropic: images up to 384px on the longest side cost about 170 tokens (thumbnail), up to 768px cost about 800 tokens (medium), and larger images are tiled into 1568x1568 blocks at about 1600 tokens each. Compute the cost in USD based on the provider's input token pricing (e.g., $3/M for Claude Sonnet). Generate a recommendation string: suggest resizing if tokens exceed 3200, or suggest higher resolution if tokens are below 200 (text may be hard to read).
 
-> **Beginner Note:** The biggest gotcha with multi-modal models is hallucinated text — the model "reads" text that is not actually in the image. Always verify critical extracted text (names, numbers, codes) against the original image. Never trust OCR output from a multi-modal model for financial, legal, or medical data without human verification.
-
 > **Advanced Note:** For production applications, build a confidence-based workflow: extract with the multi-modal model, flag low-confidence items, route those to human reviewers. This gives you the speed of automation with the accuracy of human oversight. Track accuracy metrics over time to identify systematic failure patterns in your specific domain.
 
 ---
@@ -622,7 +616,7 @@ interface ImageValidationResult {
 
 The validation step should detect format from the file header (magic bytes), not the file extension. A `.png` file might actually be a JPEG. Check dimensions and file size against configurable limits. Return actionable error messages: "Image is 8000x6000 — max allowed is 4096x4096" is far more useful than "Invalid image."
 
-For resizing, maintain the aspect ratio and cap the longest dimension. Most vision models get diminishing returns above 1568px on the longest side. A 4000x3000 photo resized to 1568x1176 looks identical to the model but uses significantly fewer tokens.
+For resizing, this stage is exactly your `resizeForVision` from Section 2 — cap the longest dimension while maintaining aspect ratio; most vision models get diminishing returns above 1568px on the longest side. A 4000x3000 photo resized to 1568x1176 looks identical to the model but uses significantly fewer tokens.
 
 > **Beginner Note:** You do not need a heavy image processing library for basic validation. Reading the first few bytes of a file tells you the format (PNG starts with `\x89PNG`, JPEG with `\xFF\xD8`). For resizing, the `sharp` npm package is the standard choice in Node.js/Bun.
 
@@ -640,23 +634,14 @@ The token cost depends on resolution. Most providers tile large images into fixe
 
 | Image Size | Approximate Tokens | Equivalent Text |
 | ---------- | ------------------ | --------------- |
-| 256x256    | ~200               | ~150 words      |
+| 256x256    | ~170               | ~130 words      |
 | 768x768    | ~800               | ~600 words      |
 | 1568x1568  | ~1,600             | ~1,200 words    |
 | 3000x3000  | ~6,400             | ~4,800 words    |
 
 The practical implication: resizing a 3000x3000 image to 1568x1568 cuts token cost by 75% with negligible quality loss for most tasks (OCR, diagram understanding, screenshot analysis). Only keep full resolution when fine visual detail matters — reading tiny text, identifying small UI elements, or analyzing detailed charts.
 
-```typescript
-// Quick token estimate for planning
-const estimateTokens = (width: number, height: number): number => {
-  const maxDim = Math.max(width, height)
-  if (maxDim <= 512) return 200
-  if (maxDim <= 768) return 800
-  const tiles = Math.ceil(width / 1568) * Math.ceil(height / 1568)
-  return tiles * 1600
-}
-```
+You already built this estimator: `estimateImageCost` from Section 8 encodes exactly these tiers — ~170 tokens for a thumbnail (longest side up to 384px), ~800 for a medium image (up to 768px), then ~1,600 per 1568x1568 tile beyond that — and adds a USD cost and a resize recommendation on top. Reuse it for planning instead of re-deriving the numbers.
 
 When building multi-modal applications, track image token usage separately from text tokens. This lets you identify which images are driving cost and whether resizing would help. A dashboard that shows "image tokens: 80% of total input" tells you exactly where to optimize.
 
@@ -766,50 +751,39 @@ You are building a support system where users paste screenshots of error message
 
 ---
 
-### Question 5 (Hard)
-
-Your RAG system processes a mix of 1000 text documents and 200 architecture diagrams. Users ask questions like "Which service handles payment processing?" that could be answered by either text or diagrams. What is the most cost-effective approach to multi-modal RAG?
-
-- A) Send all 200 diagram images with every query
-- B) Generate text descriptions of all diagrams once, embed the descriptions, and include them in the same text-based vector index as the documents. Only fetch and send actual images to the model when a diagram is retrieved
-- C) Ignore the diagrams and rely only on text documents
-- D) Convert all text documents to images and use a vision-only approach
-
-**Answer: B** — Generating descriptions once is a fixed upfront cost. After that, the descriptions live in the same vector index as your text chunks, making retrieval uniform and cheap. When a diagram description is retrieved as relevant, you fetch the actual image and include it in the LLM context alongside text chunks. This means you only pay the image token cost for the 1-3 diagrams actually relevant to each query, not all 200. Option A is extremely expensive (200 images per query), C loses valuable information, and D is wasteful and less accurate.
-
----
-
-### Question 6 (Medium)
+### Question 5 (Medium)
 
 Why should an image preprocessing pipeline validate file format using magic bytes (file header) rather than the file extension?
 
-a) Magic bytes are faster to read than file extensions
-b) A file's extension can be wrong — a `.png` file might actually be a JPEG. Reading the first few bytes of the file reveals the true format, preventing processing errors and potential security issues
-c) File extensions are not available on all operating systems
-d) Magic bytes provide better image quality
+- A) Magic bytes are faster to read than file extensions
+- B) A file's extension can be wrong — a `.png` file might actually be a JPEG. Reading the first few bytes of the file reveals the true format, preventing processing errors and potential security issues
+- C) File extensions are not available on all operating systems
+- D) Magic bytes provide better image quality
 
-**Answer: B**
-
-**Explanation:** File extensions are user-controlled metadata that can be incorrect, either by accident (renaming a file) or intentionally (disguising file types). The file header (magic bytes) is embedded in the file itself — PNG files start with `\x89PNG`, JPEGs with `\xFF\xD8`. Validating via magic bytes ensures you process the file with the correct decoder and avoids cryptic errors when a "PNG" file is actually a JPEG or vice versa.
-
----
-
-### Question 7 (Hard)
-
-Your multi-modal RAG system processes a mix of text documents and architectural diagrams. A user asks "Which service handles authentication?" and a relevant diagram is retrieved. You need to include the diagram in the LLM context. What is the most token-efficient approach?
-
-a) Always send the full-resolution original image
-b) Send only the text description that was generated during indexing, without the image
-c) Resize the image to the model's optimal resolution (around 1568px on the longest side) before including it — this reduces token cost by up to 75% while preserving enough detail for the model to read labels and understand the architecture
-d) Convert the diagram to ASCII art
-
-**Answer: C**
-
-**Explanation:** Vision models get diminishing returns above approximately 1568px on the longest dimension. A 4000x3000 architecture diagram resized to 1568x1176 still has enough resolution for the model to read service names, arrows, and labels. The token savings are substantial — roughly 75% fewer image tokens. Option B loses visual information that the text description may not fully capture (spatial relationships, connections). Option A wastes tokens on resolution the model cannot effectively use.
+**Answer: B** — File extensions are user-controlled metadata that can be incorrect, either by accident (renaming a file) or intentionally (disguising file types). The file header (magic bytes) is embedded in the file itself — PNG files start with `\x89PNG`, JPEGs with `\xFF\xD8`. Validating via magic bytes ensures you process the file with the correct decoder and avoids cryptic errors when a "PNG" file is actually a JPEG or vice versa.
 
 ---
 
 ## Exercises
+
+### Fixture Prep: Generate the Test Images
+
+The exercise tests below reference images under `test-images/`. Generate them once, in code — deterministic pixels, no binary assets to download. Write a small script (e.g., `tools/make-test-images.ts`, run with `bun run tools/make-test-images.ts`) that renders each image and skips files that already exist, so it is safe to re-run. Since `sharp` (installed in Section 2) rasterizes SVG, each PNG can be an SVG string of large text and simple shapes piped through `sharp(Buffer.from(svg)).png().toFile(...)`. Draw the text big — the vision model has to read it.
+
+The eight files the exercise tests expect:
+
+| File                  | Contents                                                                                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sample.png`          | A mock error screenshot: an app title bar plus a red banner reading "ERROR 429" / "TOO MANY REQUESTS" (Exercise 1's image scenarios key off this error) |
+| `table.png`           | A small table: header row (e.g., NAME / QTY / CITY), two data rows, and rule lines between columns                                                      |
+| `chart.png`           | A labeled bar chart: title, axes, and four bars A–D at clearly different heights                                                                        |
+| `blurry-chart.png`    | The same idea at ~120x90 px with no labels — recognizable as a chart, details unreadable (drives Exercise 2's uncertainty flagging)                     |
+| `small-valid.png`     | A small solid-color PNG (e.g., 80x60)                                                                                                                   |
+| `large-4000x3000.png` | A 4000x3000 solid fill — only the dimensions matter, and a solid fill keeps the file size small                                                         |
+| `actually-jpeg.png`   | Real JPEG bytes saved under a `.png` name — `sharp(...).jpeg().toFile('test-images/actually-jpeg.png')` (Exercise 3's magic-byte check)                 |
+| `document.bmp`        | An unsupported format — a minimal hand-written buffer starting with the ASCII `BM` signature is enough, since Exercise 3 only reads the header          |
+
+---
 
 ### Exercise 1: Multi-modal Q&A System
 
@@ -818,11 +792,11 @@ d) Convert the diagram to ASCII art
 **Specification:**
 
 1. Create `src/exercises/m13/ex01-multimodal-qa.ts`
-2. Implement a `multiModalQA` function that:
-   - Accepts a question (string) and an optional image path
-   - If an image is provided, includes it in the context
+2. Implement a `multiModalQA(question: string, imagePath?: string, textContext?: string)` function that:
+   - Accepts a question, an optional image path, and an optional `textContext` string of reference documentation (the tests exercise all three combinations)
+   - If an image is provided, includes it in the context; if `textContext` is provided, includes it as a labeled reference block
    - Uses a system prompt appropriate for mixed text/image input
-   - Returns a structured response with answer, confidence, and source (text vs image)
+   - Returns a structured response with answer, confidence, and source — `'text_context'`, `'image_analysis'`, or `'combined'`, derived from which inputs were supplied
 3. Implement three demo scenarios:
    - **Text-only question:** "What is the refund policy?" (answered from text context)
    - **Image-only question:** "What error is shown?" (with a screenshot)
@@ -933,7 +907,7 @@ describe('Exercise 13: Image Data Extraction', () => {
 
 ### Exercise 3: Image Preprocessing Pipeline
 
-**Objective:** Build a preprocessing pipeline that validates, resizes, and optimizes images before sending them to a multi-modal model.
+**Objective:** Grow the `validateImage` and `resizeForVision` utilities you built in Section 2 (`src/multimodal/image-utils.ts`) into a full preprocessing pipeline that validates, resizes, and optimizes images before they reach a multi-modal model. Reuse and extend that code — do not build a parallel pipeline from scratch.
 
 **Specification:**
 
@@ -966,9 +940,9 @@ interface PreprocessResult {
 ```
 
 4. Implement the pipeline:
-   - **Validate format** — detect actual format from file header bytes (not extension). Reject unsupported formats with a clear error message
+   - **Validate format** — upgrade Section 2's `validateImage` check: detect the actual format from file header bytes (not the extension) and reject unsupported formats with a clear error message
    - **Check dimensions** — read image width and height. If the longest dimension exceeds `maxDimension`, flag for resize
-   - **Resize** — resize to fit within `maxDimension` while maintaining aspect ratio. Use the `sharp` package or equivalent
+   - **Resize** — reuse your `resizeForVision` from Section 2 to fit within `maxDimension` while maintaining aspect ratio (it already uses `sharp`)
    - **Check file size** — reject files that exceed `maxFileSizeBytes` even after resize
    - **Output** — write the processed image to a temp file and return the path
 
@@ -1044,7 +1018,7 @@ interface ExperimentResult {
 
 4. For each resolution in the `resolutions` array:
    - Resize the image to that max dimension (reuse your preprocessing pipeline from Exercise 3 or build a simpler version)
-   - Estimate the token cost using the `estimateImageCost` function from Section 7
+   - Estimate the token cost using the `estimateImageCost` function from Section 8
    - Send the resized image to a multi-modal model with the same question
    - Record the response, token estimate, and duration
 
@@ -1080,6 +1054,6 @@ describe('Exercise 13: Token Cost Experiment', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** For vision tasks, use `ollama('ministral-3')` which has native vision support for image understanding, screenshot analysis, and visual question answering. For audio transcription, Whisper can be run locally via `whisper.cpp`. Multi-modal RAG works with local vision models for image understanding combined with `qwen3-embedding:0.6b` for text embeddings.
+> **Local Alternative (Ollama):** For vision tasks, use an established local vision model such as `ollama('qwen2.5vl')` or `ollama('llama3.2-vision')` — both accept image content parts for image understanding, screenshot analysis, and visual question answering. For audio transcription, Whisper can be run locally via `whisper.cpp`. Multi-modal RAG works fully offline: the local vision model writes the image descriptions and `ollama.embedding('qwen3-embedding:0.6b')` embeds them.
 
 ---

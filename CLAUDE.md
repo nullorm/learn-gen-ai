@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A 24-module applied LLM engineering course taught interactively via Claude Code. Students build real LLM applications in TypeScript using the Vercel AI SDK with multi-provider support (Mistral, Groq, Claude, OpenAI, Ollama). Each module is launched with `/module-N` and follows a teach → quiz → exercises flow.
+A 27-module applied LLM engineering course taught interactively via Claude Code. Students build real LLM applications in TypeScript using the Vercel AI SDK with multi-provider support (Mistral, Groq, Claude, OpenAI, Ollama). Each module is launched with `/module-N` and follows a teach → quiz → exercises flow.
 
 ## Commands
 
@@ -25,17 +25,25 @@ bun run tools/progress.ts complete N  # Mark module N complete
 Students build code incrementally across modules. Later modules import from earlier ones:
 
 ```
-src/core/         → Provider setup, model configuration, shared utilities
-src/prompts/      → Prompt templates, management, versioning
-src/structured/   → Zod schemas, structured output patterns
-src/memory/       → Conversation management, context strategies
-src/streaming/    → Stream handlers, SSE utilities
-src/tools/        → Tool definitions, execution patterns
-src/embeddings/   → Embedding generation, similarity search
-src/rag/          → Chunking, retrieval, RAG pipelines
-src/agents/       → Agent loops, multi-agent orchestration
-src/eval/         → Evaluation framework, LLM-as-judge
-src/safety/       → Guardrails, input/output validation
+src/core/                → Provider setup, model configuration, shared utilities
+src/prompts/             → Prompt templates, management, versioning
+src/structured/          → Zod schemas, structured output patterns
+src/memory/              → Conversation management, context strategies
+src/streaming/           → Stream handlers, SSE utilities
+src/tools/               → Tool definitions, execution patterns
+src/embeddings/          → Embedding generation, similarity search
+src/rag/                 → Chunking, retrieval, RAG pipelines
+src/advanced-rag/        → Hybrid search, reranking, HyDE
+src/document-processing/ → Extraction, structure-aware chunking, metadata
+src/knowledge-graphs/    → Entity extraction, graph construction, graph RAG
+src/multimodal/          → Vision, image understanding, multi-modal RAG
+src/agents/              → Agent loops, multi-agent orchestration
+src/eval/                → Evaluation framework, LLM-as-judge
+src/finetune/            → Fine-tuning datasets, cost models, evaluation
+src/safety/              → Guardrails, input/output validation
+src/cost/                → Semantic caching, model routing, token budgets
+src/observability/       → Logging, tracing, metrics, dashboards
+src/deployment/          → Server, health checks, rate limiting
 ```
 
 ### Module Teaching System
@@ -47,7 +55,15 @@ src/safety/       → Guardrails, input/output validation
 
 ### Test Structure
 
-Tests mirror `src/` under `tests/`. Test runner config in `bunfig.toml` sets root to `./tests`. Uses `bun:test` exclusively.
+Tests mirror `src/` under `tests/`. Test runner config in `bunfig.toml` sets root to `./tests`. Uses `bun:test` for all modules **except** the framework modules below.
+
+### Framework Modules (15, 18, 19)
+
+Modules 15 (Durable Workflows / Workflow SDK), 18 (Eve Fundamentals), and 19 (Eve in Production) teach higher-level Vercel frameworks that don't fit the `src/` + `bun test` convention. They live in **isolated bun-workspace apps under `apps/`** (root `package.json` declares `"workspaces": ["apps/*"]`):
+
+- `apps/workflow-lab/` — Workflow SDK (`workflow@~4.5`, `@ai-sdk/workflow@1.x`, `@workflow/vitest`, `@workflow/swc-plugin`). The `'use workflow'`/`'use step'` directives need the SWC compiler, so tests use **`@workflow/vitest`** (not `bun:test`) — run `bun run test` from that dir.
+- `apps/eve-agent/` — Eve (`eve@~0.19`), **needs Node ≥24**. Tests are **`eve eval`** files under `evals/`, run with `bun x eve eval`. Ships a deterministic `mockModel` fixture so evals run offline. Wrinkle: a `mockModel` must borrow a *known* model identity (e.g. `anthropic/claude-sonnet-5`) so auto-compaction can find a context window; responses stay scripted.
+- Real-model usage stays **Mistral-direct** (`mistral('mistral-small-latest')`); the AI Gateway and Vercel-only Eve features (Connect, Agent Runs dashboard, Vercel Sandbox) are taught conceptually. Framework versions are **pinned** (both are young/pre-1.0). Runtime/build artifacts (`.workflow-data`, `.workflow-vitest`, `.eve`, `.output`) are gitignored.
 
 ## Code Conventions
 
@@ -56,7 +72,7 @@ Tests mirror `src/` under `tests/`. Test runner config in `bunfig.toml` sets roo
 - **ESM imports only** — no `require()`, always use `.js` extensions in relative imports (e.g., `from './provider.js'`)
 - **Ollama thinking mode** — Qwen3/3.5 models default to thinking mode which consumes all tokens in `<think>` tags. Disable via the model constructor: `ollama('qwen3.5', { think: false })`. The `ai-sdk-ollama` provider handles this natively
 - **Prettier** — no semicolons, single quotes, trailing commas (es5), 120 char width
-- **Vercel AI SDK patterns** — `generateText`, `streamText`, `Output.object()` for all LLM calls. Message type is `ModelMessage` (imported from `'ai'`). **Never use `CoreMessage`** — it was removed in earlier versions and no longer exists
+- **Vercel AI SDK patterns (v7)** — `generateText`, `streamText`, `Output.object()` for all LLM calls; read structured results from `result.output`. Message type is `ModelMessage` (imported from `'ai'`). **Never use `CoreMessage`** — it was removed and no longer exists. v7 idioms this course uses: `isStepCount(n)` (not `stepCountIs`) for `stopWhen`; the `instructions` field for the system prompt — a `role: 'system'` message inside `messages` is rejected unless you set `allowSystemInMessages: true` (used in the memory/caching modules); `onEnd`/`onStepEnd` stream callbacks (not `onFinish`/`onStepFinish`); `result.stream` (not `fullStream`); tool schemas use `inputSchema` (not `parameters`); `result.usage` now sums all steps (use `result.finalStep.usage` for the last step). `ImagePart` (`{ type: 'image', image }`) and `result.toUIMessageStreamResponse()` remain valid in v7
 - **Zod v4 patterns** — use top-level APIs: `z.int()`, `z.email()`, `z.url()`, `z.uuid()`, `z.iso.date()`. Chaining works: `z.int().min(1).max(10)`. Use Zod for all tool definitions, structured output, and validation
 - **Provider-agnostic** — default provider is Mistral (free tier: 1 RPS, 500K tokens/min, 1B tokens/month per model), with Groq, Anthropic, OpenAI, and Ollama as alternatives
 

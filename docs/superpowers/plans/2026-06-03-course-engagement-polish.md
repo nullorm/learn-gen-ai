@@ -1,5 +1,7 @@
 # Course Engagement & Consistency Pass — Implementation Plan
 
+> **Historical (pre-renumber):** this plan uses the old 24-module layout; module numbers and filenames here do not match the current 27-module course.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the 24-module course less tedious by varying the teaching cadence, taming bolted-on sections into a signposted `## Going Further` coda, and standardizing structure/terminology — without changing the teach→quiz→exercise flow, the student-builds philosophy, or any module numbers.

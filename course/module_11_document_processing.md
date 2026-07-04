@@ -33,7 +33,7 @@ This module extends the ingestion pipeline from **Module 9 (RAG Fundamentals)** 
 
 - **Module 8 (Embeddings & Similarity)** provides the embedding models used to convert processed chunks into vectors.
 - **Module 3 (Structured Output)** introduced the `generateText` with `Output.object` pattern used here for structured extraction.
-- **Module 12 (Knowledge Graphs)** builds on the entity and relationship extraction techniques introduced in Section 5.
+- **Module 12 (Knowledge Graphs)** builds on the entity extraction concepts from Section 4.
 - **Module 13 (Multi-modal)** extends document processing to images, diagrams, and audio.
 
 Think of this module as building the factory that produces the raw materials for your retrieval pipeline.
@@ -250,11 +250,12 @@ The naive approach to chunking is to split text at a fixed character count -- ev
 
 Recursive character splitting tries to split at natural boundaries, in order of preference:
 
-1. **Section breaks** (double newlines, heading boundaries)
-2. **Paragraph breaks** (single newlines)
-3. **Sentence breaks** (periods, question marks, exclamation marks)
-4. **Word breaks** (spaces)
-5. **Character breaks** (last resort)
+1. **Section breaks** (triple newlines)
+2. **Paragraph breaks** (double newlines)
+3. **Line breaks** (single newlines)
+4. **Sentence breaks** (periods, question marks, exclamation marks)
+5. **Word breaks** (spaces)
+6. **Character breaks** (last resort)
 
 > **Try it:** Run your splitter on a markdown doc with headings, then on the same text with every newline stripped out. Watch the chunk boundaries move — that's the recursion falling back from section breaks to sentences to raw characters. The structure you feed it determines the chunks you get back.
 
@@ -513,7 +514,7 @@ Build a specialized `extractInvoiceData` that wraps `extractKeyValuePairs` with 
 
 > **Beginner Note:** Structured extraction is most valuable for documents with consistent formats -- invoices, resumes, specifications, forms. For free-form text like blog posts or essays, metadata extraction (Section 4) is more appropriate.
 
-> **Advanced Note:** For high-volume extraction of consistent document types (e.g., processing 10,000 invoices), fine-tune a smaller model on your specific format rather than using a large general model. The cost difference is significant at scale. Module 20 covers fine-tuning.
+> **Advanced Note:** For high-volume extraction of consistent document types (e.g., processing 10,000 invoices), fine-tune a smaller model on your specific format rather than using a large general model. The cost difference is significant at scale. Module 23 covers fine-tuning.
 
 ---
 
@@ -554,7 +555,7 @@ Build `buildHierarchy` to create a tree of chunks from markdown:
 
 1. Create a document-level chunk (depth 0) with a preview of the first 500 characters.
 2. Walk lines, detecting headings. Map heading levels 1-2 to `'section'` and 3+ to `'subsection'`.
-3. Maintain a heading stack. When you encounter a heading, pop the stack to the correct parent level, then push the new heading. Use the stack to build `headingPath`.
+3. Reuse your Section 2 heading stack (the same pop-to-parent logic from `extractMarkdown`) to build `headingPath` — or consume the `MarkdownSection` tree it already produces.
 4. Accumulate content between headings in a buffer. When you hit a new heading, flush the buffer into the current chunk's content.
 5. For large content blocks (> 500 characters), split by `\n\n` and create `'paragraph'`-level children linked to their parent via `parentId`/`childIds`.
 
@@ -564,9 +565,9 @@ Build `expandToParent` for retrieval-time context expansion: given a chunk ID, r
 
 Why does expanding to the parent improve answer quality? What is the trade-off in terms of context window usage?
 
-> **Beginner Note:** The simplest version of parent-child chunking is to store section headings as metadata on each chunk. When a chunk is retrieved, prepend its heading path ("Company Policies > Customer Service > Refund Policy") to give the LLM context about where this chunk lives in the document.
+> **Beginner Note:** The simplest version of parent-child chunking is to store section headings as metadata on each chunk. When a chunk is retrieved, prepend its heading path ("Engineering Handbook > Deployments > Rollback Procedure") to give the LLM context about where this chunk lives in the document.
 
-> **Advanced Note:** Some vector databases (like Weaviate and LlamaIndex) have built-in support for hierarchical indexing and parent-child retrieval. Using native support is more efficient than implementing it manually. The concept is the same: index small chunks for precision, retrieve parent chunks for context.
+> **Advanced Note:** Some vector stores and RAG frameworks (Weaviate, LlamaIndex) have built-in support for hierarchical indexing and parent-child retrieval. Using native support is more efficient than implementing it manually. The concept is the same: index small chunks for precision, retrieve parent chunks for context.
 
 ---
 
@@ -772,9 +773,7 @@ async function readWithBudget(path: string, maxTokens: number): Promise<string> 
 }
 ```
 
-Build this function with a two-stage check: first, check the file size via `stat()` and reject files that exceed the budget (estimated as `maxTokens * 4` bytes). If the file is small enough to read, load its content and estimate the token count. If within budget, return the full content. Otherwise, truncate to fit and append a `[...truncated]` marker.
-
-The `readWithBudget` pattern is essential for any document processing pipeline that operates under token constraints. Rather than reading everything and hoping it fits, you enforce budgets at the reading layer.
+The `readWithBudget` pattern is essential for any document processing pipeline that operates under token constraints. Rather than reading everything and hoping it fits, you enforce budgets at the reading layer. You will build it in Exercise 3.
 
 ---
 
@@ -848,14 +847,14 @@ Why is recursive character splitting better than fixed-size splitting?
 
 ### Question 2 (Easy)
 
-What is the purpose of chunk overlap in text splitting?
+You split a policy document with `overlap: 0`, and the sentence "Refunds are processed within 14 business days." lands half in chunk 12 ("...Refunds are processed within") and half in chunk 13 ("14 business days. ..."). A user asks "How long do refunds take?" What retrieval failure should you predict?
 
-- A) To make the chunks larger
-- B) To ensure sentences at chunk boundaries appear in both adjacent chunks, so they can be found by retrieval regardless of which chunk is matched
-- C) To reduce the total number of chunks
-- D) To improve embedding model performance
+- A) Nothing fails — the vector store merges adjacent chunks at query time
+- B) Neither chunk carries the complete thought: chunk 12 mentions refunds but lacks the timeframe, and chunk 13 has a number with no subject — so the retrieved chunk cannot answer the question
+- C) Both chunks are always retrieved together, so the answer is unaffected
+- D) The embedding model pads each chunk until the sentence is complete
 
-**Answer: B** — Without overlap, a sentence that spans the boundary between two chunks is split in half, and neither chunk contains the complete sentence. An overlap of 100-200 characters duplicates the boundary region in both chunks, ensuring that boundary content is retrievable from either chunk. The tradeoff is slightly more storage and slightly higher embedding costs.
+**Answer: B** — With zero overlap, a boundary-straddling sentence is split in half and neither chunk contains the complete statement. Chunk 12 matches "refunds" but has no timeframe; chunk 13 contains "14 business days" with nothing tying it to refunds, so it may not even rank for the query. An overlap of 100-200 characters duplicates the boundary region into both chunks, so the full sentence survives in at least one chunk regardless of where the split lands.
 
 ---
 
@@ -895,34 +894,6 @@ You are processing a 500-page technical manual for a RAG system. The manual has 
 - D) Summarize the entire document into one chunk
 
 **Answer: B** — A well-structured technical manual with a clear table of contents is ideally suited for structure-aware splitting: split at heading boundaries (preserving section integrity), build a parent-child hierarchy (sections contain subsections), and create a multi-level index (section summaries for coarse retrieval, individual chunks for fine-grained retrieval). Cross-references can be preserved as metadata, linking related sections. Option A ignores structure, C discards the heading hierarchy, and D loses all detail.
-
-### Question 6 (Medium)
-
-Why should a production file reading tool enforce a maximum token budget per read rather than reading entire files?
-
-a) Reading full files is slower than reading partial files
-b) Every token spent reading a file is a token unavailable for the LLM's response or other context — unbounded reads can consume the entire context window on a single large file
-c) Token budgets reduce disk I/O
-d) LLMs cannot process files larger than 1000 tokens
-
-**Answer: B**
-
-**Explanation:** The context window is a shared resource. If a single file read consumes 80% of the window, there is little room left for the system prompt, conversation history, other retrieved chunks, or the model's response. Bounded reading with token budgets ensures no single file monopolizes the context. The `readWithBudget` pattern validates file size before reading, truncates if needed, and provides clear feedback about truncation.
-
----
-
-### Question 7 (Hard)
-
-Your document processing pipeline handles markdown, PDF, source code, and JSON files. Rather than using one splitting strategy for all types, you implement file type routing. What is the primary benefit of routing each type to a specialized processor?
-
-a) It reduces the total number of chunks produced
-b) Specialized processors respect each format's natural structure (headings in markdown, pages in PDF, functions in code, fields in JSON), producing higher-quality chunks that preserve semantic coherence within each chunk
-c) File type routing eliminates the need for embeddings
-d) It allows processing all files in parallel
-
-**Answer: B**
-
-**Explanation:** A markdown file has headings that define semantic boundaries. A source code file has functions and classes. A JSON file has nested fields. A one-size-fits-all recursive character splitter ignores these structures and may split mid-function or mid-JSON-object. Specialized processors know where the natural split points are for each format, producing chunks that contain complete, coherent units of information. This directly improves embedding quality and retrieval precision because each chunk represents a meaningful unit rather than an arbitrary text fragment.
 
 ---
 
@@ -1020,7 +991,7 @@ describe('Exercise 11: Document Processing Pipeline', () => {
    - Detects added, modified, and deleted documents
    - Processes only changed documents
    - Updates the vector store (simulated with an in-memory store)
-   - Reports what changed and what was updated
+   - Reports what changed and what was updated, including chunk counts (chunks added / chunks removed)
 3. Demonstrate the system with a test scenario:
    - Process an initial set of documents
    - Modify one document
@@ -1065,7 +1036,7 @@ describe('Exercise 11: Incremental Updates', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** Document processing (PDF extraction, chunking, metadata extraction) is mostly non-LLM work. Where the module uses LLMs for intelligent chunking or metadata extraction, `ollama('qwen3.5')` works. For structured extraction from documents, use `generateText` with `Output.object` and `ollama('qwen3.5')` — see Module 3's local alternative note.
+> **Local Alternative (Ollama):** Document processing (PDF extraction, chunking, metadata extraction) is mostly non-LLM work. Where the module uses LLMs for intelligent chunking or metadata extraction, `ollama('qwen3.5', { think: false })` works. For structured extraction from documents, use `generateText` with `Output.object` and `ollama('qwen3.5', { think: false })` — see Module 1's Gotcha on thinking mode.
 
 ---
 
@@ -1126,79 +1097,6 @@ describe('Exercise 11.3: Bounded Document Reader', () => {
   it('should detect and skip binary files', async () => {
     const result = await readWithBudget('test-docs/image.png', 1000)
     expect(result.content).toContain('[binary file]')
-  })
-})
-```
-
----
-
-### Exercise 4: Incremental Processing with Content Hashing
-
-**Objective:** Build a document processor that hashes content on first read, detects changes on subsequent reads, and only re-processes modified documents.
-
-**Specification:**
-
-1. Create `src/exercises/m11/ex04-hash-processing.ts`
-2. Implement a `HashedDocumentProcessor` that:
-   - Computes a content hash (SHA-256) for each processed document
-   - Stores the hash alongside the document's chunk IDs in a manifest
-   - On subsequent processing runs, compares current hashes to stored hashes
-   - Only re-processes documents whose hash has changed
-   - Removes chunks for deleted documents
-   - Reports a change summary: added, modified, unchanged, deleted
-3. Demonstrate with a scenario:
-   - Process 5 documents initially (all new)
-   - Modify 1 document and add 1 new document
-   - Run incremental processing — only 2 documents should be processed
-   - Delete 1 document
-   - Run again — deleted document's chunks should be removed
-
-```typescript
-interface ChangeReport {
-  added: string[]
-  modified: string[]
-  unchanged: string[]
-  deleted: string[]
-  chunksAdded: number
-  chunksRemoved: number
-}
-
-class HashedDocumentProcessor {
-  async processAll(paths: string[]): Promise<ChangeReport> {
-    // TODO: Hash-based incremental processing
-    throw new Error('Not implemented')
-  }
-}
-```
-
-**Test specification:**
-
-```typescript
-// tests/exercises/m11/ex04-hash-processing.test.ts
-import { describe, it, expect } from 'bun:test'
-
-describe('Exercise 11.4: Incremental Processing with Hashing', () => {
-  it('should process all documents on first run', async () => {
-    const processor = new HashedDocumentProcessor()
-    const report = await processor.processAll(testPaths)
-    expect(report.added.length).toBe(testPaths.length)
-    expect(report.modified.length).toBe(0)
-  })
-
-  it('should skip unchanged documents on second run', async () => {
-    const processor = new HashedDocumentProcessor()
-    await processor.processAll(testPaths)
-    const report = await processor.processAll(testPaths)
-    expect(report.unchanged.length).toBe(testPaths.length)
-    expect(report.added.length).toBe(0)
-  })
-
-  it('should detect modified documents by hash comparison', async () => {
-    const processor = new HashedDocumentProcessor()
-    await processor.processAll(testPaths)
-    // After modifying a file's content
-    const report = await processor.processAll(testPaths)
-    expect(report.modified.length).toBeGreaterThanOrEqual(0)
   })
 })
 ```

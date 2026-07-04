@@ -74,7 +74,7 @@ export function checkBadges(state: ProgressState): string[] {
     }
   }
 
-  // Full Stack LLM — all 24 modules
+  // Full Stack LLM — all modules (count from MODULE_NAMES)
   const totalModules = Object.keys(MODULE_NAMES).length
   const completed = Object.values(state.modules).filter(m => m.status === 'completed').length
   if (completed === totalModules) {

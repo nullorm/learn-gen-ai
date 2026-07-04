@@ -1,4 +1,4 @@
-# Module 23: Observability
+# Module 26: Observability
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Configure alerting for cost spikes, error rate increases, and latency degradation
 - Handle privacy considerations when logging prompts and completions that may contain PII
 
-> *Module 23 opens **Part VI: Production** — the final stretch, earning the **Production Ready** badge.*
+> *Module 26 opens **Part VI: Production** — the final stretch, earning the **Production Ready** badge.*
 
 ---
 
@@ -30,9 +30,9 @@ Observability for LLM applications goes beyond traditional APM. You need to trac
 - **Module 6 (Streaming)** produces incremental outputs that need special logging approaches (you cannot log the full response until streaming completes).
 - **Module 7 (Tool Use)** creates tool calls that need tracing to understand which tools were selected and why.
 - **Module 9-10 (RAG)** builds retrieval pipelines where observability is critical to understanding retrieval quality.
-- **Module 14-15 (Agents)** create multi-step loops where tracing is essential to debug reasoning paths.
-- **Module 19 (Evals)** provides the quality measurement framework that observability data feeds into.
-- **Module 22 (Cost Optimization)** depends on cost tracking data that the observability layer collects.
+- **Modules 16-17 (Agents)** create multi-step loops where tracing is essential to debug reasoning paths.
+- **Module 22 (Evals)** provides the quality measurement framework that observability data feeds into.
+- **Module 25 (Cost Optimization)** depends on cost tracking data that the observability layer collects.
 
 ---
 
@@ -201,6 +201,8 @@ interface LLMLogEntry {
   }
 }
 ```
+
+In production you would also add a `conversationId` and a turn number to the `context` block so entries group by conversation — a one-line change to the interface.
 
 You will also need a cost calculation helper. Model pricing is per-million tokens, so the formula is straightforward:
 
@@ -381,6 +383,15 @@ What patterns in the trace would indicate a malfunctioning agent? Think about wh
 
 > **Advanced Note:** In production, you would integrate with OpenTelemetry rather than building a custom tracer. The Vercel AI SDK has built-in OpenTelemetry support via the `telemetry` option on `generateText` and `streamText`. The concepts shown here (spans, traces, attributes, events) map directly to OpenTelemetry primitives. The custom implementation helps you understand what OpenTelemetry does under the hood.
 
+When you do adopt OTel, keep the LLM-specific attribute names conventional — `llm.model`, `llm.tokens.input` / `llm.tokens.output`, `llm.duration_ms`, and `tool.name` on tool-call spans — so any tracing backend can aggregate them across services. The OTel API shape maps one-to-one onto what you just built, with chainable span objects:
+
+```ts
+const span = tracer.startSpan('llm.generate', { attributes: { 'llm.model': model.modelId } })
+const result = await generateText({ model, prompt })
+span.setAttribute('llm.tokens.input', result.usage.inputTokens)
+span.end()
+```
+
 ---
 
 ## Section 4: Metrics
@@ -403,9 +414,9 @@ interface MetricPoint {
 
 The collector needs these methods:
 
-- `increment(name, value?, tags?)` -- records a counter point (total requests, total errors)
-- `gauge(name, value, tags?)` -- records a gauge point (active connections, queue depth)
-- `histogram(name, value, tags?)` -- records a histogram observation (latency, token count). Store histogram values in a separate bucket array keyed by name so you can compute statistics later
+- `increment(name, value?, tags?)` -- records a counter point
+- `gauge(name, value, tags?)` -- records a gauge point
+- `histogram(name, value, tags?)` -- records a histogram observation. Store histogram values in a separate bucket array keyed by name so you can compute statistics later
 - `percentile(name, p)` -- computes the p-th percentile from stored histogram values. Sort the values, then find the value at index `ceil((p/100) * length) - 1`
 - `average(name)` -- computes the average of stored histogram values
 - `total(name, tags?)` -- sums all counter values matching the name and optional tags filter
@@ -788,52 +799,43 @@ The `prepareForLogging` method should: (1) check for PII, (2) apply redaction if
 
 For testing, pass in a string like `'My email is john@example.com and my phone is 555-123-4567'` and verify the production output is truncated and redacted.
 
-> **Beginner Note:** The simplest privacy-safe approach is to never log the full prompt or response in production. Log only metadata: model, token counts, latency, cost, user ID, and a hash of the prompt for grouping. If you need to debug a specific request, use the trace ID to look it up in a separate, access-controlled debug log with a short retention period.
+> **Beginner Note:** When you need to debug a specific request without logging content everywhere, use the trace ID to look it up in a separate, access-controlled debug log with a short retention period.
 
 > **Advanced Note:** Consider implementing data residency controls for multi-region deployments. Logs containing user data may need to stay in the same region as the user (GDPR, data sovereignty laws). Use log routing to direct logs to region-specific storage. Also consider implementing a "right to be forgotten" mechanism that can purge all logs associated with a specific user ID on request.
 
-> **Local Alternative (Ollama):** All observability patterns (structured logging, tracing, metrics) work identically with `ollama('qwen3.5')`. Logging and tracing are application-level concerns independent of the model provider. In fact, observability is more important with local models -- you need to monitor inference speed, GPU utilization, and memory usage in addition to the standard LLM metrics.
+> **Local Alternative (Ollama):** All observability patterns (structured logging, tracing, metrics) work identically with `ollama('qwen3.5', { think: false })`. Logging and tracing are application-level concerns independent of the model provider. In fact, observability is more important with local models -- you need to monitor inference speed, GPU utilization, and memory usage in addition to the standard LLM metrics.
 
 ---
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
-## Section 9: OpenTelemetry for LLM Apps
-
-OpenTelemetry (OTel) is the industry standard for distributed tracing. For LLM applications, OTel provides structured traces that span the full pipeline: user input, LLM call, tool execution, and response generation.
-
-Each operation becomes a **span** with attributes:
-
-- `llm.model` — which model handled the request
-- `llm.tokens.input` / `llm.tokens.output` — token counts
-- `llm.duration_ms` — how long the call took
-- `tool.name` — which tool was invoked (for tool call spans)
-
-Spans nest naturally: an agent turn span contains an LLM call span, which contains tool execution spans. This hierarchy lets you see exactly where time and tokens are spent.
-
-**Pattern:** Create a root span for each user message. Within it, create child spans for each LLM call and tool execution. Attach token counts and latency as span attributes. Export to a tracing backend (or log as JSON for local development):
-
-```ts
-const span = tracer.startSpan('llm.generate', { attributes: { 'llm.model': model.modelId } })
-const result = await generateText({ model, prompt })
-span.setAttribute('llm.tokens.input', result.usage.inputTokens)
-span.end()
-```
-
-## Section 10: Context Window Monitoring
+## Section 9: Context Window Monitoring
 
 The context window is a finite resource that deserves the same monitoring as memory or CPU. A context monitor tracks:
 
-- **Current usage** — how many tokens are consumed by system prompt, conversation history, tool definitions, and tool results
+- **Current usage** — how many tokens each message category currently consumes
 - **Usage over time** — how the window fills up as the conversation progresses
 - **Compaction events** — when compaction was triggered and how much space it freed
 - **Threshold alerts** — warnings when usage exceeds 60%, 80%, or 95% of the window
 
 **Key insight for LLM apps:** Memory monitoring is not just about heap — it is about context window usage too. Both are finite resources that need monitoring. A context window filling up silently causes degraded responses (the model loses important context) long before it causes an error.
 
+Make the abstract "200K token window" tangible by visualizing what occupies it — a simple bar or table:
+
+```
+Context Window Usage (42,000 / 200,000 tokens - 21%)
+[████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 21%
+  System prompt:     18,200 tokens (43%)
+  Tool definitions:   4,100 tokens (10%)
+  Conversation:      12,500 tokens (30%)
+  Tool results:       7,200 tokens (17%)
+```
+
+This visualization connects to every earlier module: you can see your system prompt size (Module 2), conversation history (Module 4), tool definitions (Module 7), and RAG context (Modules 9-10) all competing for space.
+
 **Pattern:** After each LLM call, calculate the token count of each message category and log it as a structured metric. Trigger compaction proactively when usage crosses a threshold rather than waiting for the window to overflow.
 
-## Section 11: Pipeline Profiling
+## Section 10: Pipeline Profiling
 
 LLM pipelines have multiple stages, and the bottleneck is not always the LLM call. A pipeline profiler instruments each step with timing:
 
@@ -849,51 +851,11 @@ Profile your pipeline with real queries and identify the bottleneck. Often it is
 
 ## Going Further: Observability Tooling
 
-Sections 1–11 are the observability core — logging, tracing, metrics, dashboards, alerting, privacy, OpenTelemetry. These last four are extra tooling you layer on: richer logs, context visualization, code-quality signals, and shareable sessions.
-
-### Enhanced Structured Logging
-
-Upgrade from basic logging to production-grade structured logs. Every log entry should be a JSON object with:
-
-- **Trace ID** — Links the log entry to a distributed trace, enabling correlation across services.
-- **Conversation ID** — Which conversation this entry belongs to.
-- **Turn number** — Which turn within the conversation.
-- **Token counts** — Input and output tokens for the associated LLM call.
-- **Severity** — `debug`, `info`, `warn`, `error` levels.
-- **Timestamp** — ISO 8601 format for consistent parsing.
-
-```ts
-logger.info({
-  traceId,
-  conversationId,
-  turn: 5,
-  model: 'mistral-large-latest',
-  tokens: { input: 4200, output: 380 },
-  latencyMs: 1250,
-  event: 'llm.response',
-})
-```
-
-Structured JSON logs are machine-parseable, enabling automated alerting, dashboarding, and anomaly detection. Plain text logs require regex parsing and break when the format changes.
-
-### Context Visualization
-
-Make the abstract "200K token window" tangible by visualizing what occupies it. A context visualizer shows the composition of the context window as a simple bar or table:
-
-```
-Context Window Usage (42,000 / 200,000 tokens - 21%)
-[████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 21%
-  System prompt:     18,200 tokens (43%)
-  Tool definitions:   4,100 tokens (10%)
-  Conversation:      12,500 tokens (30%)
-  Tool results:       7,200 tokens (17%)
-```
-
-This visualization connects to every earlier module: you can see your system prompt size (Module 2), conversation history (Module 4), tool definitions (Module 6), and RAG context (Module 10) all competing for space.
+Sections 1–10 are the observability core — logging, tracing, metrics, dashboards, alerting, privacy, context monitoring, profiling. These last two are extra tooling you layer on: code-quality signals and shareable sessions.
 
 ### Code-Quality Signals
 
-(LSP appears three times across the course — in Module 10 §11 as a *retrieval* source, in Module 19 §13 as an *evaluator*, and here as a *continuous observability metric*. Same tool, three lenses.)
+(LSP appears three times across the course — in Module 10, Going Further: LSP-Augmented Retrieval as a *retrieval* source, in Module 22, Going Further: Code Quality as an Eval Signal as an *evaluator*, and here as a *continuous observability metric*. Same tool, three lenses.)
 
 Language Server Protocol (LSP) diagnostics provide a continuous, zero-cost quality signal for generated code. After any code generation or modification, TypeScript compiler diagnostics reveal type errors, missing imports, and unused variables immediately — without running a test suite or paying for an LLM-as-judge call.
 
@@ -936,13 +898,13 @@ In this module, you learned:
 14. **LSP diagnostics as observability signal:** Using compiler diagnostics as a free, always-on quality signal for generated code alongside traditional metrics.
 15. **Session sharing for debugging:** Exporting full agent interactions (messages, tool calls, token counts, timestamps) as shareable JSON artifacts for team review.
 
-In Module 24, you will learn how to deploy LLM applications to production with authentication, rate limiting, streaming endpoints, and provider failover.
+In Module 27, you will learn how to deploy LLM applications to production with authentication, rate limiting, streaming endpoints, and provider failover.
 
 ---
 
 ## Quiz
 
-**Question 1:** Why is traditional error monitoring (HTTP status codes, exception tracking) insufficient for LLM applications?
+**Question 1 (Easy):** Why is traditional error monitoring (HTTP status codes, exception tracking) insufficient for LLM applications?
 
 A) LLM APIs never return errors
 B) LLM calls can return HTTP 200 with incorrect, hallucinated, or harmful content
@@ -953,7 +915,7 @@ D) LLM applications do not use HTTP
 
 ---
 
-**Question 2:** What is the primary purpose of distributed tracing in a RAG pipeline?
+**Question 2 (Easy):** What is the primary purpose of distributed tracing in a RAG pipeline?
 
 A) To make the pipeline run faster
 B) To reduce token costs
@@ -964,7 +926,7 @@ D) To cache intermediate results
 
 ---
 
-**Question 3:** Which metric type is most appropriate for tracking LLM response latency?
+**Question 3 (Medium):** Which metric type is most appropriate for tracking LLM response latency?
 
 A) Counter -- it always goes up
 B) Gauge -- it represents a current value
@@ -975,7 +937,7 @@ D) Timer -- it measures elapsed time
 
 ---
 
-**Question 4:** When diagnosing a suspected hallucination, which observability signal is most informative?
+**Question 4 (Hard):** When diagnosing a suspected hallucination, which observability signal is most informative?
 
 A) High latency on the generation step
 B) Low retrieval relevance scores combined with high confidence in the response
@@ -986,7 +948,7 @@ D) Cache miss on the request
 
 ---
 
-**Question 5:** What is the recommended approach for logging prompts and responses in production?
+**Question 5 (Medium):** What is the recommended approach for logging prompts and responses in production?
 
 A) Log everything in full -- debugging is more important than privacy
 B) Never log any content -- privacy is absolute
@@ -994,28 +956,6 @@ C) Log metadata (tokens, latency, cost, hashes) for all requests, with PII-redac
 D) Only log error responses in full
 
 **Answer: C** -- The balanced approach logs metadata for every request (essential for metrics and alerting) while providing redacted content previews for debugging. Full prompt/response content is logged only for a sample of requests, with PII redacted, in an access-controlled store with a retention policy. This gives you enough data to debug issues without creating a liability from storing sensitive user data at scale.
-
----
-
-**Question 6 (Medium):** A pipeline profiler shows that embedding generation takes 200ms, vector search takes 800ms, context assembly takes 10ms, LLM generation takes 500ms, and post-processing takes 15ms. Where should optimization effort focus?
-
-A) LLM generation, because it is the most expensive operation in terms of tokens
-B) Vector search, because it is the bottleneck at 800ms — more than the LLM call itself
-C) Context assembly, because it is the fastest step and could be doing more work
-D) Post-processing, because it runs last and delays the final response
-
-**Answer: B** -- Pipeline profiling reveals that the bottleneck is not always the LLM call. In this case, vector search at 800ms dominates total latency. Optimizing it (adding indexes, reducing the search space, caching frequent queries) would have more impact than optimizing the LLM call. Without profiling, most developers would assume the LLM is the bottleneck and miss the real optimization opportunity.
-
----
-
-**Question 7 (Hard):** A context window monitor shows: system prompt 43%, tool definitions 10%, conversation history 30%, tool results 17%. The total is 42,000 out of 200,000 tokens. A user reports degraded response quality on long conversations. What is the most likely cause and how does context visualization help diagnose it?
-
-A) The model is too slow — context visualization cannot diagnose quality issues
-B) As the conversation grows, history will crowd out tool results and the model will lose access to retrieved information needed for accurate responses
-C) The system prompt is too large and should be shortened immediately
-D) The tool definitions are taking too much space
-
-**Answer: B** -- Context visualization makes the window allocation concrete. At 42K tokens the system has room, but as conversation history grows, it will consume an increasing percentage. Eventually, tool results (retrieved documents, file contents) must be truncated or dropped to fit within the window. When the model loses access to this retrieved context, response quality degrades because the model falls back to parametric knowledge instead of grounded facts. The visualization helps identify exactly when this crowding occurs and which category to compact first.
 
 ---
 
@@ -1046,6 +986,8 @@ Build a fully observable RAG pipeline that produces structured logs, traces, and
    - A printed trace for the slowest query
    - A failure analysis identifying any anomalies
 
+**Create:** `src/observability/exercises/observable-rag.ts`
+
 **Expected output:** Console output showing structured logs for each request, a visual trace of the slowest query, and a metrics summary report with per-model and per-feature breakdowns.
 
 ### Exercise 2: Build a Simple Metrics Dashboard
@@ -1057,7 +999,7 @@ Build a metrics dashboard generator that produces a JSON report suitable for ren
 1. Implement the `DashboardGenerator` class from Section 6.
 
 2. Simulate 50 requests with realistic variation:
-   - Mix of models (haiku, sonnet, opus)
+   - Mix of models (e.g., mistral-small, mistral-large, claude-sonnet)
    - Mix of features (question-answering, summarization, code-gen)
    - Mix of users (5 different user IDs)
    - Include 3-5 error requests
@@ -1072,33 +1014,32 @@ Build a metrics dashboard generator that produces a JSON report suitable for ren
    - Any triggered alerts with severity, message, and related trace IDs
    - Top 3 cost consumers by user, model, and feature
 
+**Create:** `src/observability/exercises/dashboard-sim.ts`
+
 **Expected output:** A complete dashboard JSON showing all panels (overview, latency, tokens, cost, quality, errors) plus any active alerts with actionable messages.
 
 ### Exercise 3: OpenTelemetry Instrumentation
 
-Instrument an LLM pipeline with OpenTelemetry-style spans to produce structured traces.
+Exercise 1 wired a custom tracer through a full pipeline. This exercise is about the **OTel API shape** itself: spans as objects you hold and mutate, not methods on a tracer.
 
 **Specification:**
 
-1. Create a simple `Tracer` class that supports:
-   - `startSpan(name, attributes?)` — returns a `Span` object with `setAttribute`, `addEvent`, and `end` methods
-   - Nested spans (child spans reference their parent via `parentSpanId`)
-   - Automatic duration calculation (start time to end time)
-   - Export as a JSON array of completed spans
+1. Create an `OtelTracer` whose `startSpan(name, { attributes?, parent? })` returns a `Span` **object** with chainable `setAttribute` and `addEvent` methods and an `end()` method:
+   - Child spans share the parent's `traceId` and reference it via `parentSpanId`
+   - `end()` records the end time and computes the duration automatically
+   - `export()` returns a JSON array of **completed** spans only
 
-2. Instrument a pipeline that performs: user message processing, LLM call (via `generateText`), tool execution (simulate with a delay), and response formatting. Each step should be a span with relevant attributes (`llm.model`, `llm.tokens.input`, `llm.tokens.output`, `tool.name`, `duration_ms`).
+2. Re-instrument the pipeline from Exercise 1 with this API (a thin version is fine: process message → `generateText` call → simulated tool execution → response formatting), attaching `llm.model`, `llm.tokens.input`, `llm.tokens.output`, and `tool.name` as span attributes.
 
-3. Run 5 queries through the instrumented pipeline. For each query, export the trace and verify:
+3. Verify the OTel-shape invariants on an exported trace:
    - The root span covers the full request duration
-   - Child spans are properly nested
-   - Token counts and model name are recorded as attributes
-   - The sum of child span durations approximately equals the parent span duration
-
-4. Print a visual trace for the slowest query showing the span hierarchy with indentation and timing.
+   - Child spans are properly nested via `parentSpanId`
+   - Token counts and model name appear as span attributes
+   - The sum of child span durations approximately equals the root span duration
 
 **Create:** `src/observability/exercises/otel-instrumentation.ts`
 
-**Expected output:** A visual trace tree for each query showing span names, durations, and key attributes, plus a summary of total tokens and cost across all queries.
+**Expected output:** An exported JSON span array for a traced request, with the nesting and child-duration-sum verifications passing.
 
 ### Exercise 4: Context Window Monitor
 
@@ -1121,7 +1062,7 @@ Build a real-time context window monitor that tracks usage across message catego
    - `overflow` at 95% total usage
    - Per-category alerts when tool results exceed 30% of the window or conversation history exceeds 50%
 
-4. Implement `visualize()` that prints an ASCII bar chart showing context window composition (similar to the example in Section 13).
+4. Implement `visualize()` that prints an ASCII bar chart showing context window composition (similar to the ASCII example in Section 9).
 
 5. Simulate a 20-turn conversation where each turn adds messages and tool results. Show how the context window fills over time. Trigger at least one compaction event when usage exceeds 80%.
 

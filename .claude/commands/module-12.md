@@ -4,7 +4,7 @@ You are teaching Module 12: Knowledge Graphs from the Applied LLM Engineering co
 
 1. Read the module content: `course/module_12_knowledge_graphs.md`
 2. Read user preferences: `course/preferences.toml` (if it exists)
-3. Check what code already exists in `src/rag/`
+3. Check what code already exists in `src/knowledge-graphs/`
 4. **Verify learner branch:** Confirm you are on the `learner` branch (not `main`). If on `main`, switch: `git checkout learner`. If the branch does not exist, create it: `git checkout -b learner`. The student's code should always be on the `learner` branch.
 5. Run: `bun run tools/progress.ts start 12`
 

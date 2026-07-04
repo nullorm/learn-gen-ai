@@ -6,7 +6,7 @@ Quick-reference for key formulas, metrics, and patterns used throughout the cour
 
 ## 1. Token & Cost Math
 
-**Modules: 1, 5, 22**
+**Modules: 1, 5, 25**
 
 ### Tokens per Word
 
@@ -98,7 +98,7 @@ where:
   |A|   = √(Σ(a_i²))          # L2 norm (magnitude)
 ```
 
-Range: [-1, 1] for general vectors, [0, 1] for normalized embeddings.
+Range: [-1, 1] in general; typical text-embedding vectors land in [0, 1] in practice.
 
 - 1.0 = identical direction (most similar)
 - 0.0 = orthogonal (unrelated)
@@ -136,7 +136,7 @@ After normalization, |A| = 1, so cosine similarity = dot product.
 
 ## 4. RAG Metrics
 
-**Modules: 9, 10, 19**
+**Modules: 9, 10, 22**
 
 ### Precision@k
 
@@ -239,7 +239,7 @@ max_chunks      = floor(194,804 / 512) = 380 chunks
 
 ## 6. Eval Metrics
 
-**Modules: 19, 20**
+**Modules: 22, 23**
 
 ### Accuracy
 
@@ -298,7 +298,7 @@ ROUGE-L_F1        = 2 × (precision × recall) / (precision + recall)
 
 ## 7. Cost Optimization
 
-**Modules: 5, 22**
+**Modules: 5, 25**
 
 ### Cache Hit Rate
 
@@ -339,7 +339,7 @@ where:
 ### Token Budget Enforcement
 
 ```
-estimated_cost = (est_input × input_price) + (max_tokens × output_price)
+estimated_cost = (est_input × input_price) + (max_output_tokens × output_price)
 within_budget  = estimated_cost ≤ budget_limit
 ```
 
@@ -347,7 +347,7 @@ within_budget  = estimated_cost ≤ budget_limit
 
 ## 8. Agent Metrics
 
-**Modules: 14, 15, 16**
+**Modules: 14, 16, 17**
 
 ### Task Completion Rate
 

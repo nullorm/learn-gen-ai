@@ -60,9 +60,9 @@ Part → modules → badge (keep in sync with `PARTS` / `PART_BADGES` in `tools/
 | I | First Contact | 1–3 | First Contact |
 | II | Core Patterns | 4–9 | Core Patterns |
 | III | Advanced Retrieval | 10–13 | RAG Builder |
-| IV | Agents & Orchestration | 14–18 | Agent Deployer |
-| V | Quality & Safety | 19–22 | Quality Gate |
-| VI | Production | 23–24 | Production Ready |
+| IV | Agents & Orchestration | 14–21 | Agent Deployer |
+| V | Quality & Safety | 22–25 | Quality Gate |
+| VI | Production | 26–27 | Production Ready |
 
 Ranks the student climbs by XP (for reference): Token → Prompter → Embedder →
 Retriever → Tool Smith → Agent Builder → Eval Master → LLM Architect.
@@ -112,11 +112,13 @@ Explore / Before-After experiments live in **course prose and scratch runs only*
 Tests always assert with `expect()` — never `console.log`, `console.table`,
 `process.stdout.write`, or any "look at the output" inspection. An Explore section
 may say "run this and watch the output," but any *test* it introduces still asserts.
+Framework modules 15/18/19 run on their native harnesses (`@workflow/vitest`,
+`eve eval`) instead of `bun:test`, but the assertion rule holds there too.
 
 ## Terminology
 
 - Message type is **`ModelMessage`** (from `'ai'`). Never `CoreMessage` — it was removed.
 - **Zod v4** top-level APIs: `z.int()`, `z.email()`, `z.url()`, `z.uuid()`, `z.iso.date()`. Chaining is fine: `z.int().min(1).max(10)`.
-- Token cap is **`maxOutputTokens`** (AI SDK v5), not `maxTokens`.
+- Token cap is **`maxOutputTokens`** (AI SDK v7), not `maxTokens`.
 - Default provider in examples is **Mistral** (`mistral-small-latest`); note Groq / Anthropic / OpenAI / Ollama as alternatives where relevant.
 - All LLM calls use `generateText`, `streamText`, or `Output.object()`.

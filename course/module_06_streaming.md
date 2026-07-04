@@ -61,8 +61,6 @@ Typical results:
 | Total time      | 2000-5000ms   | 2000-5000ms |
 | User perception | "Slow"        | "Fast"      |
 
-> **Beginner Note:** The total generation time is roughly the same for both approaches. The model still generates tokens at the same speed. The difference is that streaming shows each token as it is generated, while non-streaming waits for all tokens before showing anything.
-
 ### Perceived Performance
 
 Research on user interface responsiveness shows:
@@ -143,11 +141,11 @@ const result = streamText({
   onChunk({ chunk }) {
     // Called for each chunk (text, tool calls, etc.)
     if (chunk.type === 'text-delta') {
-      // chunk.textDelta contains the text fragment
+      // chunk.text contains the text fragment
     }
   },
 
-  onFinish({ text, usage, finishReason }) {
+  onEnd({ text, usage, finishReason }) {
     console.log('\n--- Stream finished ---')
     console.log(`Total text: ${text.length} characters`)
     console.log(`Finish reason: ${finishReason}`)
@@ -297,17 +295,13 @@ For the HTML client, use `fetch` with `response.body.getReader()` to consume the
 
 ### Using the AI SDK's Built-in Stream Helpers
 
-The Vercel AI SDK provides utilities for converting streams to standard web responses:
-
-As a shortcut, the AI SDK can convert a stream directly to a web Response:
+As a shortcut, the AI SDK can convert a stream directly to a standard web `Response`:
 
 ```typescript
 return result.toUIMessageStreamResponse()
 ```
 
 This returns a response in the AI SDK's own streaming protocol, compatible with its React hooks (`useChat`, `useCompletion`). Use the manual SSE approach when building custom frontends.
-
-> **Beginner Note:** The `toUIMessageStreamResponse()` method creates a response in the Vercel AI SDK's own streaming protocol, which works seamlessly with its React hooks (`useChat`, `useCompletion`). If you are building a custom frontend, the manual SSE approach gives you full control.
 
 > **Advanced Note:** The AI SDK UI message stream protocol encodes multiple data types (text deltas, tool calls, tool results, annotations) in a single stream. This is more capable than plain text SSE but requires the AI SDK client library to parse.
 
@@ -351,7 +345,7 @@ async function* bufferBySentence(stream: AsyncIterable<string>): AsyncGenerator<
 
 Build an async generator that accumulates stream chunks into a buffer and yields complete sentences. Use a regex like `/[.!?]\s/` to detect sentence boundaries. When a match is found, yield everything up to and including the boundary, and keep the remainder in the buffer. After the stream ends, flush any remaining buffer content. This is useful when downstream processing (e.g., translation, text-to-speech) works better with complete sentences than individual tokens.
 
-> **Advanced Note:** The `for await...of` loop over an async iterable provides natural backpressure. The producer (AI SDK stream) only generates the next value when the consumer is ready for it. This is built into the JavaScript async iteration protocol. You do not need explicit backpressure mechanisms unless you are bridging to a different streaming system.
+> **Advanced Note:** You do not need explicit backpressure mechanisms unless you are bridging to a different streaming system — within async iteration, demand signaling is part of the protocol itself.
 
 ---
 
@@ -443,7 +437,7 @@ Build a function that retries on failure with partial recovery. Track `fullText`
 async function streamWithCancellation(prompt: string, maxChars: number = 1000): Promise<string>
 ```
 
-Build a function that cancels a stream based on content conditions. Create an `AbortController` and pass its `signal` to `streamText`. During iteration, check two conditions: (1) accumulated text exceeds `maxChars`, (2) text contains unwanted patterns like `[CONFIDENTIAL]`. When either triggers, call `abortController.abort()` and break. Wrap the iteration in a try/catch that silently handles `AbortError` (expected when we abort) but rethrows other errors. Why is calling `abort()` important rather than just breaking out of the loop?
+Build a function that cancels a stream based on content conditions. Create an `AbortController` and pass its `signal` to `streamText`. During iteration, check two conditions: (1) accumulated text exceeds `maxChars`, (2) text contains unwanted patterns like `[CONFIDENTIAL]`. When either triggers, call `abortController.abort()` and break. Wrap the iteration in a try/catch that silently handles `AbortError` (expected when we abort) but rethrows other errors.
 
 > **Beginner Note:** Always use `AbortController` for cancellation rather than simply stopping iteration. Stopping iteration without aborting leaves the underlying HTTP connection open, wasting server resources and potentially accruing costs for tokens you are not using.
 
@@ -492,7 +486,7 @@ Build a function that reports progress through a callback. Call `onStatus` with 
 
 > **Decision:** Which UI pattern fits? Use the **typewriter** effect for chat-style prose where a human rhythm feels natural; use **progressive disclosure** when the output has structure (sections, a report) so users read finished parts while the rest streams; use a **status indicator** for long single-shot generations where there's nothing partial worth showing yet. Pick the one that matches your output's shape — don't stack all three.
 
-> **Local Alternative (Ollama):** All streaming patterns in this module (`streamText`, `streamText` with `Output.object()`, backpressure, AbortController) work identically with `ollama('qwen3.5')`. Local models actually benefit more from streaming since inference is slower — streaming lets users see output immediately rather than waiting for full generation. SSE endpoints work the same regardless of provider.
+> **Local Alternative (Ollama):** All streaming patterns in this module (`streamText`, `streamText` with `Output.object()`, backpressure, AbortController) work identically with `ollama('qwen3.5', { think: false })`. Local models actually benefit more from streaming since inference is slower — streaming lets users see output immediately rather than waiting for full generation. SSE endpoints work the same regardless of provider.
 
 ---
 
@@ -561,9 +555,7 @@ A single global AbortController means any cancellation aborts everything. With a
 
 ### Enhanced Backpressure with Buffered Writer
 
-#### Buffering Output Writes
-
-Section 5 covered backpressure at the token level. A buffered writer is the concrete implementation: instead of writing every token immediately (which can block on I/O), batch small writes into larger chunks and flush them on a schedule or when the buffer is full.
+Same idea as Section 5's periodic flush, keyed on bytes rather than chunk count — batch small writes and flush when the buffer fills:
 
 ```typescript
 // Instead of writing each token individually:
@@ -582,8 +574,6 @@ for await (const chunk of result.textStream) {
 }
 if (buffer.length > 0) process.stdout.write(buffer) // flush remainder
 ```
-
-This prevents I/O from blocking the LLM processing loop. In terminal UIs, the batch size controls the visual "chunkiness" of output — smaller batches look smoother, larger batches are more efficient. Production systems tune this based on the output target (terminal, file, network socket).
 
 ---
 
@@ -619,7 +609,7 @@ if (isHeadless) {
 
 This pattern lets the same streaming application serve both human users and automated pipelines.
 
-> **Production Patterns:** Module 24 owns the full headless story — exit codes, CI integration, SDK/MCP output modes. Here the scope is narrower: how the *stream itself* is encoded when no human is watching.
+> **Production Patterns:** Module 27 owns the full headless story — exit codes, CI integration, SDK/MCP output modes. Here the scope is narrower: how the *stream itself* is encoded when no human is watching.
 
 ---
 
@@ -707,42 +697,16 @@ D) Automatic error correction
 
 ### Question 5 (Hard)
 
-What protocol does Server-Sent Events (SSE) use for streaming?
+Your team is choosing between SSE and WebSockets for delivering LLM token streams to a browser client. Which argument correctly favors SSE for this use case?
 
-A) WebSocket (bidirectional TCP)
-B) Standard HTTP (unidirectional server-to-client)
-C) gRPC (HTTP/2 streams)
-D) MQTT (pub/sub messaging)
+A) SSE supports bidirectional messaging, so the client can interrupt generation over the same channel
+B) LLM token streaming is inherently unidirectional, and SSE runs over plain HTTP — so it passes through existing proxies and load balancers with no upgrade handshake, and the browser's `EventSource` reconnects automatically; WebSockets add bidirectionality you don't need at the cost of managing all of that yourself
+C) WebSockets cannot carry text data, only binary frames, so SSE is the only option for token streams
+D) SSE is faster because it compresses each token before sending
 
 **Answer: B**
 
-SSE uses standard HTTP with a `Content-Type: text/event-stream` header. Data flows in one direction: server to client. Each event is a text line prefixed with `data: `. SSE is simpler than WebSockets (no upgrade handshake, automatic reconnection, works through proxies) and is ideal for streaming LLM responses where the data flow is inherently unidirectional.
-
----
-
-### Question 6 (Medium)
-
-What is the primary advantage of NDJSON over SSE for streaming LLM output?
-
-- A) NDJSON supports bidirectional communication
-- B) NDJSON is simpler for programmatic consumers (CLIs, SDKs, pipelines) — each line is a self-contained JSON object with no protocol overhead
-- C) NDJSON is faster because it uses binary encoding
-- D) NDJSON has built-in automatic reconnection
-
-**Answer: B** — NDJSON (newline-delimited JSON) is designed for programmatic consumers. Each line is a complete, parseable JSON object — no SSE protocol headers, no event type prefixes, no buffering the entire response. This makes it ideal for CLIs, SDKs, and CI pipelines where a line-by-line JSON reader is simpler than an SSE client.
-
----
-
-### Question 7 (Hard)
-
-In an abort controller tree with session, request, and tool controllers, what happens when the request controller is aborted?
-
-- A) The session controller is also aborted, ending the entire session
-- B) Only the current stream and its child tool executions are cancelled; the session controller remains active for future requests
-- C) All controllers in the tree are aborted simultaneously
-- D) The tool controller continues running to completion before the request is cancelled
-
-**Answer: B** — In a hierarchical abort controller tree, aborting a parent cascades to its children, but not upward. Aborting the request controller stops the current `streamText` call and any in-progress tool executions (child controllers), but the session controller remains active. This allows the user to cancel one request without ending the session, and cancel a tool without aborting the stream.
+Token streaming is a one-way flow: the client sends one HTTP request (the prompt) and then only receives. That matches SSE's unidirectional model exactly. Because SSE is plain HTTP (`Content-Type: text/event-stream`), it traverses existing HTTP infrastructure with no protocol upgrade, and `EventSource` gives automatic reconnection for free. WebSockets earn their complexity when you need low-latency traffic in *both* directions (e.g. collaborative editing); for LLM streaming, the upgrade handshake plus hand-rolled reconnection and keep-alive logic buy you nothing. Note that client-side cancellation does not require a bidirectional channel — aborting the HTTP request (Section 7's `AbortController`) already does it.
 
 ---
 
@@ -751,6 +715,8 @@ In an abort controller tree with session, request, and tool controllers, what ha
 ### Exercise 1: Streaming Chat Endpoint with SSE
 
 Build a complete streaming chat server with the following features:
+
+**File:** `src/streaming/exercises/ex1-sse-chat.ts`
 
 **Requirements:**
 
@@ -789,6 +755,8 @@ interface SSEEvent {
 ### Exercise 2: Partial Structured Output
 
 Build a streaming data extraction pipeline that shows results progressively.
+
+**File:** `src/streaming/exercises/ex2-extraction.ts`
 
 **Requirements:**
 
@@ -871,10 +839,10 @@ Build a streaming handler that processes tool call parameters as they arrive, be
 
 **Requirements:**
 
-1. Use `streamText` with tools defined (reuse tools from Module 7 or define simple ones)
-2. Listen for `toolCallStreaming` events that provide partial tool call arguments as they stream in
+1. Use `streamText` with a simple tool defined inline — e.g. a file-reading tool with a `path` input (Module 7 covers tools in depth)
+2. Iterate `result.stream` and handle the streaming tool parts: a `'tool-input-start'` part signals a tool call is beginning, and each `'tool-input-delta'` part carries a fragment of the argument JSON as it streams in
 3. Implement a `ToolPreparer` that begins setup work (e.g., validating a file path, resolving a URL) as soon as enough of the arguments are available — before the full tool call arrives
-4. When the complete tool call arrives (`toolCall` event), execute using the pre-prepared state
+4. When the complete `'tool-call'` part arrives, execute using the pre-prepared state
 5. Log the timeline: when streaming started, when preparation began, when the full call arrived, when execution completed
 6. Measure the time saved by early preparation vs waiting for the complete call
 

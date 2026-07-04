@@ -9,7 +9,7 @@
 - Build semantic search systems that find relevant documents by meaning, not keywords
 - Evaluate embedding dimensions, trade-offs, and similarity thresholds
 
-> *Module 8 is part of **Part II: Core Patterns** — embeddings are the bridge from text to the retrieval modules ahead.*
+> *Module 8 is part of **Part II: Core Patterns**, building toward the **Core Patterns** badge — embeddings are the bridge from text to the retrieval modules ahead.*
 
 ---
 
@@ -21,7 +21,7 @@ Embeddings are the foundation of retrieval-augmented generation (RAG), recommend
 
 Understanding embeddings gives you a mental model for how LLMs "understand" text. It also gives you practical tools for building search systems that work with meaning rather than pattern matching. This module teaches both the theory and the implementation.
 
-> **Provider Tip:** This module uses OpenAI embeddings for examples. You will need an `OPENAI_API_KEY`. Mistral embeddings (`mistral.embedding('mistral-embed')`) are available as a free alternative — see the provider table in Section 1.
+> **Provider Tip:** This module uses OpenAI embeddings for examples. You will need an `OPENAI_API_KEY`. Mistral embeddings (`mistral.embedding('mistral-embed')`) are available as a free alternative — see the provider table in Section 2.
 
 ---
 
@@ -92,10 +92,10 @@ Different providers offer different embedding models:
 ### Provider Setup
 
 ```typescript
-// Mistral embeddings (free tier, recommended default)
+// Mistral embeddings (free alternative)
 import { mistral } from '@ai-sdk/mistral'
 
-const embeddingModel = mistral.textEmbeddingModel('mistral-embed')
+const embeddingModel = mistral.embedding('mistral-embed')
 
 // OpenAI embeddings
 import { openai } from '@ai-sdk/openai'
@@ -108,7 +108,7 @@ import { ollama } from 'ai-sdk-ollama'
 const localEmbeddingModel = ollama.embedding('qwen3-embedding:0.6b')
 ```
 
-> **Beginner Note:** For this course, we primarily use OpenAI's embedding models because they offer the best balance of quality, speed, and cost. Anthropic does not offer a native embedding model through the AI SDK, but you can use OpenAI embeddings alongside Anthropic chat models — they are independent services.
+> **Beginner Note:** Anthropic does not offer a native embedding model through the AI SDK, but you can use OpenAI embeddings alongside Anthropic chat models — they are independent services.
 
 > **Advanced Note:** Embedding model choice matters. Different models capture different aspects of meaning and perform differently on various tasks. For production systems, benchmark your specific use case with multiple models. The difference between a good and bad embedding model can be a 20-30% accuracy gap in retrieval tasks.
 
@@ -198,7 +198,7 @@ Compare the first text against all others using cosine similarity. The semantica
 
 > **Try it:** Before computing, rank those five texts yourself by similarity to the first one. Then run it. The interesting cases are the near-misses — does the model reward genuine meaning, or surface word-overlap you didn't expect?
 
-> **Beginner Note:** Cosine similarity values for real embeddings typically range from 0.1 (unrelated) to 0.95+ (near identical). Values below 0.3 usually indicate no meaningful relationship. Values above 0.7 indicate strong semantic similarity. These thresholds vary by model.
+> **Beginner Note:** Cosine similarity values for real embeddings typically range from 0.1 (unrelated) to 0.95+ (near identical). Values below 0.3 usually indicate no meaningful relationship. Values above 0.7 indicate strong semantic similarity.
 
 ### Other Distance Metrics
 
@@ -224,7 +224,7 @@ LanceDB is an embedded vector database — think SQLite, but for vectors. There 
 
 This makes it ideal for learning and prototyping: zero infrastructure, instant setup, real persistence. But unlike toy in-memory stores, LanceDB scales to millions of vectors and supports filtering, full-text search, and multiple distance metrics — the same capabilities you would use in production.
 
-Install it with `bun add @lancedb/lancedb` (already installed as v0.27.2).
+Install it with `bun add @lancedb/lancedb` (already installed as v0.31.0).
 
 ### Key API Patterns
 
@@ -257,7 +257,7 @@ const filtered = await table.query().nearestTo(queryVector).where("category = 'a
 
 ### The VectorStore Interface
 
-Build a `VectorStore` class that wraps LanceDB and provides these methods:
+Build a `VectorStore` class at `src/embeddings/vector-store.ts` that wraps LanceDB and provides these methods:
 
 ```typescript
 interface VectorStoreDoc {
@@ -318,7 +318,7 @@ LanceDB supports SQL-like `WHERE` clauses on any column. Since metadata is store
 
 > **Beginner Note:** LanceDB uses exact nearest-neighbor search by default (brute-force scan). This works perfectly for thousands of documents. For millions of vectors, you can create an IVF-PQ index on the table for approximate nearest-neighbor search — but you do not need that for learning.
 
-> **Production Patterns:** LanceDB works great up to millions of vectors. For larger scale, use pgvector (PostgreSQL) or Elasticsearch. See Module 24.
+> **Production Patterns:** LanceDB works great up to millions of vectors. For larger scale, use pgvector (PostgreSQL) or Elasticsearch. See Module 27.
 
 ---
 
@@ -326,7 +326,7 @@ LanceDB supports SQL-like `WHERE` clauses on any column. Since metadata is store
 
 ### Building a Complete Semantic Search System
 
-Build a `SemanticSearchEngine` class that stores documents with their embeddings and supports similarity search using your `VectorStore` from Section 5.
+Sections 3-5 gave you every piece: embedding, similarity, and a vector store. Now compose them into a `SemanticSearchEngine` class — a document-level facade that **wraps** your Section 5 `VectorStore`. The engine does not re-implement storage or scoring; it embeds, delegates to the store, and maps results back to full documents.
 
 ```typescript
 interface Document {
@@ -342,30 +342,29 @@ interface SearchResult {
 }
 
 class SemanticSearchEngine {
-  private documents: Document[] = []
-  private embeddings: number[][] = []
+  constructor(private store: VectorStore) {}
 
-  async index(documents: Document[]): Promise<void>
+  async addDocuments(documents: Document[]): Promise<void>
   async search(query: string, topK?: number): Promise<SearchResult[]>
 }
 ```
 
-The `index` method should:
+Because `VectorStore.create` is async, create the store first (`await VectorStore.create(dbPath, tableName)`) and pass it to the constructor.
+
+The `addDocuments` method should:
 
 - Use `embedMany` to embed all documents in one batch. Combine `title` and `content` (e.g., `${d.title}\n${d.content}`) as the text to embed.
-- Store the documents and their embeddings in parallel arrays.
+- Delegate storage to the wrapped store: map each document plus its embedding into the shape `store.index()` expects, and keep a private `Map<string, Document>` keyed by id so `search` can return full `Document` objects later.
 
 The `search` method should:
 
 - Embed the query using `embed`
-- Compute cosine similarity between the query embedding and every stored embedding
-- Sort by score (highest first) and return the top K results
+- Delegate ranking to `store.search(queryEmbedding, topK)` — the store already handles similarity scoring and top-K
+- Map each hit back to a `SearchResult` by looking up the document by id
 
 Index at least 3 documents covering different topics (e.g., Bun runtime, TypeScript config, environment variables). Then test with queries like "How do I configure TypeScript?" and "How do I install the JavaScript runtime?" — does the engine rank the most relevant document first?
 
 This is a pure retrieval system — no generation step. In Module 9, you will combine this with LLM generation to build a complete RAG pipeline.
-
-> **Advanced Note:** In Module 9, you will combine this semantic search with LLM generation to build a complete RAG pipeline. For now, we focus on retrieval only — finding the most relevant documents for a query.
 
 ---
 
@@ -399,8 +398,6 @@ function analyzeDimensions(dims: number): DimensionAnalysis
 Each dimension is a 32-bit float (4 bytes) in most vector stores. Calculate bytes per vector, vectors per GB (`floor(1GB / bytesPerVector)`), and relative search time (`dims / 768` as a baseline). Run it for 768, 1024, 1536, and 3072 dimensions and print a comparison table.
 
 The key insight: 3072 dimensions stores **4x fewer vectors per GB** than 768 and searches **4x slower**. Is the quality improvement worth it for your use case?
-
-> **Advanced Note:** For most applications, 1536 dimensions (text-embedding-3-small) provides excellent quality at reasonable cost. Use 3072 dimensions only when you need to distinguish very similar texts (e.g., near-duplicate detection). Use 768 dimensions when storage or speed is critical and some quality loss is acceptable.
 
 ### Matryoshka Embeddings
 
@@ -634,7 +631,7 @@ In this module, you learned:
 7. **Batch embedding:** How to use `embedMany` efficiently and manage rate limits when embedding large document collections.
 8. **Similarity thresholds:** How to choose, calibrate, and adapt similarity thresholds per use case, and why thresholds are not portable across embedding models.
 
-> **Production Patterns:** Embedding API calls are relatively cheap per call but add up fast when re-embedding unchanged content. Production systems cache aggressively — keying embeddings by content hash so identical text is never embedded twice. An LRU cache with a reasonable size cap (e.g., 10,000 entries) prevents unbounded memory growth while keeping hot embeddings in memory. This caching discipline applies broadly to any embedding-heavy workflow and connects to the cost management patterns in Module 22.
+> **Production Patterns:** Embedding API calls are relatively cheap per call but add up fast when re-embedding unchanged content. Production systems cache aggressively — keying embeddings by content hash so identical text is never embedded twice. An LRU cache with a reasonable size cap (e.g., 10,000 entries) prevents unbounded memory growth while keeping hot embeddings in memory. This caching discipline applies broadly to any embedding-heavy workflow and connects to the cost management patterns in Module 25.
 
 In Module 9, you will combine embeddings with LLM generation to build complete RAG pipelines that ground model responses in your own data.
 
@@ -717,37 +714,13 @@ A high similarity threshold means only very similar results are returned, which 
 
 ---
 
-### Question 6 (Medium)
-
-An adaptive threshold uses `mean + 1 standard deviation` of similarity scores to determine relevance. What advantage does this have over a fixed threshold like 0.7?
-
-- A) It is faster to compute
-- B) It adjusts automatically to the score distribution of each query, handling datasets where absolute similarity scores vary widely
-- C) It always returns more results than a fixed threshold
-- D) It eliminates the need for embedding models
-
-**Answer: B** — Different queries produce different score distributions depending on the corpus. A fixed threshold of 0.7 might return too many results for one query and zero for another. An adaptive threshold based on the actual distribution (mean + 1 std dev) automatically adjusts, classifying results as relevant relative to the specific query's score spread.
-
----
-
-### Question 7 (Hard)
-
-You calibrate a similarity threshold of 0.75 using OpenAI's `text-embedding-3-small` model. You later switch to a different embedding model. Why can you NOT reuse the same threshold?
-
-- A) Different models produce vectors of different lengths, making comparison impossible
-- B) Each model maps text to a different vector space with different similarity score distributions — a score of 0.75 in one model may correspond to a different semantic similarity level in another
-- C) Only OpenAI models support cosine similarity
-- D) The threshold is stored in the model's configuration and cannot be transferred
-
-**Answer: B** — Similarity thresholds are not portable across embedding models because each model learns a different mapping from text to vector space. A cosine similarity of 0.75 with one model may represent "highly relevant" while the same score with a different model may represent "moderately relevant." You must always recalibrate thresholds with representative queries when changing embedding models.
-
----
-
 ## Exercises
 
 ### Exercise 1: Semantic Search Engine over Documents
 
 Build a semantic search engine that indexes a directory of markdown files and supports natural language queries.
+
+**What to build:** Create `src/embeddings/exercises/search-directory.ts`
 
 **Requirements:**
 
@@ -776,7 +749,7 @@ interface Chunk {
 }
 
 // Use your VectorStore class from Section 5
-// import { VectorStore } from '../../embeddings/vector-store.js'
+// import { VectorStore } from '../vector-store.js'
 
 async function indexDirectory(dirPath: string): Promise<number> {
   // TODO: Read all .md files recursively

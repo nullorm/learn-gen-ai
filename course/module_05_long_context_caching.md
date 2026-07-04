@@ -44,9 +44,10 @@ The history of context windows is a story of exponential growth:
 | 2023 | GPT-4          | 8K-32K tokens  | ~6-24 pages     |
 | 2023 | Claude 2       | 100K tokens    | ~75 pages       |
 | 2024 | Claude 3       | 200K tokens    | ~150 pages      |
+| 2024 | Claude 3.5     | 200K tokens    | ~150 pages      |
+| 2024 | GPT-4o         | 128K tokens    | ~96 pages       |
 | 2024 | Gemini 1.5 Pro | 1M-2M tokens   | ~750-1500 pages |
-| 2025 | Claude 3.5     | 200K tokens    | ~150 pages      |
-| 2025 | GPT-4o         | 128K tokens    | ~96 pages       |
+| 2025-26 | Claude 4.x / GPT-5.x / Gemini | 200K-1M tokens | ~150-750 pages |
 
 ### What Large Context Enables
 
@@ -155,11 +156,11 @@ async function queryWithCaching(question: string): Promise<string>
 
 Build a function that takes a question and sends it to `generateText` using `groq('openai/gpt-oss-20b')`. The key pattern: place the large static reference document in the message **before** the dynamic question. Groq automatically detects repeated prompt prefixes and caches them.
 
-After the call, check the `usage` object. Groq reports cached tokens in `providerMetadata` — cast usage and look for a `cachedTokens` property. Log total input tokens, output tokens, and cached tokens.
+After the call, check the `usage` object. In AI SDK v7, cache counters live under `usage.inputTokenDetails` — read `usage.inputTokenDetails?.cacheReadTokens ?? 0`. Log total input tokens, output tokens, and cached tokens.
 
-Test by calling the function multiple times with different questions against the same document. The first call computes and caches the prefix. Subsequent calls should show a non-zero `cachedTokens` value, indicating a cache hit at 50% discount.
+Test by calling the function multiple times with different questions against the same document. The first call computes and caches the prefix. Subsequent calls should show a non-zero `cacheReadTokens` value, indicating a cache hit at 50% discount.
 
-> **Beginner Note:** Groq's caching is fully automatic. The platform detects when your prompt starts with the same prefix as a recent request and reuses the cached computation. Cached tokens cost 50% less and do not count toward your rate limits. The cache expires after 2 hours without use.
+> **Beginner Note:** Two Groq details worth remembering: cached tokens do not count toward your rate limits, and the cache expires after 2 hours without use.
 
 ### Anthropic Explicit Caching
 
@@ -177,9 +178,9 @@ Anthropic requires explicit cache markers. Instead of a single string for the us
 }
 ```
 
-The dynamic question goes in a separate content block without cache markers. After the call, check `usage` for `cacheReadInputTokens` and `cacheCreationInputTokens` to see cache behavior.
+The dynamic question goes in a separate content block without cache markers. After the call, check `usage.inputTokenDetails` for `cacheReadTokens` (tokens served from the cache) and `cacheWriteTokens` (tokens written to the cache on this call) to see cache behavior. (In AI SDK v7 these live under `usage.inputTokenDetails`, not as flat `usage.cache*InputTokens` fields.)
 
-> **Advanced Note:** The `cache_control: { type: 'ephemeral' }` marker tells Anthropic "cache everything up to this point." The cache lives about 5 minutes (refreshed each time you use it). You only pay the cache creation cost on the first call. Anthropic's cache offers up to 90% savings on cached tokens — a deeper discount than Groq's 50%, but requires explicit markers and has a shorter TTL.
+> **Advanced Note:** The `cache_control: { type: 'ephemeral' }` marker tells Anthropic "cache everything up to this point." The cache lives about 5 minutes (refreshed each time you use it). You only pay the cache creation cost on the first call.
 
 > **Before / After:** A 10,000-token system prompt sent on each of 100 requests bills ~1M input tokens. Mark it cacheable and after the first call those tokens cost a fraction — up to 90% off on Anthropic, 50% on Groq. Same prompt, same output, a fraction of the bill. Caching is the rare optimization with no quality trade-off.
 
@@ -198,7 +199,7 @@ async function cachedDocumentQA(
 ): Promise<{ answer: string; cacheHit: boolean }>
 ```
 
-Build a function that separates static and dynamic content across messages. Place the static context inside the **system message** (wrapped in `<context>` tags) — this becomes the cached prefix. The dynamic query goes in a separate **user message**. After the call, check `usage` for `cachedTokens` to determine if a cache hit occurred (any value > 0 means a hit). Return both the answer and a boolean indicating whether the cache was hit.
+Build a function that separates static and dynamic content across messages. Place the static context inside the **system message** (wrapped in `<context>` tags) — this becomes the cached prefix. The dynamic query goes in a separate **user message**. After the call, read `usage.inputTokenDetails?.cacheReadTokens ?? 0` to determine whether a cache hit occurred (any value > 0 means a hit). Return both the answer and a boolean indicating whether the cache was hit.
 
 Test by loading a document from disk and running multiple queries against it in a loop, logging whether each query got a cache hit.
 
@@ -429,7 +430,7 @@ interface PricingTier {
 
 function calculateGroqCost(
   pricing: PricingTier,
-  usage: { inputTokens: number; outputTokens: number; cachedTokens: number }
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }
 ): { total: number; breakdown: Record<string, number> }
 
 function compareCachingScenarios(): void
@@ -440,7 +441,7 @@ Build a cost calculator and a comparison function. Reference pricing (verify aga
 - **Groq GPT-OSS 20B:** $0.075/1M input, $0.30/1M output, $0.0375/1M cached input (50% discount)
 - **Anthropic Sonnet:** $3.0/1M input, $15.0/1M output, $3.75/1M cache write, $0.30/1M cache read
 
-`calculateGroqCost` separates input tokens into uncached (`inputTokens - cachedTokens`) and cached portions, applies different rates to each, adds output cost, and returns a total with a breakdown.
+`calculateGroqCost` separates input tokens into uncached (`inputTokens - cacheReadTokens`) and cached portions, applies different rates to each, adds output cost, and returns a total with a breakdown.
 
 `compareCachingScenarios` models a scenario: 50K-token document, 10 questions, 200-token responses. Compare the cost with zero cached tokens vs the cost where 9 out of 10 queries hit the cache (first query pays full price). Print both totals and the percentage savings. How significant are the savings at this scale?
 
@@ -454,7 +455,7 @@ function compareCachingSavings(documentTokens: number, numQueries: number): void
 
 Build a function that compares caching savings across providers. For Groq: first query at full price, subsequent queries at 50% discount, no write surcharge. For Anthropic: first query at 125% (cache write surcharge), subsequent queries at 10% (90% discount on reads). Compute the savings percentage for each provider. Test with 2, 10, and 100 queries against a 50K-token document. At what query count does Anthropic's deeper discount overtake Groq's simpler pricing?
 
-> **Advanced Note:** Cache lifetime matters for both approaches. Groq's cache lasts about 2 hours without use — generous for most interactive and batch workloads. Anthropic's ephemeral cache lasts about 5 minutes but is refreshed with each use. OpenAI's cache lasts 5–10 minutes. For high-traffic applications, all caches stay warm naturally. For infrequent queries, Groq's longer TTL is a significant advantage.
+> **Advanced Note:** Cache lifetime (the TTL row in Section 3's comparison table) determines which workloads benefit: high-traffic applications keep any cache warm naturally, while infrequent queries make Groq's longer TTL a significant advantage over the minutes-scale ephemeral caches.
 
 ---
 
@@ -561,7 +562,7 @@ Different models have different context windows, so thresholds must be model-awa
 
 ### Structuring Messages for Maximum Cache Hits
 
-Prompt caching works on prefixes — the provider caches the KV state computed from the beginning of the prompt. Any change in early messages invalidates the cache for everything after it. This has a direct implication for how you structure API calls:
+As Section 3 established, caching is prefix-based — any change in early messages invalidates the cache for everything after it — which dictates how you order messages:
 
 1. **Static content first** — System prompt, tool definitions, reference documents, and any fixed instructions go at the beginning. These rarely change between calls.
 2. **Semi-static content next** — Retrieved context, memory summaries, and session metadata that change infrequently.
@@ -578,6 +579,8 @@ const messages = [
 ```
 
 If you put the user's message before the reference document, every new query invalidates the cache for the (potentially large) document. By keeping static content at the front, the provider reuses the cached prefix and only processes the new dynamic suffix. This is the difference between caching 90% of your tokens and caching 0%.
+
+> **Gotcha (v7):** This layout keeps two `role: 'system'` blocks (system prompt + tool definitions) at the front of `messages`, so the call must pass `allowSystemInMessages: true` — v7 rejects system-role messages in the array by default. The primary system prompt could instead live in the `instructions` field (still part of the cached prefix); the array form here lets you show _multiple_ static blocks ordered for maximum prefix reuse.
 
 ---
 
@@ -630,14 +633,13 @@ In this module, you learned:
 1. **Context window evolution:** Context windows have grown from 4K to 200K+ tokens, enabling new approaches but introducing cost and latency trade-offs.
 2. **Full context vs RAG:** Dropping entire documents into the context window is simple and effective for smaller corpora, while RAG is better for large or frequently changing data.
 3. **Prompt caching:** Groq automatically caches repeated prompt prefixes on GPT-OSS models (50% discount, 2-hour TTL). Anthropic offers explicit `cache_control` markers for up to 90% savings. Both approaches reduce cost and latency on repeated calls.
-4. **Cache placement strategy:** Placing static content (system prompts, reference documents) at the beginning of your prompt and dynamic content (user queries) at the end maximizes cache hit rates for both automatic and explicit caching.
+4. **Cache placement strategy:** Placing static content (system prompts, reference documents) at the beginning of your prompt and dynamic content (user queries) at the end maximizes cache hit rates for both automatic and explicit caching — and the same static → semi-static → dynamic ordering applies to whole message arrays.
 5. **KV cache internals:** Understanding how transformers store key-value pairs explains why prompt caching works and why prefix stability matters.
 6. **Context compression:** Preprocessing documents, selectively including content, and using LLM-based summarization reduce token usage while preserving the information the model needs.
 7. **Decision framework:** Choosing between full context, caching, and RAG depends on document size, query frequency, freshness requirements, and budget constraints.
 8. **Auto-compact systems:** Production applications monitor token usage continuously and trigger compaction automatically at configurable thresholds.
-9. **Cache-friendly ordering:** Placing static content first and dynamic content last in messages maximizes prompt cache hit rates.
-10. **Memory management:** LRU caches, circular buffers, token monitoring, and WeakRef are complementary patterns for managing resources in long-running LLM applications.
-11. **Thinking budgets:** Configurable reasoning effort trades context capacity for answer quality — a direct context budget decision.
+9. **Memory management:** LRU caches, circular buffers, token monitoring, and WeakRef are complementary patterns for managing resources in long-running LLM applications.
+10. **Thinking budgets:** Configurable reasoning effort trades context capacity for answer quality — a direct context budget decision.
 
 In Module 6, you will dive deep into streaming — delivering LLM responses to users in real time for better perceived performance.
 
@@ -671,7 +673,7 @@ D) 500 pages
 
 **Answer: C**
 
-A typical page of English text contains roughly 250-300 words, which translates to about 350-400 tokens. At 200,000 tokens, that is approximately 500-570 pages. However, the standard approximation used is ~150K words for 200K tokens, which at ~1000 words per page gives ~150 pages. The exact number depends on content density and formatting.
+At the module's rule of thumb (a token is roughly 3/4 of a word), 200K tokens is ~150K words. Treating a dense page as ~1,000 words (~1,333 tokens), 200K tokens comes out to roughly 150 pages — the same equivalence the Section 1 timeline table uses for 200K-token models. The exact number depends on content density and formatting.
 
 ---
 
@@ -720,37 +722,15 @@ RAG is the better choice when documents are too large to fit in the context wind
 
 ---
 
-### Question 6 (Medium)
-
-Why should static content (system prompt, tool definitions) be placed at the beginning of the message array rather than after dynamic content?
-
-- A) The model pays more attention to content at the beginning
-- B) Prompt caching works on prefixes — placing stable content first maximizes cache hit rates since dynamic content at the end does not invalidate the cached prefix
-- C) The API requires system messages to come first
-- D) Static content is always shorter than dynamic content
-
-**Answer: B** — Prompt caching stores the KV state computed from the beginning of the prompt. Any change in early messages invalidates the cache for everything after it. By placing static content first, the provider reuses the cached prefix and only processes the new dynamic suffix. Putting dynamic content before static content would invalidate the cache on every request.
-
----
-
-### Question 7 (Hard)
-
-A production auto-compact system triggers compaction at 90% context capacity. The compaction itself is a `generateText` call to a smaller model. What design risk does this introduce, and how is it mitigated?
-
-- A) The compaction model might hallucinate — mitigated by using structured output with a strict schema
-- B) The compaction call consumes tokens from the already-full context — mitigated by using a separate model call with its own context window, preserving recent messages verbatim and only summarizing older ones
-- C) The compaction happens too frequently — mitigated by caching the compaction result
-- D) The smaller model cannot handle the conversation length — mitigated by switching to a larger model
-
-**Answer: B** — The compaction call is a separate `generateText` invocation with its own context budget, not an addition to the already-full conversation. It takes the older messages, summarizes them into a condensed system message, and the main conversation replaces those messages with the summary. Recent messages stay verbatim to preserve fidelity, and the system prompt remains untouched.
-
----
-
 ## Exercises
 
 ### Exercise 1: Document Q&A with Prompt Caching
 
 Build a document Q&A system that uses prompt caching and measures cost savings.
+
+**File:** `src/memory/exercises/doc-qa-caching.ts`
+
+**Prep:** the repo has no `data/` directory yet — create one and save any long text (10,000+ words) as `data/sample-document.txt`. A public-domain book chapter works; the reference solution generates a synthetic research report.
 
 **Requirements:**
 
@@ -765,7 +745,7 @@ Build a document Q&A system that uses prompt caching and measures cost savings.
 
 ```typescript
 import { generateText } from 'ai'
-import { mistral } from '@ai-sdk/mistral'
+import { groq } from '@ai-sdk/groq'
 
 interface QueryResult {
   question: string
@@ -778,12 +758,15 @@ interface QueryResult {
 }
 
 async function runCachedQueries(document: string, questions: string[]): Promise<QueryResult[]> {
-  // TODO: Implement with cache_control on the document
+  // TODO: Put the document in `instructions` (the stable, cacheable prefix) so
+  // Groq's automatic caching kicks in; only the question changes per call.
+  // Read cache counters from usage.inputTokenDetails (cacheReadTokens / cacheWriteTokens).
   throw new Error('Not implemented')
 }
 
 async function runUncachedQueries(document: string, questions: string[]): Promise<QueryResult[]> {
-  // TODO: Implement without caching
+  // TODO: Combine document + question in a single user prompt each call, so
+  // there is no stable prefix for the provider to cache.
   throw new Error('Not implemented')
 }
 
@@ -818,6 +801,8 @@ printComparison(cachedResults, uncachedResults)
 
 Build a pipeline that compresses a long document through multiple stages and measures quality vs token trade-offs.
 
+**File:** `src/memory/exercises/compression-pipeline.ts`
+
 **Requirements:**
 
 1. Take a document of at least 20,000 tokens
@@ -835,9 +820,9 @@ Build a pipeline that compresses a long document through multiple stages and mea
 
 ### Exercise 3: Auto-Compact Monitor
 
-Build a middleware that wraps `generateText` calls, tracks cumulative token usage across a conversation, and triggers a compaction callback when usage exceeds configurable thresholds.
+Build a middleware that wraps `generateText` calls, tracks cumulative token usage across a conversation, and triggers a compaction callback when usage exceeds configurable thresholds. Module 4's Exercise 4 was a **one-shot compaction** of a message array you already hold; this is the production counterpart — **cumulative usage-tracking middleware** that monitors every call and triggers compaction automatically.
 
-**What to build:** Create `src/memory/auto-compact.ts`
+**What to build:** Create `src/memory/exercises/auto-compact.ts`
 
 **Requirements:**
 
@@ -858,7 +843,7 @@ Build a middleware that wraps `generateText` calls, tracks cumulative token usag
 
 ### Exercise 4: Context Window Budget Allocator
 
-Build a budget allocator that divides a model's context window into named segments and tracks consumption against each budget.
+Build a budget allocator that divides a model's context window into named segments and tracks consumption against each budget. This turns the percentage-allocation sketch from Module 4's Going Further into a real, testable component.
 
 **What to build:** Create `src/memory/exercises/context-budget.ts`
 

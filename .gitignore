@@ -7,3 +7,12 @@ course/preferences.toml
 data/
 .claude/settings.local.json
 
+# framework module (apps/) runtime + build artifacts
+.workflow-data/
+.workflow-vitest/
+.eve/
+.output/
+
+# canonical course solutions (teacher-local; students build these themselves)
+.code/
+

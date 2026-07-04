@@ -25,7 +25,7 @@ Knowledge graphs store exactly this kind of structured, relational information. 
 
 In a RAG pipeline, knowledge graphs complement vector search. Vector search finds relevant passages; graph search finds related entities and their connections. Combining both gives you answers that are grounded in both text content and structural relationships. This is the Graph RAG pattern, and it is one of the most powerful retrieval strategies available.
 
-This module teaches you to build knowledge graphs from documents using LLM-powered entity and relationship extraction, implement graph traversal for retrieval, and combine graph and vector search. The graph does not need to be stored in a specialized graph database — an in-memory adjacency list works for many use cases.
+This module teaches you to build knowledge graphs from documents using LLM-powered entity and relationship extraction, implement graph traversal for retrieval, and combine graph and vector search — all with a plain in-memory adjacency list.
 
 ---
 
@@ -35,7 +35,7 @@ This module builds on the entity extraction concepts from **Module 11 (Document 
 
 - **Module 8 (Embeddings & Similarity)** provides vector search for the hybrid Graph RAG approach.
 - **Module 9 (RAG Fundamentals)** and **Module 10 (Advanced RAG)** provide the retrieval pipeline that graph search augments.
-- **Module 14 (Agent Fundamentals)** can use graph traversal as a tool, letting agents navigate knowledge graphs autonomously.
+- **Module 16 (Agent Fundamentals)** can use graph traversal as a tool, letting agents navigate knowledge graphs autonomously.
 
 Think of vector search as finding the right library books and graph search as finding the connections between people, ideas, and events in those books.
 
@@ -86,29 +86,9 @@ const graphQuestions = [
     vectorSearchFails: 'Returns documents mentioning team sizes but cannot aggregate',
   },
 ]
-
-// When to use graphs vs vectors
-const decisionMatrix = {
-  useVectorSearch: [
-    'Find documents about a topic',
-    'Semantic similarity search',
-    'Answer questions from a single passage',
-    'Find similar items',
-  ],
-  useGraphSearch: [
-    'Multi-hop relationship queries',
-    'Find connections between entities',
-    'Aggregate across entities',
-    'Traverse organizational/dependency structures',
-  ],
-  useBoth: [
-    'Complex questions requiring both content and relationships',
-    'Questions that need context from related entities',
-    'Verification of claims across multiple sources',
-    'Research questions spanning multiple documents',
-  ],
-}
 ```
+
+Section 8 turns these failure patterns into a full decision framework for choosing between vector, graph, and hybrid retrieval.
 
 > **Beginner Note:** You do not need a specialized graph database (Neo4j, Amazon Neptune) to start. An in-memory adjacency list or even a JSON file works for knowledge graphs with up to ~100,000 nodes. Graduate to a graph database only when you need persistence at scale, complex graph algorithms, or concurrent access.
 
@@ -126,7 +106,7 @@ AgentTool -> spawns sub-agents -> [tool subsets]
 
 These are graph-structured relationships. "What happens if the shell service goes down?" requires traversing dependencies to find all affected tools and commands. "Which tools does the commit workflow use?" requires following the dependency chain.
 
-You encounter these dependency graphs in any non-trivial system: microservice architectures (service A calls service B), npm packages (dependency trees), database schemas (foreign key relationships), and API endpoints (route -> handler -> service -> database). Recognizing when your data is naturally graph-shaped is the first step toward deciding whether to build an explicit knowledge graph or leverage an implicit one.
+Dependency graphs like these appear in any non-trivial system, and often the graph already exists in machine-readable form — the "When Graphs Are Free" table in Going Further catalogs those ready-made sources.
 
 ---
 
@@ -167,7 +147,7 @@ const EntitySchema = z.object({
   type: EntityTypeEnum,
   aliases: z.array(z.string()).describe('Alternative names or abbreviations'),
   description: z.string().describe('Brief description (1-2 sentences)'),
-  attributes: z.record(z.string()).describe('Key-value attributes like role, version, date'),
+  attributes: z.record(z.string(), z.string()).describe('Key-value attributes like role, version, date'),
 })
 
 type Entity = z.infer<typeof EntitySchema>
@@ -237,7 +217,7 @@ const SoftwareEntitySchema = z.object({
         'feature',
       ]),
       aliases: z.array(z.string()),
-      attributes: z.record(z.string()),
+      attributes: z.record(z.string(), z.string()),
     })
   ),
 })
@@ -302,7 +282,7 @@ What common relationship types would you include in the prompt as guidance? Thin
 
 ### Joint Entity-Relationship Extraction
 
-Extracting entities and relationships together in a single call ensures consistency -- the entity names in the relationships will match the entity list exactly.
+You can also extract entities and relationships together in a single call:
 
 ```typescript
 const EntityRelationshipSchema = z.object({
@@ -367,7 +347,7 @@ When would you extend the static map vs rely on the LLM? What is the cost trade-
 
 ### In-Memory Adjacency List
 
-A knowledge graph can be represented as a simple adjacency list: a map from node IDs to their edges. No specialized graph database needed.
+A knowledge graph can be represented as a simple adjacency list: a map from node IDs to their edges.
 
 ```typescript
 // src/knowledge-graphs/graph.ts
@@ -825,7 +805,7 @@ The eight sections above build a knowledge graph from unstructured text. But som
 
 ### LSP as an Implicit Knowledge Graph
 
-(See Module 10 Section 11 for LSP background.)
+(See Module 10, Going Further: LSP-Augmented Retrieval.)
 
 Language Server Protocol provides an implicit knowledge graph over code that you never have to build or maintain. The graph is always current because it is computed directly from the source code:
 
@@ -870,13 +850,7 @@ Some domains provide graph structure inherently — you do not have to build it.
 
 For these domains, the graph already exists in a structured, machine-readable format. You can query it directly rather than building a knowledge graph from unstructured text. The entity extraction and relationship mapping from this module are needed when the graph does not already exist — when you are working with documents, reports, emails, or other unstructured content.
 
-The practical decision framework is:
-
-1. **Check for an implicit graph first.** Does your domain have a structured schema, protocol, or specification that encodes entities and relationships?
-2. **If yes, use it directly.** Write query adapters that translate graph questions into the native query language (SQL for databases, LSP for code, API calls for service catalogs).
-3. **If no, build an explicit graph.** Use the entity extraction and relationship mapping techniques from this module to construct one from unstructured data.
-
-> **Decision:** Before building a knowledge graph, ask whether one already exists. The most expensive part of a graph is never storage or traversal — it's construction and maintenance. If your domain has a structured source (a database schema, an API spec, an LSP), query that directly and skip the build entirely.
+> **Decision:** Before building a knowledge graph, ask whether one already exists. The most expensive part of a graph is never storage or traversal — it's construction and maintenance. If your domain has a structured source (a database schema, an API spec, an LSP), write a thin query adapter that translates graph questions into its native query language and skip the build entirely. Reach for this module's extraction techniques only when no structured source exists.
 
 ---
 
@@ -964,34 +938,6 @@ You have a knowledge base of 500 technical documents. Users mostly ask "how-to" 
 
 **Answer: C** — A full Graph RAG system for all 500 documents is expensive and unnecessary for "how-to" queries. Ignoring the 20% dependency queries leaves a significant gap. The optimal approach is vector RAG as the default (handles 80% of queries well) with a targeted graph just for service dependency relationships (handles the 20%). A router or classifier can detect dependency-type questions and activate graph retrieval only when needed, keeping costs low while improving quality where it matters most.
 
-### Question 6 (Medium)
-
-What advantage does an LSP-derived knowledge graph have over a manually constructed one for code?
-
-a) LSP graphs support more entity types
-b) LSP graphs are always correct and never stale because they are computed directly from the source code, eliminating the extraction pipeline and maintenance burden
-c) LSP graphs are stored more efficiently
-d) LSP graphs can represent business rules that code cannot express
-
-**Answer: B**
-
-**Explanation:** An LSP-derived graph is computed from the source of truth (the code itself). When code changes, the graph updates automatically — there is no extraction pipeline to run, no entity resolution to maintain, and no risk of stale data. A manually constructed knowledge graph requires re-extraction whenever code changes and can drift from reality between updates. The trade-off is flexibility: LSP only captures code structure, not business rules or architectural decisions.
-
----
-
-### Question 7 (Hard)
-
-You are deciding whether to build an explicit knowledge graph for a new domain. The domain has a well-defined API specification (OpenAPI) that describes all endpoints, schemas, and their relationships. What should you do?
-
-a) Build a knowledge graph from the API documentation using entity extraction
-b) Ignore the API specification and use vector search only
-c) Use the OpenAPI spec directly as an implicit graph — it already encodes entities (endpoints, schemas) and relationships (request/response, dependencies) in a structured, machine-readable format
-d) Convert the OpenAPI spec to unstructured text before building the graph
-
-**Answer: C**
-
-**Explanation:** The OpenAPI specification is an implicit graph that already encodes the entities and relationships you would extract. Endpoints are nodes, request/response schemas define edges, and dependencies between schemas capture relationships. Writing query adapters that translate graph questions into spec lookups is far cheaper and more reliable than building an explicit graph from the same information. The general principle: check for implicit graphs first, and only build explicit ones when no structured source exists.
-
 ---
 
 ## Exercises
@@ -1037,30 +983,43 @@ Answer: Project Alpha depends on: Authentication Service, Embedding Service, Pos
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 12: Knowledge Graph', () => {
-  it('should extract entities from documents', async () => {
-    const entities = await extractEntities(sampleDocuments)
+  // Extract once, assert many times — extraction is the expensive LLM step.
+  const pipeline = (async () => {
+    const { entities, relationships } = await extractGraphData(sampleDocuments)
+    return { entities, relationships, graph: buildGraph(entities, relationships) }
+  })()
+
+  it('should extract entities from the documents', async () => {
+    const { entities } = await pipeline
     expect(entities.length).toBeGreaterThan(5)
   })
 
-  it('should extract relationships', async () => {
-    const relationships = await extractRelationships(sampleDocuments)
+  it('should extract relationships between entities', async () => {
+    const { relationships } = await pipeline
     expect(relationships.length).toBeGreaterThan(3)
   })
 
-  it('should build a navigable graph', () => {
-    const graph = buildGraph(entities, relationships)
+  it('should build a navigable graph', async () => {
+    const { graph } = await pipeline
     const stats = graph.getStats()
     expect(stats.nodeCount).toBeGreaterThan(0)
     expect(stats.edgeCount).toBeGreaterThan(0)
   })
 
-  it('should answer 1-hop relationship queries', () => {
-    const neighbors = graph.getNeighbors('person:charlie_davis')
-    expect(neighbors.length).toBeGreaterThan(0)
+  it('should answer 1-hop relationship queries', async () => {
+    const { graph } = await pipeline
+    const managers = whoManages(graph, 'Charlie Davis')
+    expect(managers.some(m => m.name.toLowerCase().includes('alice'))).toBe(true)
+
+    const deps = dependenciesOf(graph, 'Project Alpha')
+    expect(deps.length).toBeGreaterThan(0)
   })
 
-  it('should find paths between entities', () => {
-    const path = findShortestPath(graph, 'person:charlie_davis', 'person:bob_johnson')
+  it('should find paths between entities', async () => {
+    const { graph } = await pipeline
+    const charlie = graph.findNode('Charlie Davis')!
+    const bob = graph.findNode('Bob Johnson')!
+    const path = findShortestPath(graph, charlie.id, bob.id)
     expect(path).not.toBeNull()
     expect(path!.length).toBeGreaterThan(1)
   })
@@ -1125,6 +1084,6 @@ describe('Exercise 12: Graph RAG', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** Entity extraction and relationship mapping use `generateText` with `Output.object` and Zod schemas — this works with `ollama('qwen3.5')`. Knowledge graph construction and graph-augmented retrieval are model-agnostic patterns. Cloud models (`qwen3.5:cloud`) will produce better entity extraction for complex documents.
+> **Local Alternative (Ollama):** Entity extraction and relationship mapping use `generateText` with `Output.object` and Zod schemas — this works with `ollama('qwen3.5', { think: false })`. Knowledge graph construction and graph-augmented retrieval are model-agnostic patterns. Cloud models (`ollama('qwen3.5:cloud', { think: false })`) will produce better entity extraction for complex documents.
 
 ---

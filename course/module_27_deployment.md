@@ -1,4 +1,4 @@
-# Module 24: Deployment
+# Module 27: Deployment
 
 ## Learning Objectives
 
@@ -12,7 +12,7 @@
 - Handle scaling considerations including concurrency, queue-based processing, and backpressure
 - Manage environment configuration and secrets securely
 
-> *Module 24 is the finale of **Part VI: Production** — ship it to earn the **Production Ready** badge and the **LLM Architect** rank.*
+> *Module 27 is the finale of **Part VI: Production** — ship it to earn the **Production Ready** badge and the **LLM Architect** rank.*
 
 ---
 
@@ -31,10 +31,10 @@ This module teaches you to build production-ready API servers for LLM applicatio
 - **Module 6 (Streaming)** introduces the streaming concepts you will expose via SSE endpoints.
 - **Module 7 (Tool Use)** creates tool-calling capabilities that need API endpoints.
 - **Module 9-10 (RAG)** builds the retrieval pipelines you will serve through the API.
-- **Module 14-15 (Agents)** creates long-running agent loops that need queue-based processing.
-- **Module 21 (Safety)** provides guardrails that become middleware in the deployment stack.
-- **Module 22 (Cost Optimization)** connects through rate limiting, caching, and model routing.
-- **Module 23 (Observability)** provides the logging, tracing, and metrics infrastructure.
+- **Modules 16-17 (Agents)** create long-running agent loops that need queue-based processing.
+- **Module 24 (Safety)** provides guardrails that become middleware in the deployment stack.
+- **Module 25 (Cost Optimization)** connects through rate limiting, caching, and model routing.
+- **Module 26 (Observability)** provides the logging, tracing, and metrics infrastructure.
 
 ---
 
@@ -150,7 +150,7 @@ import { stream } from 'hono/streaming'
 await stream.write(`data: ${JSON.stringify({ type: 'text', content: chunk })}\n\n`)
 ```
 
-**Streaming with tool calls** (`POST /api/stream-with-tools`) -- Use `result.fullStream` instead of `result.textStream` to get typed events. Handle four event types in a switch statement: `text-delta` (forward the text), `tool-call` (forward tool name and args), `tool-result` (forward tool name and result), and `finish` (forward finish reason and usage). What other event types does `fullStream` emit that you might want to handle?
+**Streaming with tool calls** (`POST /api/stream-with-tools`) -- Use `result.stream` instead of `result.textStream` to get typed events. Handle four event types in a switch statement: `text-delta` (forward the text), `tool-call` (forward tool name and args), `tool-result` (forward tool name and result), and `finish` (forward finish reason and usage). What other event types does `stream` emit that you might want to handle?
 
 ### Client-Side SSE Consumption
 
@@ -347,7 +347,7 @@ class ProviderFailover {
     text: string
     provider: string
     model: string
-    usage: any
+    usage: LanguageModelUsage // import type { LanguageModelUsage } from 'ai'
     failoverAttempts: number
   }>
 
@@ -389,7 +389,7 @@ interface QueuedRequest {
   prompt: string
   system?: string
   maxOutputTokens?: number
-  resolve: (value: any) => void
+  resolve: (value: unknown) => void
   reject: (error: Error) => void
   queuedAt: number
   priority: number // Lower = higher priority
@@ -406,7 +406,7 @@ class RequestQueue {
     system?: string
     maxOutputTokens?: number
     timeoutMs?: number
-  }): Promise<any>
+  }): Promise<unknown>
 
   getStatus(): {
     queueLength: number
@@ -514,7 +514,7 @@ await Bun.write(sessionPath, JSON.stringify({ id: sessionId, messages, metadata 
 When your LLM service runs as an SDK (consumed by other programs, not humans), it needs machine-readable output. NDJSON (Newline-Delimited JSON) is the standard format:
 
 - Each event is a self-contained JSON object on one line.
-- Events are typed: `{ type: 'text', content: '...' }`, `{ type: 'tool_call', name: '...', args: {...} }`, `{ type: 'error', code: 'RATE_LIMITED', message: '...' }`.
+- Events are typed: `{ type: 'text_delta', content: '...' }`, `{ type: 'tool_call', name: '...', args: {...} }`, `{ type: 'error', code: 'RATE_LIMITED', message: '...' }`.
 - Clients parse one line at a time — no need to wait for the full response.
 - Error codes (not exceptions) make programmatic error handling straightforward.
 
@@ -522,7 +522,7 @@ When your LLM service runs as an SDK (consumed by other programs, not humans), i
 
 ```ts
 if (outputMode === 'ndjson') {
-  stream.write(JSON.stringify({ type: 'text', content: chunk }) + '\n')
+  stream.write(JSON.stringify({ type: 'text_delta', content: chunk }) + '\n')
 }
 ```
 
@@ -557,7 +557,7 @@ Without graceful shutdown, users lose their conversation state and in-progress w
 
 ## Going Further: Distribution & Integration
 
-Sections 1–13 are everything you need to deploy and operate an LLM API. These last five are about *shape* — how the same engine reaches users through different surfaces: multiple targets, a client/server split, headless CI, an MCP server, and multiple frontends.
+Sections 1–13 are everything you need to deploy and operate an LLM API. These last three are about *shape* — how the same engine reaches users through different surfaces: multi-target deployment (including headless CI and multiple frontends), a client/server split, and an MCP server.
 
 ### Multi-Target Deployment
 
@@ -570,6 +570,11 @@ A single codebase can serve multiple deployment targets by separating the core l
 
 **Pattern:** Refactor your server so the core LLM logic lives in a shared module. Entry points are thin shells that handle I/O and call into the core. This is the same pattern web applications use — API server + CLI tool + library, all sharing one implementation.
 
+The same split yields two more targets for free:
+
+- **Headless CI execution** — Non-interactive automation: accept prompts via args or stdin (`tool exec "refactor this function"`), emit structured NDJSON instead of interactive formatting, support a quiet mode, and return meaningful exit codes (0 = success, 1 = error, 2 = safety block). This enables CI/CD integration, scripted workflows, and batch processing.
+- **Multi-frontend distribution** — Ship a CLI, a desktop app (Electron, Tauri), a VS Code extension, and a web interface as thin shells around the same core library.
+
 ### Client/Server Architecture
 
 Production coding agents decouple the backend (LLM processing, tool execution, state management) from the frontend (terminal UI, desktop app, IDE extension). The terminal is just one client connecting to a backend.
@@ -580,35 +585,13 @@ This architecture enables:
 - **Multiple simultaneous clients** — IDE extension and terminal both connected to the same session.
 - **IDE integration as thin client** — The VS Code extension does not embed the agent; it connects to the running backend.
 
-**Pattern:** The LLM service is a server. Everything else is a client. This is the same separation that web applications use (API server + multiple frontends), applied to AI tooling. The interface boundary is an HTTP/WebSocket API that any client can consume.
-
-### Headless CI Execution
-
-Production systems support non-interactive execution for automation:
-
-- Accept prompts via command-line arguments or stdin: `tool exec "refactor this function"`
-- Output structured results (NDJSON) instead of interactive formatting
-- Support quiet mode that suppresses progress indicators and colors
-- Return meaningful exit codes (0 = success, 1 = error, 2 = safety block)
-
-This enables CI/CD integration (run code review as a pipeline step), scripted workflows (chain agent invocations in shell scripts), and batch processing (process multiple files programmatically). The headless mode shares the same core module as the interactive mode — only the I/O layer differs.
+**Pattern:** The LLM service is a server. Everything else is a client. The interface boundary is an HTTP/WebSocket API that any client can consume.
 
 ### MCP Server Mode
 
 Production coding agents can act as both an MCP client (consuming external tools) AND an MCP server (exposing their own capabilities). This bidirectional MCP support enables tool composition — one agent can use another agent as a tool.
 
 Being an MCP server means the agent's capabilities (code search, file editing, RAG retrieval) are available to any MCP client, not just the agent's own UI. This is the microservices pattern applied to AI tools — each agent exposes a well-defined interface that other agents can consume.
-
-### Multi-Frontend Distribution
-
-Production coding agents ship as multiple form factors from a single codebase:
-
-- **CLI** — Terminal interface (what you have been building)
-- **Desktop app** — Native application with richer UI (Electron, Tauri)
-- **VS Code extension** — Embedded in the IDE as a thin client
-- **Web interface** — Browser-based access via HTTP API
-
-The core logic (LLM calls, tool execution, state management) is shared. Each distribution target is a thin shell around the same core library. Think of your LLM service as a core library with multiple frontends, not as a monolithic application tied to one interface.
 
 ---
 
@@ -629,11 +612,9 @@ In this module, you learned:
 11. **SDK output mode:** Supporting NDJSON output for machine-readable consumption alongside interactive terminal output, enabling programmatic integration and CI/CD pipelines.
 12. **Health endpoints:** Implementing liveness and readiness probes with dependency checks that distinguish critical from optional services to prevent unnecessary restarts.
 13. **Graceful shutdown:** Handling SIGINT/SIGTERM to save session state, complete in-flight operations, flush logs, and free resources before exiting cleanly.
-14. **Multi-target deployment:** Separating core LLM logic from I/O so the same codebase serves HTTP, CLI, and SDK entry points.
+14. **Multi-target deployment:** Separating core LLM logic from thin I/O shells so one codebase ships as HTTP API, CLI, SDK, headless CI mode (structured output, meaningful exit codes), and multiple frontends (desktop, IDE extension, web).
 15. **Client/server architecture:** Decoupling the backend from the frontend so multiple clients (terminal, IDE, mobile) can connect to the same agent session.
-16. **Headless CI execution:** Supporting non-interactive mode with structured output and meaningful exit codes for automation and batch processing.
-17. **MCP server mode:** Exposing agent capabilities as an MCP server so other agents and tools can consume them programmatically.
-18. **Multi-frontend distribution:** Shipping CLI, desktop, VS Code extension, and web interfaces from a single shared core library.
+16. **MCP server mode:** Exposing agent capabilities as an MCP server so other agents and tools can consume them programmatically.
 
 You now have the complete toolkit to build, evaluate, secure, optimize, observe, and deploy production LLM applications.
 
@@ -641,7 +622,7 @@ You now have the complete toolkit to build, evaluate, secure, optimize, observe,
 
 ## Quiz
 
-**Question 1:** Why are long-running servers often preferred over serverless functions for LLM applications?
+**Question 1 (Easy):** Why are long-running servers often preferred over serverless functions for LLM applications?
 
 A) Long-running servers are cheaper
 B) Serverless functions have request duration limits that can kill long agent loops, and they lack persistent connections for streaming
@@ -652,7 +633,7 @@ D) Long-running servers have better security
 
 ---
 
-**Question 2:** What is the purpose of the circuit breaker pattern in provider failover?
+**Question 2 (Easy):** What is the purpose of the circuit breaker pattern in provider failover?
 
 A) To make requests faster
 B) To reduce API costs
@@ -663,7 +644,7 @@ D) To encrypt requests in transit
 
 ---
 
-**Question 3:** Why should rate limiting in LLM applications include token-based limits, not just request count limits?
+**Question 3 (Medium):** Why should rate limiting in LLM applications include token-based limits, not just request count limits?
 
 A) Token-based limits are easier to implement
 B) A single request with a 100K token prompt is far more expensive and resource-intensive than 100 requests with 100 token prompts
@@ -674,7 +655,7 @@ D) Request count limits are not supported by LLM APIs
 
 ---
 
-**Question 4:** What is the primary benefit of queue-based processing for LLM requests?
+**Question 4 (Medium):** What is the primary benefit of queue-based processing for LLM requests?
 
 A) It makes responses faster
 B) It reduces token costs
@@ -685,36 +666,14 @@ D) It improves response quality
 
 ---
 
-**Question 5:** Why should environment configuration use schema validation (like Zod) instead of just reading process.env directly?
+**Question 5 (Hard):** An agent workload sends one request every 2 seconds, averaging 2,500 tokens per request. The API uses this module's tier limits (free: 10 requests/min + 10K tokens/min; pro: 60 requests/min + 100K tokens/min; enterprise: 300 requests/min + 1M tokens/min), and the readiness probe currently reports the optional fallback provider as down. What happens to the workload?
 
-A) Zod is faster than process.env
-B) Schema validation catches missing or malformed environment variables at startup rather than causing cryptic runtime errors
-C) process.env does not work in production
-D) Zod is required by the Vercel AI SDK
+A) The pro tier sustains it uninterrupted — both limits pass (30 <= 60 requests/min, 75K <= 100K tokens/min) — and the degraded-but-200 readiness status keeps the instance in rotation
+B) Only the enterprise tier sustains it — 75,000 tokens/min blows the pro token budget, so pro-tier requests receive 429 responses
+C) Any paid tier sustains the rate, but readiness returns 503 while the fallback is down, so the load balancer pulls the instance and requests fail anyway
+D) The pro tier fits the request count, but the health failure makes the rate limiter return 429 + Retry-After until the fallback provider recovers
 
-**Answer: B** -- Without validation, a missing API key causes a cryptic error only when the first LLM request is made, potentially minutes or hours after deployment. With Zod validation at startup, the application fails immediately with a clear message like "MISTRAL_API_KEY is required." This is especially important for LLM applications with multiple provider keys, database URLs, and configuration values. Schema validation also provides type safety, default values, and documentation of all required configuration.
-
----
-
-**Question 6 (Medium):** A production LLM application supports both an interactive terminal and a CI/CD pipeline. What architectural pattern enables both use cases from the same codebase?
-
-A) Maintain two separate codebases — one for interactive use and one for CI
-B) Separate the core LLM logic from the I/O layer so thin entry points (CLI, HTTP, SDK) share one implementation
-C) Use environment variables to conditionally compile different code paths
-D) Run the interactive version in CI and parse the terminal output
-
-**Answer: B** -- The multi-target deployment pattern separates core logic (LLM calls, tool execution, state management) from I/O (terminal formatting, HTTP routing, NDJSON output). Each deployment target is a thin shell that handles I/O and calls into the shared core. The CI entry point uses headless mode with structured NDJSON output and meaningful exit codes, while the terminal entry point uses interactive formatting. Both share identical business logic.
-
----
-
-**Question 7 (Hard):** A deployment's readiness probe checks three dependencies: LLM API (critical), vector store (critical), and a fallback provider (optional). The fallback provider is temporarily down. What should the readiness endpoint return, and why?
-
-A) HTTP 503 — any dependency failure means the service is not ready
-B) HTTP 200 with a "degraded" status — the service can operate without the optional dependency, and returning 503 would cause unnecessary restarts
-C) HTTP 200 with no indication of the failure — the fallback is not important
-D) HTTP 500 — this is a server error
-
-**Answer: B** -- Marking dependencies as critical or optional prevents unnecessary restarts. The service can function without the fallback provider (it just lacks a backup), so returning 503 would cause the load balancer to take the instance out of rotation or the orchestrator to restart it — both harmful. Returning "degraded" status communicates the issue to monitoring systems without triggering corrective actions designed for critical failures. This distinction is essential for production stability.
+**Answer: A** -- Check both limits per tier: one request every 2 seconds is 30 requests/min, and 30 x 2,500 = 75,000 tokens/min. Free fails immediately (30 > 10 requests/min). Pro passes both checks (30 <= 60 and 75,000 <= 100,000), so enterprise is not needed and B's arithmetic is wrong. The health check is independent of rate limiting: the fallback provider is registered as *optional*, so its failure produces a "degraded" readiness status with HTTP 200, not a 503 — the instance stays in rotation (C confuses optional with critical). D conflates the two signals: 429s come from the rate limiter, not from dependency health. A 429 with Retry-After tells the *client's retry layer* to back off; a 503 from readiness tells the *infrastructure* to route around the instance. Here neither fires.
 
 ---
 
@@ -770,7 +729,7 @@ Build a comprehensive health check system that reports the status of every exter
 3. Each dependency should be registered as either `critical` or `optional`. A failed optional dependency (e.g., a fallback provider) should not cause the readiness endpoint to return `503`, but its degraded status should still appear in the response body.
 
 4. Simulate the following dependency checks (they do not need to make real network calls):
-   - **Anthropic API** (critical) -- Simulate a successful check with 120ms latency.
+   - **Mistral API** (critical) -- Simulate a successful check with 120ms latency.
    - **OpenAI API** (optional) -- Simulate a failed check that times out.
    - **Redis** (critical) -- Simulate a successful check with 2ms latency.
    - **Vector Store** (critical) -- Simulate a successful check with 45ms latency.

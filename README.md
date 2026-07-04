@@ -4,7 +4,7 @@ A comprehensive, project-based course teaching applied LLM engineering from firs
 
 ## How It Works
 
-- **24 modules** across 6 parts, ~174-229 hours
+- **27 modules** across 6 parts, ~198-251 hours
 - **Multi-provider** — learn with Mistral (default, free tier), Groq, Anthropic, OpenAI, or Ollama (local)
 - **Vercel AI SDK** — provider-agnostic patterns that work everywhere
 - **Gamification** — earn XP, unlock badges, climb ranks from Token to LLM Architect
@@ -39,7 +39,7 @@ To check progress: `bun run progress`
 | 4   | Conversations & Memory  | Multi-turn, context windows, sliding window, summarization          | 6-8   |
 | 5   | Long Context & Caching  | Prompt caching, KV cache, context compression, chunked prefill      | 6-8   |
 | 6   | Streaming & Real-time   | streamText, Output.object, SSE, backpressure, UI patterns           | 6-8   |
-| 7   | Tool Use                | Zod tool definitions, execution, multi-step loops, maxSteps         | 7-9   |
+| 7   | Tool Use                | Zod tool definitions, execution, multi-step loops, stopWhen         | 7-9   |
 | 8   | Embeddings & Similarity | Embedding models, cosine similarity, vector stores, semantic search | 7-9   |
 | 9   | RAG Fundamentals        | Chunking, retrieval, context injection, citation, pipeline          | 8-10  |
 
@@ -56,27 +56,32 @@ To check progress: `bun run progress`
 
 | #   | Module              | Topics                                                            | Hours |
 | --- | ------------------- | ----------------------------------------------------------------- | ----- |
-| 14  | Agent Fundamentals  | ReAct pattern, planning loops, tool selection, observation cycles | 8-10  |
-| 15  | Multi-Agent Systems | Orchestrator-worker, delegation, shared state, communication      | 7-9   |
-| 16  | Workflows & Chains  | Sequential/parallel pipelines, branching, composable chains       | 7-9   |
-| 17  | Code Generation     | LLM-generated code, sandboxed execution, iterative refinement     | 8-10  |
-| 18  | Human-in-the-Loop   | Approval flows, feedback integration, active learning             | 7-9   |
+| 14  | Workflows & Chains  | Sequential/parallel pipelines, branching, composable chains       | 7-9   |
+| 15  | Durable Workflows   | Workflow SDK: `use step`/`use workflow`, sleep, hooks, retries, WorkflowAgent | 8-10  |
+| 16  | Agent Fundamentals  | ReAct pattern, planning loops, tool selection, observation cycles | 8-10  |
+| 17  | Multi-Agent Systems | Orchestrator-worker, delegation, shared state, communication      | 7-9   |
+| 18  | Eve Fundamentals    | Filesystem-first agents: tools, skills, approval, model config, eve eval | 8-10  |
+| 19  | Eve in Production   | Channels, schedules, subagents, connections, durability, deploy | 8-10  |
+| 20  | Code Generation     | LLM-generated code, sandboxed execution, iterative refinement     | 8-10  |
+| 21  | Human-in-the-Loop   | Approval flows, feedback integration, active learning             | 7-9   |
+
+> Modules 15, 18, 19 teach the Vercel **Workflow SDK** and **Eve** frameworks in isolated `apps/` mini-projects (Node ≥24 for Eve; `@workflow/vitest` / `eve eval` harnesses), not the `src/` + `bun test` flow.
 
 ### Part V: Quality & Safety
 
 | #   | Module              | Topics                                                          | Hours |
 | --- | ------------------- | --------------------------------------------------------------- | ----- |
-| 19  | Evals & Testing     | LLM-as-judge, benchmarks, regression suites, prompt CI          | 8-10  |
-| 20  | Fine-tuning         | When to fine-tune, dataset prep, training pipelines, evaluation | 8-10  |
-| 21  | Safety & Guardrails | Input validation, output filtering, jailbreak prevention        | 8-10  |
-| 22  | Cost Optimization   | Semantic caching, model routing, token budgets, fallback chains | 8-10  |
+| 22  | Evals & Testing     | LLM-as-judge, benchmarks, regression suites, prompt CI          | 8-10  |
+| 23  | Fine-tuning         | When to fine-tune, dataset prep, training pipelines, evaluation | 8-10  |
+| 24  | Safety & Guardrails | Input validation, output filtering, jailbreak prevention        | 8-10  |
+| 25  | Cost Optimization   | Semantic caching, model routing, token budgets, fallback chains | 8-10  |
 
 ### Part VI: Production
 
 | #   | Module        | Topics                                                       | Hours |
 | --- | ------------- | ------------------------------------------------------------ | ----- |
-| 23  | Observability | Logging, tracing, token tracking, latency metrics, debugging | 8-10  |
-| 24  | Deployment    | Hono server, auth, rate limiting, scaling, provider failover | 10-12 |
+| 26  | Observability | Logging, tracing, token tracking, latency metrics, debugging | 8-10  |
+| 27  | Deployment    | Hono server, auth, rate limiting, scaling, provider failover | 10-12 |
 
 ## Estimated Time
 
@@ -85,10 +90,10 @@ To check progress: `bun run progress`
 | I. First Contact           | 1-3      | 15-20        |
 | II. Core Patterns          | 4-9      | 40-52        |
 | III. Advanced Retrieval    | 10-13    | 32-40        |
-| IV. Agents & Orchestration | 14-18    | 37-47        |
-| V. Quality & Safety        | 19-22    | 32-40        |
-| VI. Production             | 23-24    | 18-22        |
-| **Total**                  | **1-24** | **~174-229** |
+| IV. Agents & Orchestration | 14-21    | 61-77        |
+| V. Quality & Safety        | 22-25    | 32-40        |
+| VI. Production             | 26-27    | 18-22        |
+| **Total**                  | **1-27** | **~198-251** |
 
 ## Prerequisites
 

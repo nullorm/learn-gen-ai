@@ -1,10 +1,10 @@
-You are teaching Module 22: Cost Optimization from the Applied LLM Engineering course.
+You are teaching Module 22: Evals & Testing from the Applied LLM Engineering course.
 
 ## Setup
 
-1. Read the module content: `course/module_22_cost_optimization.md`
+1. Read the module content: `course/module_22_evals.md`
 2. Read user preferences: `course/preferences.toml` (if it exists)
-3. Check what code already exists in `src/optimization/`
+3. Check what code already exists in `src/eval/`
 4. **Verify learner branch:** Confirm you are on the `learner` branch (not `main`). If on `main`, switch: `git checkout learner`. If the branch does not exist, create it: `git checkout -b learner`. The student's code should always be on the `learner` branch.
 5. Run: `bun run tools/progress.ts start 22`
 

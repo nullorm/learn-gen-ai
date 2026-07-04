@@ -33,7 +33,7 @@ This module builds directly on **Module 9 (RAG Fundamentals)**, extending its re
 
 - **Module 11 (Document Processing)** extends the ingestion side of the pipeline — better chunking, metadata extraction, and format handling.
 - **Module 12 (Knowledge Graphs)** provides an alternative retrieval strategy (graph traversal) that complements the vector-based approaches here.
-- **Module 19 (Evals & Testing)** uses the assessment framework introduced in Section 8 as a foundation for broader LLM testing.
+- **Module 22 (Evals & Testing)** uses the assessment framework introduced in Section 8 as a foundation for broader LLM testing.
 
 Think of Module 9 as building the engine and this module as tuning it for performance.
 
@@ -75,12 +75,12 @@ Each failure mode has corresponding solutions:
 | ---------------------- | ------------------------------------------------- | ------------------ |
 | Wrong chunks retrieved | Query transformation, HyDE, hybrid search         | Sections 2-3       |
 | Missed context         | Query decomposition, hybrid search, tree indexing | Sections 2, 3, 5-7 |
-| Hallucination          | Reranking, structure-aware retrieval              | Sections 4-7       |
+| Hallucination          | Grounding prompts, reranking, structure-aware retrieval | Sections 4-7  |
 | Unknown quality        | Assessment framework                              | Section 8          |
 
 > **Beginner Note:** You do not need to implement all these techniques at once. Start with the naive pipeline from Module 9, measure its failures, then add techniques one at a time. Each technique addresses specific failure modes -- diagnose first, then prescribe.
 
-> **Advanced Note:** In production systems, the combination of techniques matters. A common high-performing stack is: query rewriting + hybrid search + reranking. HyDE and tree indexing add latency and cost, so they are reserved for high-stakes use cases where accuracy justifies the overhead.
+> **Advanced Note:** In production systems, the combination of techniques matters. A common high-performing stack is: query rewriting + hybrid search + reranking.
 
 ---
 
@@ -134,7 +134,7 @@ Also build `answerWithDecomposition(query, retrieveAndAnswer)` that: checks if t
 
 Questions to consider: When does the overhead of decomposition pay off versus just searching with the original query? How do you handle dependencies between sub-questions?
 
-> **Beginner Note:** Query transformation adds an LLM call before retrieval, which means more latency and cost. For simple, well-formed queries, it is often unnecessary. Start without it and add it when you see retrieval failures caused by query quality.
+> **Beginner Note:** Start without query transformation and add it only when you see retrieval failures caused by query quality.
 
 > **Advanced Note:** You can make query transformation conditional -- use a lightweight classifier to decide whether the query needs rewriting, expansion, or decomposition. This avoids the overhead for simple queries while still handling complex ones correctly.
 
@@ -297,7 +297,7 @@ Think about: when would you choose pointwise over listwise? What are the trade-o
 
 Also build `retrieveRerankGenerate(query, vectorSearch, options?)` that chains the full pipeline: broad retrieval (default 20 candidates), Cohere rerank (default top 3), then `generateText` with the reranked documents as context.
 
-> **Beginner Note:** Reranking is one of the highest-impact improvements you can make to a RAG pipeline. If you implement only one technique from this module, make it reranking. Retrieve 20 candidates, rerank to 3-5, and generate from those.
+> **Beginner Note:** Reranking is one of the highest-impact improvements you can make to a RAG pipeline. If you implement only one technique from this module, make it reranking.
 
 > **Advanced Note:** The optimal retrieve-K depends on your reranker's quality and the size of your corpus. With a strong reranker (Cohere rerank-v3.5 or a capable LLM), retrieving 50-100 candidates and reranking to 3-5 is effective. With a weaker reranker, keep retrieve-K lower (10-20) to avoid overwhelming it with irrelevant documents.
 
@@ -305,15 +305,11 @@ Also build `retrieveRerankGenerate(query, vectorSearch, options?)` that chains t
 
 ## Section 5: Structure-Aware Retrieval
 
-### Why Similarity does not equal Relevance
-
-Vector similarity search finds chunks that are semantically close to the query. But "close" is not always "relevant." Consider a financial analyst asking "What drove Q3 revenue growth?":
+Section 1's first failure mode — similarity is not relevance — hits structured documents hardest, because the structure itself carries information that embeddings discard. Consider a financial analyst asking "What drove Q3 revenue growth?":
 
 - A chunk about Q2 revenue might be very similar (same vocabulary: revenue, growth, quarterly) but is the wrong quarter
 - A chunk about a new product launch in Q3 might be less similar (different vocabulary) but is the actual answer
 - A chunk titled "Management Discussion: Factors Affecting Performance" might have low similarity to "revenue growth" but contains the exact analysis needed
-
-The fundamental issue: embedding similarity measures lexical and semantic proximity, not logical relevance. For complex documents with structure (sections, chapters, hierarchies), the structure itself carries information that embeddings discard.
 
 ### The Tree Indexing Approach
 
@@ -471,7 +467,7 @@ In practice, these can be combined. Use vector RAG for broad recall, tree indexi
 
 > **Beginner Note:** Start with vector RAG (Module 9). Add tree indexing when you work with long structured documents where vector search misses context. Add graph RAG (Module 12) when relationships between entities matter more than the text itself.
 
-> **Advanced Note:** A production system might route queries to different retrieval backends: simple factual queries go to vector search, analytical queries about structured reports go to tree search, and relationship queries go to graph search. The routing itself can be done by an LLM (see Module 14: Agent Fundamentals).
+> **Advanced Note:** A production system might route queries to different retrieval backends: simple factual queries go to vector search, analytical queries about structured reports go to tree search, and relationship queries go to graph search. The routing itself can be done by an LLM (see Module 16: Agent Fundamentals).
 
 ---
 
@@ -552,7 +548,7 @@ Also create `src/advanced-rag/assessment-test-suite.ts` that defines a test suit
 
 > **Beginner Note:** Start with 10-20 manually curated test cases that cover your most important query types. You do not need hundreds of test cases to get useful signal. Focus on queries you know your pipeline struggles with.
 
-> **Advanced Note:** LLM-as-judge measurement (what we use above) is itself noisy. For high-confidence results, use multiple judge calls per test case and average the scores. Also consider using a different model as judge than the one generating answers -- this reduces bias. Module 19 covers testing in much more depth.
+> **Advanced Note:** LLM-as-judge measurement (what we use above) is itself noisy. For high-confidence results, use multiple judge calls per test case and average the scores. Also consider using a different model as judge than the one generating answers -- this reduces bias. Module 22 covers testing in much more depth.
 
 ---
 
@@ -617,7 +613,7 @@ This pattern is critical for any long-running RAG application. Without re-retrie
 
 ## Going Further: Code-Intelligence Retrieval
 
-Sections 1–10 are advanced RAG for any corpus. These last two are RAG over *code* — using a language server and compiler diagnostics as retrieval sources. This is the canonical treatment of LSP-as-retrieval that Modules 19 and 23 point back to.
+Sections 1–10 are advanced RAG for any corpus. These last two are RAG over *code* — using a language server and compiler diagnostics as retrieval sources. This is the canonical treatment of LSP-as-retrieval that Modules 22 and 26 point back to.
 
 ### LSP-Augmented Retrieval
 
@@ -761,34 +757,6 @@ You run an assessment suite and find: context relevance = 0.9, faithfulness = 0.
 
 **Answer: B** — High context relevance (0.9) means retrieval is working well — the right chunks are being found. High answer relevance (0.8) means the answer addresses the query. But low faithfulness (0.4) means the model is making claims that are not supported by the context — it is filling in gaps with hallucinated information. The fix is better prompting (stricter instructions to only use context), contextual compression (focus the context), or switching to a model that is more instruction-following.
 
-### Question 6 (Medium)
-
-In a multi-source retrieval system, why is rule-based contextual selection sometimes preferable to query-driven vector search?
-
-a) Rule-based selection is always more accurate than vector search
-b) When you know what context is relevant based on what the user is doing (e.g., editing tests triggers testing guidelines), a rule-based lookup is deterministic, free, and instant — no embeddings needed
-c) Rule-based selection works with more file types
-d) Vector search cannot retrieve configuration files
-
-**Answer: B**
-
-**Explanation:** Not all retrieval needs to be query-driven. If the user is editing test files, the system can deterministically inject testing guidelines without computing any embeddings or running similarity search. This is a form of RAG where the "query" is the user's current activity, and the retrieval is a simple rule-based lookup. It is faster, cheaper, and more predictable than vector search for cases where the relevance mapping is known in advance.
-
----
-
-### Question 7 (Hard)
-
-After a long conversation is compacted to fit the context window, the agent starts asking the user to repeat information that was discussed earlier. What re-retrieval pattern fixes this, and why does it work?
-
-a) Re-embed the compacted conversation and search for missing topics
-b) Before compaction, extract key facts and decisions into a memory store. After compaction, re-retrieve relevant memories and inject them into the new context — restoring continuity without restoring the full conversation
-c) Increase the context window size to avoid compaction
-d) Disable conversation compaction entirely
-
-**Answer: B**
-
-**Explanation:** The re-retrieval pattern works in three steps: extract key facts before compaction, compact the conversation, then re-retrieve relevant memories from the store based on the current query. This restores important context without restoring the full conversation, keeping the context window manageable while preventing the "amnesia" problem. Simply increasing the window (C) or disabling compaction (D) are not sustainable solutions for long-running sessions.
-
 ---
 
 ## Exercises
@@ -875,16 +843,15 @@ describe('Exercise 10: Advanced RAG', () => {
 **Specification:**
 
 1. Create `src/exercises/m10/ex02-hybrid-search.ts`
-2. Implement the BM25 index and scoring from this module
-3. Implement hybrid search with configurable semantic/keyword weighting
-4. Create a test suite with two categories of queries:
+2. Import your Section 3 builds from `src/advanced-rag/bm25.ts` (index + scoring) and `src/advanced-rag/hybrid-search.ts` (configurable semantic/keyword weighting) — the new work here is the assessment, not reimplementation
+3. Create a test suite with two categories of queries:
    - **Semantic queries** (e.g., "How do I fix a broken car?") where meaning matters
    - **Keyword queries** (e.g., "ERR_0x4F2A troubleshooting") where exact matches matter
-5. Run the assessment with three configurations:
+4. Run the assessment with three configurations:
    - Semantic only (weight: 1.0/0.0)
    - Keyword only (weight: 0.0/1.0)
    - Hybrid (weight: 0.7/0.3)
-6. Show that hybrid outperforms either individual approach across both query types
+5. Show that hybrid outperforms either individual approach across both query types
 
 **Test specification:**
 
@@ -915,6 +882,6 @@ describe('Exercise 10: Hybrid Search', () => {
 
 > **Advanced Note: Contextual Retrieval** — A technique (originally published by Anthropic) that dramatically improves retrieval quality: before embedding each chunk, prepend a short context summary explaining where the chunk sits in the original document. For example, a chunk about "Q3 revenue" gets prefixed with "This chunk is from Acme Corp's 2025 Annual Report, specifically the Financial Results section." This gives the embedding model crucial context that's lost during chunking. You can generate these context prefixes with a cheap, fast model (`mistral('mistral-small-latest')` or `groq('openai/gpt-oss-20b')`) at ingestion time. Combined with the hybrid search from this module, contextual retrieval can reduce retrieval failures by up to 67%.
 
-> **Local Alternative (Ollama):** Advanced RAG techniques (HyDE, query decomposition, tree indexing) work with `ollama('qwen3.5')` — they're prompt-based strategies, not provider features. LLM-based reranking also works locally, though it will be slower than API reranking services. For hybrid search, the BM25 + semantic combination is fully local.
+> **Local Alternative (Ollama):** Advanced RAG techniques (HyDE, query decomposition, tree indexing) work with `ollama('qwen3.5', { think: false })` — they're prompt-based strategies, not provider features. LLM-based reranking also works locally, though it will be slower than API reranking services. For hybrid search, the BM25 + semantic combination is fully local.
 
 ---

@@ -1,4 +1,4 @@
-# Module 14: Agent Fundamentals
+# Module 16: Agent Fundamentals
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Manage within-session agent memory for multi-step tasks
 - Debug agents by tracing reasoning steps and diagnosing failures
 
-> *Module 14 opens **Part IV: Agents & Orchestration** — complete the Part to earn the **Agent Deployer** badge.*
+> *Module 16 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
 
 ---
 
@@ -21,17 +21,17 @@ A single `generateText` call can answer a question, but it cannot research a top
 
 Every serious LLM product — coding assistants, research tools, customer support bots, data analysis pipelines — is built on agent patterns. Understanding the fundamentals in this module will let you build agents that are reliable, debuggable, and controllable rather than unpredictable black boxes.
 
-If you skip this module, multi-agent systems (Module 15) and workflows (Module 16) will feel like magic you cannot debug. The patterns here are the foundation for everything that follows.
+If you skip this module, multi-agent systems (Module 17) will feel like magic you cannot debug. You have already built the deterministic alternative — Module 14's workflows — and the agent patterns here are its autonomous counterpart, the foundation for everything that follows.
 
 ---
 
 ## Connection to Other Modules
 
 - **Module 7 (Tool Use)** introduced tool definitions and single-step tool calls. This module extends that into multi-step loops.
-- **Module 15 (Multi-Agent Systems)** builds directly on the agent loop pattern, running multiple agents that coordinate.
-- **Module 16 (Workflows & Chains)** contrasts the autonomous agent approach with deterministic pipelines.
-- **Module 17 (Code Generation)** applies agent patterns to iterative code writing and debugging.
-- **Module 18 (Human-in-the-Loop)** adds approval gates and feedback into the agent loop.
+- **Module 17 (Multi-Agent Systems)** builds directly on the agent loop pattern, running multiple agents that coordinate.
+- **Module 14 (Workflows & Chains)** contrasts the autonomous agent approach with deterministic pipelines.
+- **Module 20 (Code Generation)** applies agent patterns to iterative code writing and debugging.
+- **Module 21 (Human-in-the-Loop)** adds approval gates and feedback into the agent loop.
 
 ---
 
@@ -69,14 +69,14 @@ Without a loop, the model calls the tool once but never sees the result. The con
 
 ### From Single Call to Agent
 
-The key insight is that `generateText` with `stopWhen: stepCountIs()` already provides an agent loop. The Vercel AI SDK will automatically re-call the model with tool results until the model either stops calling tools or hits the step limit:
+The key insight is that `generateText` with `stopWhen: isStepCount()` already provides an agent loop. The Vercel AI SDK will automatically re-call the model with tool results until the model either stops calling tools or hits the step limit:
 
 ```typescript
-import { generateText, stepCountIs } from 'ai'
+import { generateText, isStepCount } from 'ai'
 
 const agentResult = await generateText({
   model: mistral('mistral-small-latest'),
-  stopWhen: stepCountIs(10), // <-- this creates the loop
+  stopWhen: isStepCount(10), // <-- this creates the loop
   tools: {
     /* ... */
   },
@@ -92,9 +92,11 @@ for (const step of agentResult.steps) {
 }
 ```
 
-Your task: create a file that defines a simple search tool (simulated — just return a hardcoded string for any query) and call `generateText` with `stopWhen: stepCountIs(10)`. Run it and inspect `steps.length` and `result.text`. How many steps does the model take before it answers?
+**File:** `src/agents/agent-basics.ts`
 
-> **Advanced Note:** The `stopWhen: stepCountIs()` parameter is the simplest form of agent loop control in the Vercel AI SDK. For more complex agents that need custom logic between steps, you will build your own loop as shown in Section 3.
+Your task: create a file that defines a simple search tool (simulated — just return a hardcoded string for any query) and call `generateText` with `stopWhen: isStepCount(10)`. Run it and inspect `steps.length` and `result.text`. How many steps does the model take before it answers?
+
+> **Advanced Note:** The `stopWhen: isStepCount()` parameter is the simplest form of agent loop control in the Vercel AI SDK. For more complex agents that need custom logic between steps, you will build your own loop as shown in Section 3.
 
 ### What Makes a Good Agent
 
@@ -125,10 +127,10 @@ The ReAct pattern (Yao et al., 2022) is the most widely used agent pattern. It i
 
 This cycle repeats until the model has enough information to give a final answer.
 
-The key to implementing ReAct with the Vercel AI SDK is a good system prompt that encourages explicit reasoning. The `stopWhen: stepCountIs()` parameter provides the loop. The system prompt provides the structure:
+The key to implementing ReAct with the Vercel AI SDK is a good system prompt that encourages explicit reasoning. The `stopWhen: isStepCount()` parameter provides the loop. The system prompt provides the structure:
 
 ```typescript
-system: `You are a research agent. For each step:
+instructions: `You are a research agent. For each step:
 1. THINK: Reason about what you know and what you still need to find out.
 2. ACT: Use a tool to gather information.
 3. OBSERVE: Analyze the result and decide if you need more information.
@@ -136,6 +138,8 @@ system: `You are a research agent. For each step:
 When you have enough information, provide a comprehensive final answer.
 Always explain your reasoning before using a tool.`
 ```
+
+**File:** `src/agents/react.ts`
 
 Your task: create a ReAct agent with two tools — a simulated `searchWeb` tool (use a `Record<string, string>` as a lookup table of pre-defined results) and a `calculator` tool (validate the expression against `/^[\d\s+\-*/().]+$/` before evaluating). Give the agent a research task that requires using both tools.
 
@@ -160,7 +164,7 @@ With reasoning, the agent can:
 
 > **Before / After:** Ask "what's the population of the capital of the country with the highest GDP?" as a single `generateText` call and the model answers from memory — often stale, never sourced. Give the same question to a ReAct agent with a `searchWeb` tool and it becomes three grounded steps: highest-GDP country → its capital → that capital's population. Same model; the loop is what turns a confident guess into a checkable answer.
 
-> **Beginner Note:** You do not need to implement ReAct from scratch. The combination of a good system prompt and the Vercel AI SDK's `stopWhen: stepCountIs()` gives you ReAct behavior. The system prompt encourages the model to reason explicitly, and `stopWhen` provides the loop.
+> **Beginner Note:** You do not need to implement ReAct from scratch — the SDK loop handles it.
 
 > **Advanced Note:** Some models handle ReAct-style reasoning better than others. Claude models naturally tend to reason before acting. For models that rush to tool calls without thinking, you can use a "scratchpad" tool that the model calls to write down its thoughts before using action tools.
 
@@ -170,9 +174,11 @@ With reasoning, the agent can:
 
 ### The Basic Loop
 
-While `stopWhen: stepCountIs()` handles simple cases, building your own agent loop gives you full control over the process — you can insert logging, approval gates, memory management, and other custom logic between each agent step.
+While `stopWhen: isStepCount()` handles simple cases, building your own agent loop gives you full control over the process — you can insert logging, approval gates, memory management, and other custom logic between each agent step.
 
-The fundamental pattern is a `for` loop that calls `generateText` with `stopWhen: stepCountIs(1)` (single step) on each iteration, appends `response.response.messages` to the conversation, and checks whether the model finished (no tool calls in the last step) or hit the max.
+The fundamental pattern is a `for` loop that calls `generateText` with `stopWhen: isStepCount(1)` (single step) on each iteration, appends `response.response.messages` to the conversation, and checks whether the model finished (no tool calls in the last step) or hit the max.
+
+**File:** `src/agents/agent-loop.ts`
 
 Create a `runAgent` function with this signature:
 
@@ -180,7 +186,7 @@ Create a `runAgent` function with this signature:
 interface AgentConfig {
   model: LanguageModel
   system: string
-  tools: Record<string, any>
+  tools: Record<string, Tool> // Tool and LanguageModel are both imported from 'ai'
   maxSteps: number
 }
 
@@ -202,7 +208,7 @@ Inside the function:
 
 1. Initialize `messages: ModelMessage[]` with the user's task
 2. Loop up to `config.maxSteps` times
-3. Each iteration: call `generateText` with `stopWhen: stepCountIs(1)`, the config's model/system/tools, and current messages
+3. Each iteration: call `generateText` with `stopWhen: isStepCount(1)`, the config's model and tools, `config.system` mapped to the `instructions` field, and the current messages
 4. Record the step's thought (`response.text`), tool calls (from `response.steps`), and observations (from `response.steps[].toolResults`)
 5. Append `response.response.messages` to the conversation
 6. Check: if the last step has zero tool calls, the agent is done — return with `finished: true`
@@ -230,9 +236,7 @@ type StepCallback = (event: StepEvent) => void | Promise<void>
 
 Create a `runAgentWithCallbacks` function that accepts a task, tools, an `onStep` callback, and a max steps limit. Wrap each `generateText` call with `Date.now()` timing. After processing each step, construct a `StepEvent` and call `await onStep(stepEvent)`.
 
-Test it by passing a logging callback that prints each step's number, duration, thought preview, actions, and observations.
-
-> **Beginner Note:** The custom loop pattern gives you a place to insert logging, approval gates, memory management, and other custom logic between each agent step. The `stopWhen: stepCountIs()` approach in the Vercel AI SDK is simpler but less flexible.
+Verify it with a test that passes an `onStep` callback which pushes every `StepEvent` into an array, then asserts with `expect()`: one event per step, step numbers in order (`[1, 2]`), `durationMs >= 0` on every event, and the observations you expect from the scripted tool call.
 
 ---
 
@@ -255,7 +259,7 @@ Reactive agents are simpler and work well when:
 - Each step's output heavily influences the next step
 - The task is short (fewer than 5 steps)
 
-A reactive agent is just the ReAct pattern from Section 2 — a system prompt that says "decide what to do next based on what you know so far" and `stopWhen: stepCountIs()`.
+A reactive agent is just the ReAct pattern from Section 2 — a system prompt that says "decide what to do next based on what you know so far" and `stopWhen: isStepCount()`.
 
 ### Planning Agents
 
@@ -267,6 +271,8 @@ Planning agents create an explicit plan before executing. They work well when:
 - Efficiency matters — a plan avoids redundant tool calls
 
 A planning agent has three phases: **plan**, **execute**, **synthesize**.
+
+**File:** `src/agents/planning.ts`
 
 **Phase 1 — Plan:** Use `Output.object` with a plan schema to generate a structured plan before any tools run:
 
@@ -289,7 +295,7 @@ const planSchema = z.object({
 
 Implement `createPlan(task: string): Promise<Plan>` that calls `generateText` with `Output.object({ schema: planSchema })` and a prompt listing the available tools.
 
-**Phase 2 — Execute:** Implement `executePlan(plan: Plan): Promise<Map<number, string>>` that iterates over plan steps in order. For each step, check that its dependencies are met (all `dependsOn` IDs have results). Gather context from dependency results. Call `generateText` with tools and `stopWhen: stepCountIs(2)` to execute the step. Store the result keyed by step ID.
+**Phase 2 — Execute:** Implement `executePlan(plan: Plan): Promise<Map<number, string>>` that iterates over plan steps in order. For each step, check that its dependencies are met (all `dependsOn` IDs have results). Gather context from dependency results. Call `generateText` with tools and `stopWhen: isStepCount(2)` to execute the step. Store the result keyed by step ID.
 
 What should happen when a step's dependencies are not met? Should you skip it, error, or try to reorder?
 
@@ -333,6 +339,8 @@ z.object({
 })
 ```
 
+**File:** `src/agents/tool-selection.ts`
+
 Your task: define a tool set with three tools — `webSearch`, `calculator`, and `readFile`. For each, write a description that explains what the tool does, when to use it, what it returns, and when NOT to use it. Add descriptive parameter schemas with `.describe()` on every field.
 
 ### Tool Selection via System Prompt
@@ -361,6 +369,8 @@ This is fundamentally an agent behavior, not a retrieval technique — the agent
 
 ### Implementing Self-RAG
 
+**File:** `src/agents/self-rag.ts`
+
 Build a `shouldRetrieve` function that uses structured output to decide whether retrieval is needed:
 
 ```typescript
@@ -380,7 +390,7 @@ Use `Output.object({ schema: RetrievalDecisionSchema })` with a system prompt th
 
 ### Self-RAG in the Agent Loop
 
-In practice, Self-RAG is a tool the agent can choose to invoke — the `search` tool. When the agent has retrieval as one of several available tools, it naturally learns when retrieval is useful through the ReAct loop:
+`shouldRetrieve` is the **explicit** form of the retrieval decision — build it when you need that decision to be auditable and testable on its own (why did the agent retrieve here?). Most agents use the **implicit** form of the same decision: Self-RAG as a tool the agent can choose to invoke — the `search` tool. When the agent has retrieval as one of several available tools, it naturally learns when retrieval is useful through the ReAct loop:
 
 ```typescript
 // The agent has multiple tools including search
@@ -394,8 +404,6 @@ const tools = {
 // to search, calculate, or look up a user based on the query.
 // No special Self-RAG logic needed — it emerges from good tool descriptions.
 ```
-
-> **Beginner Note:** The simplest form of Self-RAG is just making retrieval a tool that the agent can choose to call or not. You do not need a separate "retrieval decision" step if your agent loop already handles tool selection well.
 
 > **Advanced Note:** For more sophisticated Self-RAG, the agent can also assess retrieval results before using them. After retrieving chunks, it can decide "these chunks don't actually help — I'll answer from my own knowledge" or "I need to search again with a different query."
 
@@ -423,6 +431,8 @@ return JSON.stringify({
 })
 ```
 
+**File:** `src/agents/observations.ts`
+
 Build a `searchProducts` tool that accepts a query, optional category, and optional maxPrice. Filter a hardcoded product array and return a structured JSON observation with the fields shown above. Wire it into an agent with a system prompt that instructs the model to analyze results for relevance, note out-of-stock items, consider price-to-rating ratio, and suggest alternative searches if nothing is found.
 
 ### Observation Summarization
@@ -433,7 +443,7 @@ Build a `fetchWebPage` tool whose `execute` function simulates fetching a large 
 
 What is the trade-off here? When would you lose important details by summarizing?
 
-> **Advanced Note:** Observation summarization introduces a trade-off: you use fewer tokens in the agent's context window, but you may lose details the agent needs later. A good strategy is to keep full observations for the most recent 2-3 steps and summarize older ones.
+> **Advanced Note:** A good strategy is to keep full observations for the most recent 2-3 steps and summarize older ones.
 
 ### Error Observations
 
@@ -456,6 +466,8 @@ An agent without proper termination conditions can run forever, wasting tokens a
 5. **Budget exhaustion** — token or cost limit reached
 
 ### Implementing Termination Conditions
+
+**File:** `src/agents/termination.ts`
 
 Build a `shouldTerminate` function and an agent loop that uses it.
 
@@ -492,16 +504,14 @@ Return `{ terminate: false, reason: '' }` if none triggered.
 Then build `runAgentWithTermination` that uses this function. It should be a `while (true)` loop that:
 
 1. Calls `shouldTerminate` before each step
-2. Calls `generateText` with `stopWhen: stepCountIs(1)`
+2. Calls `generateText` with `stopWhen: isStepCount(1)`
 3. Tracks tokens via `response.usage.inputTokens + response.usage.outputTokens`
 4. Tracks actions by stringifying tool calls (name + args) and pushing to `actionHistory`
 5. Tracks errors by checking if any tool result contains `'"success":false'`
 6. Resets `consecutiveErrors` to 0 on successful steps
 7. Checks if the agent finished naturally (last step has no tool calls)
 
-How would you detect that an agent is alternating between two different tool calls without making progress, rather than repeating the exact same call?
-
-> **Beginner Note:** Always set a step limit via `stopWhen: stepCountIs()`, even during development. An agent without a step limit can run up a significant API bill very quickly. Start with 5-10 steps and increase only if needed.
+> **Beginner Note:** Always set a step limit via `stopWhen: isStepCount()`, even during development. An agent without a step limit can run up a significant API bill very quickly. Start with 5-10 steps and increase only if needed.
 
 > **Advanced Note:** Stuck detection is more nuanced than checking for identical actions. A sophisticated agent might call the same tool with different parameters (which is fine) or alternate between two tools without making progress (which is not). Consider tracking the information gained at each step, not just the tools called.
 
@@ -544,6 +554,8 @@ function getMessages(memory: MemoryManager): ModelMessage[] {
 }
 ```
 
+**File:** `src/agents/memory.ts`
+
 Build these four functions:
 
 - `createMemoryManager` — returns a new `MemoryManager` with an empty messages array and the given `maxMessages` limit.
@@ -558,7 +570,7 @@ Why keep the first message (original task) during compaction? What would happen 
 For agents that need to track specific facts across many steps, use a structured working memory:
 
 ```typescript
-import { generateText, stepCountIs } from 'ai'
+import { generateText, isStepCount } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
@@ -587,7 +599,7 @@ Build these three functions:
 
 - `createWorkingMemory` — initializes the `WorkingMemory` with empty maps/arrays and the given goal.
 - `memoryToPrompt` — converts the memory state into a formatted markdown string showing the current goal, known facts (from the `Map`), scratchpad notes, completed sub-goals, and remaining sub-goals. Use checkbox formatting (`[x]` and `[ ]`) for goals.
-- `agentWithMemory` — creates working memory, defines four tools (`search`, `addFact`, `addNote`, `completeGoal`) that read and modify the memory state, then calls `generateText` with `stopWhen: stepCountIs(10)`. The system prompt should include the formatted working memory via `memoryToPrompt`. Each memory tool's `execute` function should mutate the memory and return a confirmation string.
+- `agentWithMemory` — creates working memory, defines four tools (`search`, `addFact`, `addNote`, `completeGoal`) that read and modify the memory state, then calls `generateText` with `stopWhen: isStepCount(10)`. The system prompt should include the formatted working memory via `memoryToPrompt`. Each memory tool's `execute` function should mutate the memory and return a confirmation string.
 
 Why does injecting the working memory into the system prompt (rather than just keeping it in tool results) help the agent stay organized?
 
@@ -610,7 +622,7 @@ Agents are non-deterministic and multi-step. A bug might be:
 ### Building a Debug Tracer
 
 ```typescript
-import { generateText, stepCountIs, type ModelMessage } from 'ai'
+import { generateText, isStepCount, type ModelMessage } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
@@ -644,12 +656,14 @@ async function tracedAgent(task: string): Promise<string> {
 }
 ```
 
+**File:** `src/agents/tracing.ts`
+
 Build the `AgentTracer` class and `tracedAgent` function:
 
 - `AgentTracer.log` — creates a `TraceEntry` with a relative timestamp (`Date.now() - startTime`), pushes it to the traces array, and prints a real-time console line with a type-specific prefix (`[THINK]`, `[ACT]`, `[OBS]`, `[ERR]`, `[END]`).
 - `AgentTracer.getTraces` — returns a copy of the traces array.
 - `AgentTracer.printSummary` — prints a summary showing total steps (unique step numbers), total elapsed time, action count, error count, and a tool usage breakdown (count per tool name from action entries' metadata).
-- `tracedAgent` — creates a tracer, runs a manual agent loop (up to N steps), calling `generateText` with `stopWhen: stepCountIs(1)` per iteration. After each response, log thoughts (from `response.text`), actions (from `toolCalls`), and observations (from `toolResults`). Append response messages to the conversation. If the last step has no tool calls, the agent is done. Handle errors with `try/catch` and log them.
+- `tracedAgent` — creates a tracer, runs a manual agent loop (up to N steps), calling `generateText` with `stopWhen: isStepCount(1)` per iteration. After each response, log thoughts (from `response.text`), actions (from `toolCalls`), and observations (from `toolResults`). Append response messages to the conversation. If the last step has no tool calls, the agent is done. Handle errors with `try/catch` and log them.
 
 What information does the trace summary give you that raw logs do not? How would you use tool usage counts to diagnose a stuck agent?
 
@@ -661,10 +675,10 @@ What information does the trace summary give you that raw logs do not? How would
 | Agent never uses tools                          | Tool descriptions do not match the task      | Rewrite descriptions to match the agent's goal                                         |
 | Agent uses wrong tool                           | Descriptions are ambiguous                   | Add "Use this when..." and "Do NOT use this for..." to descriptions                    |
 | Agent runs all steps without answering          | No clear termination signal in system prompt | Add "When you have enough information, respond with your answer without calling tools" |
-| Agent gives shallow answers                     | Not enough steps allowed                     | Increase step count in `stepCountIs()` and encourage thorough research                 |
+| Agent gives shallow answers                     | Not enough steps allowed                     | Increase step count in `isStepCount()` and encourage thorough research                 |
 | Agent hallucinates despite having tools         | Model not using tools for factual claims     | Add "Always verify claims using tools" to system prompt                                |
 
-> **Advanced Note:** For production agents, ship traces to an observability platform (Langfuse, LangSmith, or a custom solution). Console logging is fine for development but you need persistent, searchable traces for production debugging.
+> **Advanced Note:** For production agents, ship traces to an observability platform (Langfuse, LangSmith, or a custom solution). Console logging is fine for development but you need persistent, searchable traces for production debugging. Add `durationMs` and per-step `tokenUsage` fields to every trace event — with those you can query across conversations ("show me every run where stuck detection fired in the last 24 hours"), not just replay a single one.
 
 ---
 
@@ -674,35 +688,11 @@ What information does the trace summary give you that raw logs do not? How would
 
 ### Beyond Max Steps
 
-Section 8 introduced basic termination conditions: max steps and goal detection. Production agents need additional safeguards to handle real-world failure modes.
+Section 8 built the termination conditions — max steps, consecutive errors, stuck detection, and the token budget. This section adds the two things production agents layer on top: cancellation and reporting.
 
-A production `shouldTerminate` function checks multiple conditions on every iteration:
+**Cancellation.** Respect an `AbortController` signal so users (or parent systems) can stop a running agent mid-task. Check `abortSignal?.aborted` before every step, ahead of every other condition — a cancelled agent should not take one more step, let alone finish its budget.
 
-1. **Token budget exhaustion** — track cumulative input + output tokens across steps. When the running total approaches the model's context window (or your cost budget), stop gracefully
-2. **Abort signal** — respect an `AbortController` signal so users (or parent systems) can cancel a running agent
-3. **Error threshold** — if the agent encounters N consecutive errors (tool failures, parse errors, API errors), stop rather than burning through remaining steps
-4. **Stuck detection** — if the agent makes the same tool call with the same arguments K times in a row, it is looping. Force termination
-
-```typescript
-interface TerminationState {
-  step: number
-  maxSteps: number
-  totalTokens: number
-  tokenBudget: number
-  consecutiveErrors: number
-  errorThreshold: number
-  recentToolCalls: string[] // JSON-stringified tool calls for duplicate detection
-  abortSignal?: AbortSignal
-}
-
-function shouldTerminate(state: TerminationState): { terminate: boolean; reason: string } {
-  // Check each condition and return the first that triggers
-}
-```
-
-The function returns both a boolean and a reason string so the agent can include the termination reason in its final response. "I stopped because I used 90% of the token budget" is more useful than silently cutting off.
-
-> **Beginner Note:** Start with max steps and stuck detection — these catch the most common runaway scenarios. Add budget and abort signal when you move to production.
+**Reporting.** Return both a boolean and a reason string so the agent can include the termination reason in its final response. "I stopped because I used 90% of the token budget" is more useful than silently cutting off — and checking the budget at ~90% (rather than 100%) leaves room for that final summary. Exercise 3 turns your Section 8 `shouldTerminate` into this production version.
 
 > **Advanced Note:** Different termination conditions warrant different behaviors. Budget exhaustion should trigger a summary of progress so far. Abort signals should clean up immediately. Error thresholds should log diagnostics. Stuck detection should try a different approach before giving up.
 
@@ -752,7 +742,7 @@ Extended thinking is the literal implementation of ReAct's think phase. The mode
 ```typescript
 const result = await generateText({
   model: anthropic('claude-sonnet-4'),
-  stopWhen: stepCountIs(10),
+  stopWhen: isStepCount(10),
   tools: agentTools,
   providerOptions: {
     anthropic: { thinking: { type: 'enabled', budgetTokens: 5000 } },
@@ -822,53 +812,26 @@ These agents run with their own context and tools, and their results are silentl
 
 ---
 
-### Enhanced Debugging with Trace Logging
-
-#### Production Trace Logging
-
-Production agents log every step of the agent loop as structured trace events. A trace logger captures the full reasoning chain — tool calls, arguments, results, decisions, timing, and token usage — in a format that can be searched, filtered, and replayed.
-
-```typescript
-interface TraceEvent {
-  step: number
-  timestamp: number
-  type: 'tool_call' | 'tool_result' | 'thinking' | 'response' | 'error' | 'termination'
-  data: Record<string, unknown>
-  durationMs: number
-  tokenUsage?: { input: number; output: number }
-}
-```
-
-The trace logger wraps the agent loop. Before each tool call, it records the call details. After each result, it records the outcome and duration. On errors, it captures the full error context. On termination, it records the reason.
-
-The trace output enables post-hoc debugging: "The agent failed at step 7 because the search tool returned an empty result, and the agent did not retry with a different query." Without traces, you would only see the final failure with no insight into why.
-
-Store traces alongside the conversation. In development, print them to console. In production, ship them to an observability platform where you can query across conversations: "Show me all agent runs where stuck detection triggered in the last 24 hours."
-
----
-
 ## Summary
 
 In this module, you learned:
 
-1. **What an agent is:** An LLM plus tools plus a loop. The Vercel AI SDK's `stopWhen: stepCountIs()` provides the simplest agent loop, but custom loops give you more control.
+1. **What an agent is:** An LLM plus tools plus a loop. The Vercel AI SDK's `stopWhen: isStepCount()` provides the simplest agent loop, but custom loops give you more control.
 2. **The ReAct pattern:** Think, act, observe — the fundamental cycle that makes agents effective. System prompts encourage explicit reasoning before tool use.
 3. **Agent loop implementation:** How to build a custom loop with step tracking, message management, and callbacks for observability.
 4. **Planning vs reacting:** Reactive agents work step by step; planning agents create a plan first. Choose based on task complexity and structure.
 5. **Tool selection:** Good tool descriptions, typed parameters, and system prompt guidance help agents choose the right tool.
 6. **Observation processing:** Structured tool results, summarization of large observations, and helpful error messages improve agent accuracy.
-7. **Termination conditions:** Max steps, stuck detection, error thresholds, and token budgets prevent runaway agents.
+7. **Termination conditions:** Max steps, stuck detection, error thresholds, token budgets, and abort signals — checked on every iteration — prevent runaway agents.
 8. **Agent memory:** Conversation history management, context window compaction, and structured working memory keep agents effective across many steps.
-9. **Debugging agents:** Trace logging, step-by-step inspection, and common failure patterns help you diagnose and fix agent issues.
-10. **Production termination:** Beyond max steps, production agents check token budgets, abort signals, error thresholds, and stuck detection (repeated identical tool calls) on every iteration.
-11. **Tool orchestration:** When the model returns multiple tool calls, the orchestrator decides whether to run them sequentially or in parallel, using `Promise.allSettled` for per-tool error handling.
-12. **Extended thinking:** Modern models support explicit thinking tokens that improve decision quality for complex tasks, at the cost of additional token usage.
-13. **Plan and build modes:** Behavioral constraints come from tool selection, not prompts — a plan-mode agent literally cannot write files because the write tool is not available.
-14. **Per-agent step limits:** Different agent types need different max step values based on expected task complexity, from 10 steps for lightweight subagents to 200 for primary agents.
-15. **Hidden system agents:** Compaction, titling, and summarization agents run invisibly to maintain the system, using their own context and tools.
-16. **Production trace logging:** Structured trace events (tool calls, results, timing, token usage) enable post-hoc debugging and observability across agent runs.
+9. **Debugging agents:** Trace logging, step-by-step inspection, and common failure patterns help you diagnose and fix agent issues; in production, structured trace events (tool calls, results, timing, token usage) enable post-hoc debugging across agent runs.
+10. **Tool orchestration:** When the model returns multiple tool calls, the orchestrator decides whether to run them sequentially or in parallel, using `Promise.allSettled` for per-tool error handling.
+11. **Extended thinking:** Modern models support explicit thinking tokens that improve decision quality for complex tasks, at the cost of additional token usage.
+12. **Plan and build modes:** Behavioral constraints come from tool selection, not prompts — a plan-mode agent literally cannot write files because the write tool is not available.
+13. **Per-agent step limits:** Different agent types need different max step values based on expected task complexity, from 10 steps for lightweight subagents to 200 for primary agents.
+14. **Hidden system agents:** Compaction, titling, and summarization agents run invisibly to maintain the system, using their own context and tools.
 
-In Module 15, you will extend these patterns to build systems with multiple agents that coordinate, delegate, and communicate to solve complex tasks.
+In Module 17, you will extend these patterns to build systems with multiple agents that coordinate, delegate, and communicate to solve complex tasks.
 
 ---
 
@@ -887,7 +850,7 @@ What are the three core components of an LLM agent?
 
 ---
 
-### Question 2 (Medium)
+### Question 2 (Easy)
 
 In the ReAct pattern, what is the correct order of phases?
 
@@ -913,7 +876,7 @@ An agent keeps calling the `searchWeb` tool with the same query "TypeScript hist
 
 ---
 
-### Question 4 (Hard)
+### Question 4 (Medium)
 
 When should you prefer a planning agent over a reactive (step-by-step) agent?
 
@@ -935,37 +898,7 @@ What is the primary risk of using conversation history as the agent's only form 
 - C) Other agents cannot access the conversation history
 - D) The conversation history uses too much disk space
 
-**Answer: B** — As an agent takes more steps, the conversation history grows. Once it exceeds the context window, earlier messages are truncated, and the agent loses access to information from early steps. This is why memory management strategies like summarization and working memory are important for long-running agents. Cross-session persistence (A) is a separate concern. Multi-agent access (C) is addressed in Module 15.
-
----
-
-### Question 6 (Medium)
-
-An agent has a token budget of 100,000 tokens. After 5 steps, it has consumed 85,000 tokens. The `shouldTerminate` function detects this. Why is it better to terminate gracefully with a progress summary than to let the agent continue until it hits an API error?
-
-a) API errors are always unrecoverable
-b) Graceful termination lets the agent summarize what it accomplished so far, giving the user actionable partial results instead of a cryptic error message with no context about progress made
-c) Token budgets are always exactly correct
-d) The agent cannot make any more tool calls after 85,000 tokens
-
-**Answer: B**
-
-**Explanation:** When an agent hits the context window limit mid-step, the API returns an error and the user gets no useful output — just a failure. Graceful termination at 85% budget usage gives the agent one final step to summarize its findings, report what is still incomplete, and suggest next steps. The user gets partial but useful results instead of nothing. This is especially important for long-running research or analysis tasks where significant work has already been done.
-
----
-
-### Question 7 (Hard)
-
-A production agent system uses plan mode (read-only tools) and build mode (full tool access). Why is restricting capabilities through tool selection more reliable than restricting through prompt instructions alone?
-
-a) Prompts are ignored by all models
-b) Tool selection is a structural constraint — the agent literally cannot call a tool that is not in its tool set, regardless of what the prompt says. Prompt-based restrictions depend on the model following instructions, which is probabilistic and can fail under adversarial or edge-case inputs
-c) Tool selection uses fewer tokens than prompt instructions
-d) Plan mode agents do not need system prompts
-
-**Answer: B**
-
-**Explanation:** A prompt saying "do not modify files" is a suggestion the model usually follows but occasionally ignores, especially under complex reasoning chains or adversarial inputs. Removing the write tool from the tool set is a hard constraint — the model cannot write files because the tool does not exist in its context. Structural constraints are deterministic and cannot be bypassed. This is a general principle: use structural constraints for safety-critical behavior and prompt instructions for behavioral preferences.
+**Answer: B** — As an agent takes more steps, the conversation history grows. Once it exceeds the context window, earlier messages are truncated, and the agent loses access to information from early steps. This is why memory management strategies like summarization and working memory are important for long-running agents. Cross-session persistence (A) is a separate concern. Multi-agent access (C) is addressed in Module 17.
 
 ---
 
@@ -977,7 +910,7 @@ d) Plan mode agents do not need system prompts
 
 **Specification:**
 
-1. Create a file `src/exercises/m14/ex01-react-research-agent.ts`
+1. Create a file `src/exercises/m16/ex01-react-research-agent.ts`
 2. Export an async function `researchAgent(question: string, options?: AgentOptions): Promise<ResearchResult>`
 3. Define the types:
 
@@ -985,6 +918,7 @@ d) Plan mode agents do not need system prompts
 interface AgentOptions {
   maxSteps?: number // default: 8
   verbose?: boolean // default: false — print trace to console
+  model?: LanguageModel // testability hook — inject a scripted mock model in tests; defaults to Mistral
 }
 
 interface ResearchStep {
@@ -1059,10 +993,11 @@ Steps: 5, Tool calls: 4, Duration: 5,892ms
 **Test specification:**
 
 ```typescript
-// tests/exercises/m14/ex01-react-research-agent.test.ts
+// tests/exercises/m16/ex01-react-research-agent.test.ts
 import { describe, it, expect } from 'bun:test'
+import { stuckModel } from './mock.js' // scripted mock-model helper (test infrastructure)
 
-describe('Exercise 14: ReAct Research Agent', () => {
+describe('Exercise 16: ReAct Research Agent', () => {
   it('should return a non-empty answer', async () => {
     const result = await researchAgent('What is TypeScript?')
     expect(result.answer).toBeTruthy()
@@ -1087,13 +1022,14 @@ describe('Exercise 14: ReAct Research Agent', () => {
     expect(result.totalSteps).toBeLessThanOrEqual(3)
   })
 
-  it('should detect stuck agent', async () => {
-    // This test would require a mock that always returns the same result
-    // forcing the agent to repeat the same search
-    const result = await researchAgent('Obscure topic with no results', {
-      maxSteps: 10,
-    })
-    expect(result.totalSteps).toBeLessThan(10)
+  it('should detect stuck agent and force-terminate before maxSteps', async () => {
+    // stuckModel is a scripted mock model that returns the IDENTICAL webSearch
+    // call on every step — stuck detection must fire after 3 repeats instead
+    // of running to the maxSteps backstop.
+    const model = stuckModel('webSearch', { query: 'obscure topic with no results' })
+    const result = await researchAgent('Obscure topic with no results', { maxSteps: 10, model })
+    expect(result.finished).toBe(false)
+    expect(result.totalSteps).toBe(3)
   })
 })
 ```
@@ -1106,7 +1042,7 @@ describe('Exercise 14: ReAct Research Agent', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m14/ex02-memory-agent.ts`
+1. Create a file `src/exercises/m16/ex02-memory-agent.ts`
 2. Export an async function `memoryAgent(task: string, options?: MemoryAgentOptions): Promise<MemoryAgentResult>`
 3. Define the types:
 
@@ -1144,10 +1080,10 @@ interface MemoryAgentResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m14/ex02-memory-agent.test.ts
+// tests/exercises/m16/ex02-memory-agent.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 14: Memory Agent', () => {
+describe('Exercise 16: Memory Agent', () => {
   it('should store facts in working memory', async () => {
     const result = await memoryAgent('Research the top 3 JavaScript frameworks')
     expect(Object.keys(result.memory.facts).length).toBeGreaterThan(0)
@@ -1170,11 +1106,11 @@ describe('Exercise 14: Memory Agent', () => {
 
 ### Exercise 3: Production Termination Conditions
 
-**Objective:** Build a `shouldTerminate` function that checks multiple termination conditions and a wrapper that integrates it into an agent loop.
+**Objective:** Extend your Section 8 `shouldTerminate` into its production form — add abort-signal handling, a 90% token-budget threshold, and an explicit check-priority order — plus a wrapper that integrates it into an agent loop. The conditions themselves are the ones you already built; the new work is cancellation, the graceful budget margin, and the ordering.
 
 **Specification:**
 
-1. Create a file `src/exercises/m14/ex03-termination.ts`
+1. Create a file `src/exercises/m16/ex03-termination.ts`
 2. Export a function `shouldTerminate(state: TerminationState): TerminationResult`
 3. Define the types:
 
@@ -1209,10 +1145,10 @@ interface TerminationResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m14/ex03-termination.test.ts
+// tests/exercises/m16/ex03-termination.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 14: Production Termination', () => {
+describe('Exercise 16: Production Termination', () => {
   it('should not terminate when all conditions are healthy', () => {
     const result = shouldTerminate({
       step: 3,
@@ -1316,7 +1252,7 @@ describe('Exercise 14: Production Termination', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m14/ex04-tool-orchestration.ts`
+1. Create a file `src/exercises/m16/ex04-tool-orchestration.ts`
 2. Export an async function `executeToolCalls(calls: ToolCall[], options?: ExecutionOptions): Promise<ToolResults>`
 3. Define the types:
 
@@ -1356,10 +1292,10 @@ type ToolResults = ToolResult[]
 **Test specification:**
 
 ```typescript
-// tests/exercises/m14/ex04-tool-orchestration.test.ts
+// tests/exercises/m16/ex04-tool-orchestration.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 14: Tool Orchestration', () => {
+describe('Exercise 16: Tool Orchestration', () => {
   it('should execute tools sequentially', async () => {
     const results = await executeToolCalls(
       [
@@ -1410,4 +1346,4 @@ describe('Exercise 14: Tool Orchestration', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** ReAct agents work with `ollama('qwen3.5')`, which supports tool calling. The agent loop, observation-action cycles, and `stopWhen: stepCountIs()` are provider-agnostic. Local agents are slower but fully private. For complex reasoning tasks, consider `ollama('qwen3.5:cloud')` or `ollama('deepseek-r1')` for better planning capabilities.
+> **Local Alternative (Ollama):** ReAct agents work with `ollama('qwen3.5', { think: false })`, which supports tool calling. The agent loop, observation-action cycles, and `stopWhen: isStepCount()` are provider-agnostic. Local agents are slower but fully private. For complex reasoning tasks, consider `ollama('qwen3.5:cloud', { think: false })` or `ollama('deepseek-r1')` for better planning capabilities.

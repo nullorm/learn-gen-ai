@@ -1,5 +1,7 @@
 # Course Engagement & Consistency Pass — Design
 
+> **Historical (pre-renumber):** this design uses the old 24-module layout; module numbers and filenames here do not match the current 27-module course.
+
 **Date:** 2026-06-03
 **Branch:** `course-polish` (off `main`)
 **Scope:** Editorial pass across all 24 course modules + the `/module-N` command templates + supporting docs.

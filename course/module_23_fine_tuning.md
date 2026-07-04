@@ -1,4 +1,4 @@
-# Module 20: Fine-tuning
+# Module 23: Fine-tuning
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Iterate on fine-tuning through dataset improvement and augmentation
 - Perform cost analysis comparing training investment against inference savings
 
-> *Module 20 is part of **Part V: Quality & Safety**, building toward the **Quality Gate** badge.*
+> *Module 23 is part of **Part V: Quality & Safety**, building toward the **Quality Gate** badge.*
 
 ---
 
@@ -31,8 +31,8 @@ This module teaches the complete fine-tuning workflow: deciding whether to fine-
 
 - **Module 2 (Prompt Engineering)** is the alternative to fine-tuning — always try prompt engineering first.
 - **Module 9-10 (RAG)** is the other major alternative — RAG adds knowledge, fine-tuning changes behavior.
-- **Module 19 (Evals)** provides the evaluation framework you need to measure fine-tuning success.
-- **Module 22 (Cost Optimization)** connects to the cost reduction benefits of fine-tuning (shorter prompts, cheaper models).
+- **Module 22 (Evals)** provides the evaluation framework you need to measure fine-tuning success.
+- **Module 25 (Cost Optimization)** connects to the cost reduction benefits of fine-tuning (shorter prompts, cheaper models).
 - **Module 3 (Structured Output)** shows format requirements that fine-tuning can internalize.
 
 ---
@@ -86,53 +86,14 @@ Use `Output.object` with a Zod schema to get structured output. The system promp
 
 ### Cost-Benefit Analysis
 
-```typescript
-interface FineTuningCostBenefit {
-  // Current approach costs
-  currentPromptTokens: number
-  currentRequestsPerDay: number
-  currentCostPerToken: number
+Even when fine-tuning is technically the right tool, it has to pay for itself. The decision hinges on a few qualitative factors:
 
-  // Fine-tuning costs
-  trainingDataSize: number
-  trainingCost: number
-  fineTunedPromptTokens: number
-  fineTunedCostPerToken: number
+- **Request volume** — savings from a shorter prompt multiply across every request, so high-traffic applications benefit most
+- **Prompt length reduction** — the wider the gap between your current system prompt and the fine-tuned one, the larger the per-request savings
+- **Training investment** — data preparation, training runs (usually several iterations), and periodic retraining all cost money, up front and ongoing
+- **Break-even horizon** — the training investment must be recovered by daily savings before the model needs retraining anyway
 
-  // Computed
-  currentDailyCost: number
-  fineTunedDailyCost: number
-  dailySavings: number
-  breakEvenDays: number
-}
-```
-
-Build a `computeFineTuningROI` function:
-
-```typescript
-function computeFineTuningROI(params: {
-  currentPromptTokens: number
-  currentRequestsPerDay: number
-  currentCostPerMillionTokens: number
-  trainingExamples: number
-  avgExampleTokens: number
-  trainingCostPerMillionTokens: number
-  epochs: number
-  fineTunedPromptTokens: number
-  fineTunedCostPerMillionTokens: number
-}): FineTuningCostBenefit
-```
-
-The key calculations are:
-
-- Convert cost-per-million-tokens to cost-per-token by dividing by 1,000,000
-- Current daily cost = prompt tokens x requests per day x cost per token
-- Fine-tuned daily cost = fine-tuned prompt tokens x requests per day x fine-tuned cost per token
-- Training tokens = training examples x avg tokens per example x epochs
-- Training cost = training tokens x training cost per token
-- Break-even days = training cost / daily savings (or `Infinity` if savings <= 0)
-
-Try it with a realistic scenario: 2,000-token system prompt, 5,000 requests/day, $3/million tokens, 500 training examples at 500 tokens each, 3 epochs at $25/million training tokens, and a fine-tuned prompt of only 200 tokens. How many days until the training investment pays for itself?
+Keep these factors in mind as a checklist for now — Section 8 builds the full cost model, with data preparation, training, inference, and maintenance costs feeding break-even and ROI calculations.
 
 > **Advanced Note:** Fine-tuning ROI calculations should also include engineering time for data preparation, training iteration, and ongoing maintenance. A model that costs less to run but requires a week of engineering time per update may not be worth it for a low-traffic application.
 
@@ -388,7 +349,7 @@ In production, you would use the OpenAI SDK to upload the file (`openai.files.cr
 ```typescript
 const { text } = await generateText({
   model: openaiProvider('ft:gpt-5-mini-2026-01-15:my-org:support-v1:abc123'),
-  system: 'You are a helpful customer support agent.',
+  instructions: 'You are a helpful customer support agent.',
   prompt: userQuestion,
 })
 ```
@@ -397,7 +358,7 @@ Build a `useFineTunedModel` function that takes a model ID and prompt, calls `ge
 
 ### Anthropic's Approach to Customization
 
-Anthropic offers fine-tuning through their API for enterprise customers. The Vercel AI SDK abstracts away provider differences for inference, so fine-tuned Anthropic models are used identically to base models.
+Anthropic offers fine-tuning through their API for enterprise customers.
 
 Build a `compareBaseVsCustomized` function that demonstrates the key benefit of fine-tuning: prompt size reduction. Use the same question with two different configurations:
 
@@ -405,8 +366,6 @@ Build a `compareBaseVsCustomized` function that demonstrates the key benefit of 
 2. A fine-tuned model (simulated with the same base model for now) with a short system prompt (~10 words)
 
 Compare the `usage.inputTokens` between the two calls. How many tokens does the long system prompt add? At 100,000 requests per day, what would that cost difference be?
-
-> **Beginner Note:** The Vercel AI SDK abstracts away provider differences for inference. Whether you are using a base model or a fine-tuned model, the code is nearly identical — you just change the model ID. This makes it easy to swap between base and fine-tuned models for comparison.
 
 ---
 
@@ -434,7 +393,7 @@ interface HyperparameterGuide {
 
 Build a `hyperparameterGuides` array that documents the three key parameters:
 
-1. **Epochs** — Number of complete passes through the training dataset. More epochs mean the model sees each example more times. Default is auto (typically 3-4), range is 1-10. How does dataset size affect the ideal number? Small datasets (<100) need more passes (4-8), while large datasets (>1000) risk overfitting with more than 1-2.
+1. **Epochs** — Number of complete passes through the training dataset. More epochs mean the model sees each example more times. Default is auto (typically 3-4), range is 1-10. How does dataset size affect the ideal number? Small datasets (<100) need more passes (4-8), while datasets beyond ~2,000 examples risk overfitting with more than 1-2 epochs.
 
 2. **Batch size** — Number of examples processed together in one training step. Larger batches are more stable but may generalize less well. Default is auto (typically 1-8), range is 1-32. Why would you use smaller batches for smaller datasets?
 
@@ -500,7 +459,7 @@ For each test case, generate output and compute a simple score (e.g., does the o
 
 Define a search space that varies one parameter at a time from a baseline. For example, start with `{epochs: 4, batchSize: 4, learningRateMultiplier: 1.0}` and create variants that change epochs (2, 6), batch size (8), or learning rate (0.5, 2.0). Why is it important to vary one parameter at a time rather than trying random combinations?
 
-> **Advanced Note:** Overfitting in fine-tuning manifests as the model memorizing training examples rather than learning generalizable behavior. Signs include: perfect performance on training examples but poor performance on new inputs, generating responses that are verbatim copies of training data, and training loss continuing to decrease while validation loss increases.
+> **Advanced Note:** In a hyperparameter search, the overfitting signal to watch is loss divergence: training loss continues to fall while validation loss starts to rise. That divergence means the model is fitting the training set at the expense of generalization.
 
 ---
 
@@ -582,8 +541,6 @@ For the seeded shuffle, implement a Fisher-Yates shuffle using a linear congruen
 Split the shuffled array at the computed boundaries using `slice`. Write each split to a separate JSONL file using your `writeTrainingData` function.
 
 What is the purpose of each split? The training set is what the model learns from. The validation set detects overfitting during training. The test set provides an unbiased estimate after training is complete. Why should you never look at test set results during the training iteration cycle?
-
-> **Beginner Note:** The training set is what the model learns from. The validation set is used during training to detect overfitting. The test set is used only after training is complete to get an unbiased estimate of real-world performance. Never peek at test set results during the training iteration cycle.
 
 ---
 
@@ -752,13 +709,13 @@ In this module, you learned:
 7. **Iterative improvement:** Improving datasets based on evaluation results, using data augmentation techniques to address specific weaknesses.
 8. **Cost analysis:** Building a comprehensive cost model that weighs training investment against inference savings from shorter prompts and fewer tokens per request.
 
-In Module 21, you will learn how to build safety guardrails that protect your LLM applications from prompt injection, jailbreaks, and data exfiltration.
+In Module 24, you will learn how to build safety guardrails that protect your LLM applications from prompt injection, jailbreaks, and data exfiltration.
 
 ---
 
 ## Quiz
 
-**Question 1:** When is fine-tuning the WRONG approach?
+**Question 1 (Medium):** When is fine-tuning the WRONG approach?
 
 A) When you need the model to adopt a specific writing style
 B) When you need the model to know about events from last week
@@ -769,7 +726,7 @@ D) When you need to reduce inference costs at scale
 
 ---
 
-**Question 2:** What is the purpose of a validation set during fine-tuning?
+**Question 2 (Medium):** What is the purpose of a validation set during fine-tuning?
 
 A) To train the model on more diverse data
 B) To detect overfitting during training
@@ -780,18 +737,7 @@ D) To generate synthetic training examples
 
 ---
 
-**Question 3:** What is a typical sign of overfitting in a fine-tuned model?
-
-A) The model generates diverse outputs for the same input
-B) The model generates verbatim copies of training examples
-C) The model refuses to follow the system prompt
-D) The model responds in a different language
-
-**Answer: B** — When a model overfits, it memorizes training examples rather than learning the underlying patterns. A telltale sign is that the model reproduces training examples word-for-word when given similar inputs, rather than generating appropriate new responses. Other signs include perfect scores on training data but poor scores on new inputs.
-
----
-
-**Question 4:** Why might a fine-tuned model need a shorter system prompt than the base model?
+**Question 3 (Easy):** Why might a fine-tuned model need a shorter system prompt than the base model?
 
 A) Fine-tuned models cannot process long prompts
 B) The fine-tuned model has internalized the instructions from training data
@@ -802,7 +748,7 @@ D) Shorter prompts are always better
 
 ---
 
-**Question 5:** What is the recommended first step before deciding to fine-tune?
+**Question 4 (Easy):** What is the recommended first step before deciding to fine-tune?
 
 A) Collect 10,000 training examples
 B) Try prompt engineering and evaluate whether it is sufficient
@@ -813,18 +759,7 @@ D) Switch to the largest available model
 
 ---
 
-**Question 6 (Medium):** A fine-tuned model performs well on the training set but poorly on the validation set. Which hyperparameter adjustment is most likely to help?
-
-A) Increase the number of epochs to give the model more training time
-B) Reduce the number of epochs or decrease the learning rate to prevent overfitting
-C) Increase the batch size to process more examples at once
-D) Add more duplicate examples to the training set
-
-**Answer: B** — When training performance is good but validation performance is poor, the model is overfitting — memorizing training examples rather than learning generalizable patterns. Reducing epochs (fewer passes over the data) or decreasing the learning rate (smaller weight updates) both reduce the risk of overfitting. Increasing epochs (A) would worsen overfitting. Adding duplicates (D) would reinforce memorization.
-
----
-
-**Question 7 (Hard):** You have 50 high-quality training examples and need 200 more. You use an LLM to generate synthetic examples based on the originals. What is the most critical quality check for the synthetic data?
+**Question 5 (Hard):** You have 50 high-quality training examples and need 200 more. You use an LLM to generate synthetic examples based on the originals. What is the most critical quality check for the synthetic data?
 
 A) Verify that synthetic examples are longer than the originals
 B) Ensure synthetic examples do not duplicate originals and cover underrepresented categories while maintaining consistent quality

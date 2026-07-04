@@ -1,0 +1,18 @@
+{
+  "name": "workflow-lab",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run" },
+  "dependencies": {
+    "workflow": "~4.5",
+    "@ai-sdk/workflow": "~1.0.15",
+    "ai": "^7",
+    "@ai-sdk/mistral": "^4",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@workflow/vitest": "~4.0.11",
+    "@workflow/swc-plugin": "~4.1.1",
+    "vitest": "~4.1.9"
+  }
+}

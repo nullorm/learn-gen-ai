@@ -1,4 +1,4 @@
-# Module 18: Human-in-the-Loop
+# Module 21: Human-in-the-Loop
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Create audit trails that log all decisions for compliance and debugging
 - Handle graceful degradation when no human is available
 
-> *Module 18 closes **Part IV: Agents & Orchestration** — complete it to earn the **Agent Deployer** badge.*
+> *Module 21 closes **Part IV: Agents & Orchestration** — complete it to earn the **Agent Deployer** badge.*
 
 ---
 
@@ -27,10 +27,10 @@ This module teaches you how to add human oversight at the right points in an age
 
 ## Connection to Other Modules
 
-- **Module 14 (Agent Fundamentals)** provides the agent loop where HITL checkpoints are inserted.
-- **Module 15 (Multi-Agent Systems)** uses HITL for orchestrator-level approvals.
-- **Module 16 (Workflows & Chains)** adds approval gates between chain steps.
-- **Module 17 (Code Generation)** uses human review before executing generated code.
+- **Module 16 (Agent Fundamentals)** provides the agent loop where HITL checkpoints are inserted.
+- **Module 17 (Multi-Agent Systems)** uses HITL for orchestrator-level approvals.
+- **Module 14 (Workflows & Chains)** adds approval gates between chain steps.
+- **Module 20 (Code Generation)** uses human review before executing generated code.
 
 ---
 
@@ -78,8 +78,6 @@ Think about these questions:
 - What makes an action "critical" vs. "high" risk? Consider reversibility -- can the action be undone? What about blast radius -- does it affect one record or thousands?
 - How do you define clear criteria for each risk level so the model classifies consistently? What examples would you put in the system prompt?
 - Why is the `reversible` field important for risk assessment? How would a reversible high-risk action differ from an irreversible one?
-
-> **Beginner Note:** Human-in-the-loop is not about distrusting AI — it is about using AI and humans where each excels. AI is fast and tireless. Humans have judgment and contextual understanding. The best systems combine both.
 
 ---
 
@@ -305,11 +303,10 @@ interface ReviewDecision {
 }
 ```
 
-Build a `CLIReviewer` class that presents review items to a human via the terminal and collects decisions. The class needs methods for reviewing a single item and reviewing a batch with progress tracking.
+Build a `CLIReviewer` class that presents review items to a human via the terminal and collects decisions. The readline plumbing is solved — reuse the Promise-wrapped `rl.question` pattern from your Section 2 `requestApproval`. The new work is the review loop: a single-item method plus a batch method with progress tracking.
 
 Think about:
 
-- How do you wrap `rl.question` in a Promise so the class methods can be async? Where should the readline interface be created and destroyed?
 - For `reviewItem`, how do you display the item clearly and handle different decision paths (approve/reject/modify/skip)? Each path needs different follow-up input.
 - For `reviewBatch`, what progress information is useful to show after each decision? How do you handle cleanup if the reviewer quits mid-batch?
 
@@ -339,7 +336,7 @@ The key pattern is a Promise-based bridge: when an item is submitted for review,
 
 ### Logging Decisions for Compliance
 
-Every decision in a HITL system should be logged with enough detail to reconstruct what happened and why. Define the entry type:
+Every decision in a HITL system should be logged with enough detail to reconstruct what happened and why. An audit entry captures one event in that lifecycle:
 
 ```typescript
 interface AuditEntry {
@@ -369,9 +366,7 @@ interface AuditEntry {
 }
 ```
 
-Build an `AuditLog` class that records every decision point in a HITL workflow. The class needs methods for logging events (auto-generating IDs, timestamps, and session context), querying entries with filters, summarizing a session's statistics, and exporting the full log as JSON.
-
-Now build `auditedAgent(task, audit, onApproval)` that wraps a simple agent with full audit logging at each decision point.
+The machinery around this type is an audit-trail class: it records every decision point (auto-generating IDs, timestamps, and session context), answers filtered queries, summarizes a session's statistics, and exports the full log as JSON for compliance review — plus an agent wrapper that logs at each step of the lifecycle. You build exactly that in **Exercise 2** (`AuditTrail` + `auditedPipeline`); this section is about getting the design right.
 
 Think about:
 
@@ -412,7 +407,7 @@ Think about:
 
 - How do you implement a timeout on the human's response? What concurrency primitive lets you race a callback against a timer?
 - The config specifies four fallback strategies (`queue`, `auto_approve_low_risk`, `reject_all`, `use_defaults`). What does each one do? Which ones are safe for critical-risk actions?
-- Why must `auto_approve_low_risk` NEVER auto-approve critical-risk actions? What is the cost/benefit analysis?
+- `auto_approve_low_risk` auto-approves *only* low-risk actions; a medium-risk action still asks — it waits in the queue for a human — exactly like high and critical. Why must nothing above low risk ever auto-approve? What is the cost/benefit analysis?
 - What happens when the queue is full? Should new items be rejected or should old items be evicted?
 
 ### Escalation Chains
@@ -448,7 +443,7 @@ The function should try reviewers in priority order, skipping unavailable ones a
 
 ## Going Further: Permission & Approval Systems
 
-Sections 1–8 are the HITL principles — when and how to involve a human. These last five are the machinery production agents use to enforce those decisions: declarative rules, autonomy modes, denial memory, approval levels, and command-level permissions.
+Sections 1–8 are the HITL principles — when and how to involve a human. These last four are the machinery production agents use to enforce those decisions: declarative rules, denial memory, autonomy modes, and command-level permissions.
 
 ### Declarative Permission Rules
 
@@ -477,40 +472,16 @@ Declarative rules are easier to audit, version, and share than imperative permis
 
 ---
 
-### Permission Modes
-
-#### Configurable Autonomy Levels
-
-The autonomy spectrum from Section 1 becomes concrete through permission modes — named configurations that change which rules apply:
-
-- **Restrictive** — Ask for most operations. Safe for exploration and untrusted tasks.
-- **Normal** — Auto-approve reads and low-risk writes. Ask for shell commands, network access, and deletions.
-- **Autonomous** — Auto-approve most operations within the project directory. Deny anything outside it.
-
-Switching modes changes the active rule set, not the code. The permission engine stays the same; only the rules differ.
-
-> **Advanced Note:** Modes let you match the autonomy level to the task. A code review task needs restrictive mode; a scaffolding task can use autonomous mode. The user chooses the mode, not the agent.
-
----
-
 ### Denial Adaptation
 
 #### Learning from "No"
 
-When a human denies an action, the agent must not retry the same operation. Instead, it should:
-
-1. Record the denial and the reason (if provided)
-2. Include the denial in the next LLM call as context
-3. Propose an alternative approach
-
-This creates a feedback loop where the agent adapts its behavior within the session. The denial is appended to the conversation history, not used to truncate it — the agent remembers what it tried and why it was rejected.
+When a human denies an action, the agent must not retry the same operation. The core mechanism is a "do not retry" set: each denied tool call (tool + parameters) is recorded for the session, and if the agent generates the same call again, it is blocked before ever reaching the user. The denial and its reason are also included in the next LLM call so the agent proposes an alternative instead — Section 4's feedback loop, applied within a single session.
 
 ```typescript
 // After denial, the next message to the LLM includes:
 // "The user denied your request to delete the file. Reason: 'Use git revert instead'. Propose an alternative."
 ```
-
-The pattern is simple: denied actions go into a "do not retry" set for the session. If the agent generates the same tool call with the same parameters, it is blocked before reaching the user.
 
 ---
 
@@ -518,7 +489,7 @@ The pattern is simple: denied actions go into a "do not retry" set for the sessi
 
 #### Suggest, Auto-Edit, and Full-Auto
 
-Production coding agents implement three distinct autonomy levels that go beyond simple ask/don't-ask:
+Here the autonomy spectrum from Section 1 becomes concrete as named rule-set modes — switching modes swaps the active rule set, not the code — and production coding agents converge on three:
 
 1. **Suggest mode** — Read-only. The agent can read files and analyze code, but requires explicit approval for all writes and all shell commands. Use this for exploration and review tasks.
 
@@ -548,8 +519,6 @@ const commandRules = [
 ]
 ```
 
-Rules are evaluated in order with last-match-wins semantics. This allows layering — a project defines baseline rules, and the user adds overrides on top. Glob patterns are more readable than regex and compose naturally.
-
 The matcher compares the full command string against each rule's pattern. Wildcards (`*`) match any sequence of characters within a single argument. Double wildcards (`**`) are not typically needed for flat command strings.
 
 ---
@@ -565,12 +534,11 @@ In this module, you learned:
 5. **Active learning:** Proactive agents identify their own uncertainty and ask for clarification before acting. This is more efficient than acting and being rejected.
 6. **Review interfaces:** CLI-based and programmatic review queues let humans efficiently review batches of agent proposals.
 7. **Audit trails:** Log every decision with enough detail for compliance review. Include who, what, when, why, and the outcome.
-8. **Graceful degradation:** When no human is available, fall back to safe behaviors — auto-approve low-risk actions, queue high-risk ones, or reject everything. Never auto-approve critical actions.
+8. **Graceful degradation:** When no human is available, fall back to safe behaviors — auto-approve only low-risk actions, queue everything from medium up, or reject everything. Never auto-approve anything above low risk.
 9. **Declarative permission rules:** Defining access control as data (pattern + decision) instead of logic makes permissions auditable, versionable, and composable with last-match-wins semantics.
-10. **Permission modes:** Named configurations (restrictive, normal, autonomous) let users match the autonomy level to the task by switching rule sets, not code.
-11. **Denial adaptation:** Recording denied actions and including them as context prevents the agent from retrying rejected operations and teaches it to propose alternatives.
-12. **Three approval modes:** Suggest (read-only), auto-edit (file writes allowed), and full-auto (all operations, but network disabled) provide distinct autonomy levels with compensating controls.
-13. **Glob-based command permissions:** Fine-grained shell command control using glob patterns enables layered rules — project defaults with user overrides — for precise command execution governance.
+10. **Denial adaptation:** Recording denied actions and including them as context prevents the agent from retrying rejected operations and teaches it to propose alternatives.
+11. **Permission modes:** The autonomy spectrum made concrete as named rule sets — suggest (read-only), auto-edit (file writes allowed), and full-auto (all operations, but network disabled) — with compensating controls; users match the mode to the task by switching rule sets, not code.
+12. **Glob-based command permissions:** Fine-grained shell command control using glob patterns enables layered rules — project defaults with user overrides — for precise command execution governance.
 
 This completes Part IV: Agents and Orchestration. You now have the patterns to build autonomous agents, coordinate multiple agents, design deterministic pipelines, generate code iteratively, and add human oversight — the full toolkit for production LLM applications.
 
@@ -604,7 +572,7 @@ In confidence-based routing, what happens when the agent's confidence is between
 
 ---
 
-### Question 3 (Medium)
+### Question 3 (Easy)
 
 How does storing human feedback help improve agent behavior over time?
 
@@ -630,7 +598,7 @@ An agent system handles customer emails. When a human reviewer rejects a draft, 
 
 ---
 
-### Question 5 (Hard)
+### Question 5 (Medium)
 
 In a graceful degradation system with `auto_approve_low_risk` fallback, a "critical" risk action is submitted but no human is available. What should happen?
 
@@ -639,33 +607,7 @@ In a graceful degradation system with `auto_approve_low_risk` fallback, a "criti
 - C) The action is downgraded to "medium" risk and auto-approved
 - D) The system retries until a human becomes available
 
-**Answer: B** — With `auto_approve_low_risk` fallback behavior, only low and medium risk actions are auto-approved when no human is available. Critical-risk actions are rejected because the consequences of a wrong decision are too severe to auto-approve. This is the core principle of graceful degradation: maintain safety by reducing capability rather than reducing safety.
-
----
-
-### Question 6 (Medium)
-
-In a full-auto permission mode, the agent can execute all operations without human approval. What compensating control makes this safe?
-
-- A) The agent uses a more powerful model that makes fewer mistakes
-- B) Network access is disabled and file writes are restricted to the working directory, containing the blast radius
-- C) The agent runs all operations twice and compares the results
-- D) Full-auto mode is never safe and should not be used
-
-**Answer: B** — Full-auto mode relaxes the human approval constraint but tightens the scope constraint. With network disabled, the agent cannot exfiltrate data, download malicious code, or reach external services. With file writes limited to the working directory, it cannot damage the system. This is the principle of compensating controls — relaxing one safeguard while tightening another to maintain overall safety.
-
----
-
-### Question 7 (Hard)
-
-A declarative permission system uses last-match-wins evaluation. Given these rules in order: `{ pattern: '**', decision: 'ask' }`, `{ pattern: 'src/**/*.ts', decision: 'allow' }`, `{ pattern: '.env*', decision: 'deny' }`, what happens when the agent tries to read `src/.env.local`?
-
-- A) It is allowed because it matches `src/**/*.ts`
-- B) It is denied because it matches `.env*`
-- C) It triggers an ask because `**` is the broadest match
-- D) It causes an error because two rules match
-
-**Answer: B** — With last-match-wins evaluation, all matching rules are checked in order and the last one to match determines the decision. The file `src/.env.local` matches all three patterns: `**` (everything), `src/**/*.ts` would not match (no .ts extension), but `.env*` does match the filename. Since `.env*` is the last matching rule, the decision is deny. This demonstrates how layered rules can provide specific overrides on top of broad defaults.
+**Answer: B** — With `auto_approve_low_risk` fallback behavior, only low-risk actions are auto-approved when no human is available; medium-risk and above still require a human, so they are queued or rejected. Critical-risk actions are rejected outright because the consequences of a wrong decision are too severe to auto-approve. This is the core principle of graceful degradation: maintain safety by reducing capability rather than reducing safety.
 
 ---
 
@@ -677,7 +619,7 @@ A declarative permission system uses last-match-wins evaluation. Given these rul
 
 **Specification:**
 
-1. Create a file `src/exercises/m18/ex01-approval-agent.ts`
+1. Create a file `src/exercises/m21/ex01-approval-agent.ts`
 2. Export an async function `approvalAgent(task: string, options?: ApprovalAgentOptions): Promise<ApprovalAgentResult>`
 3. Define the types:
 
@@ -755,10 +697,10 @@ console.log(`Human-rejected: ${result.humanRejected}`)
 **Test specification:**
 
 ```typescript
-// tests/exercises/m18/ex01-approval-agent.test.ts
+// tests/exercises/m21/ex01-approval-agent.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 18: Approval Agent', () => {
+describe('Exercise 21: Approval Agent', () => {
   it('should auto-approve low-risk tools', async () => {
     const result = await approvalAgent('Search for information about TypeScript', {
       onApproval: async () => ({ approved: true }),
@@ -812,7 +754,7 @@ describe('Exercise 18: Approval Agent', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m18/ex02-audit-trail.ts`
+1. Create a file `src/exercises/m21/ex02-audit-trail.ts`
 2. Export the `AuditTrail` class and `auditedPipeline` function
 3. Define the types:
 
@@ -860,10 +802,10 @@ async function auditedPipeline(
 **Test specification:**
 
 ```typescript
-// tests/exercises/m18/ex02-audit-trail.test.ts
+// tests/exercises/m21/ex02-audit-trail.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 18: Audit Trail', () => {
+describe('Exercise 21: Audit Trail', () => {
   it('should log events with unique IDs', () => {
     const audit = new AuditTrail()
     audit.log({ eventType: 'test', actor: 'system', action: 'test action', details: {} })
@@ -906,7 +848,7 @@ describe('Exercise 18: Audit Trail', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** Human-in-the-loop patterns (approval flows, feedback integration, corrections) are application-level logic independent of the model provider. All patterns in this module work with `ollama('qwen3.5')`. The confirmation prompts and active learning loops are the same regardless of which model generates the initial output.
+> **Local Alternative (Ollama):** Human-in-the-loop patterns (approval flows, feedback integration, corrections) are application-level logic independent of the model provider. All patterns in this module work with `ollama('qwen3.5', { think: false })`. The confirmation prompts and active learning loops are the same regardless of which model generates the initial output.
 
 ---
 
@@ -916,7 +858,7 @@ describe('Exercise 18: Audit Trail', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m18/ex03-permission-system.ts`
+1. Create a file `src/exercises/m21/ex03-permission-system.ts`
 2. Export a function `createPermissionChecker(rules: PermissionRule[]): PermissionChecker`
 3. Define the types:
 
@@ -940,10 +882,10 @@ interface PermissionChecker {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m18/ex03-permission-system.test.ts
+// tests/exercises/m21/ex03-permission-system.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 18: Declarative Permission System', () => {
+describe('Exercise 21: Declarative Permission System', () => {
   it('should apply last-match-wins semantics', () => {
     const checker = createPermissionChecker([
       { pattern: '**', decision: 'deny' },
@@ -978,7 +920,7 @@ describe('Exercise 18: Declarative Permission System', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m18/ex04-denial-adaptation.ts`
+1. Create a file `src/exercises/m21/ex04-denial-adaptation.ts`
 2. Export an async function `adaptiveAgent(task: string, options: AdaptiveAgentOptions): Promise<AdaptiveAgentResult>`
 3. Define the types:
 
@@ -1008,10 +950,10 @@ interface AdaptiveAgentResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m18/ex04-denial-adaptation.test.ts
+// tests/exercises/m21/ex04-denial-adaptation.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 18: Denial Adaptation', () => {
+describe('Exercise 21: Denial Adaptation', () => {
   it('should not retry denied actions', async () => {
     const calls: string[] = []
     const result = await adaptiveAgent('Delete the temp files and clean up', {
@@ -1043,7 +985,7 @@ describe('Exercise 18: Denial Adaptation', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m18/ex05-permission-modes.ts`
+1. Create a file `src/exercises/m21/ex05-permission-modes.ts`
 2. Export a function `createModeEngine(mode: PermissionMode): ModeEngine`
 3. Define the types:
 
@@ -1072,10 +1014,10 @@ interface ModeEngine {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m18/ex05-permission-modes.test.ts
+// tests/exercises/m21/ex05-permission-modes.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 18: Permission Modes', () => {
+describe('Exercise 21: Permission Modes', () => {
   it('suggest mode should require approval for all writes', () => {
     const engine = createModeEngine('suggest')
     expect(engine.checkFileWrite('src/app.ts')).toBe('ask')

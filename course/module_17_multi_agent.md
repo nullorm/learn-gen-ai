@@ -1,4 +1,4 @@
-# Module 15: Multi-Agent Systems
+# Module 17: Multi-Agent Systems
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Implement agent handoff for transferring conversations between specialists
 - Handle sub-agent failures with retries, fallbacks, and graceful degradation
 
-> *Module 15 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
+> *Module 17 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
 
 ---
 
@@ -21,16 +21,16 @@ A single agent can research, write, and review — but it cannot do all three we
 
 Multi-agent systems are how production LLM applications handle complex workflows: a customer support system with a triage agent, a billing specialist, and a technical support specialist; a content pipeline with research, writing, and editing agents; a coding assistant with a planner, implementer, and reviewer.
 
-This module builds directly on the agent fundamentals from Module 14. If you can build one agent, you can build a system of agents that work together. The challenge is coordination — and that is what this module teaches.
+This module builds directly on the agent fundamentals from Module 16. If you can build one agent, you can build a system of agents that work together. The challenge is coordination — and that is what this module teaches.
 
 ---
 
 ## Connection to Other Modules
 
-- **Module 14 (Agent Fundamentals)** provides the single-agent patterns that this module composes into multi-agent systems.
-- **Module 16 (Workflows & Chains)** offers an alternative to multi-agent systems for deterministic pipelines.
-- **Module 17 (Code Generation)** can use multi-agent patterns for plan-implement-review cycles.
-- **Module 18 (Human-in-the-Loop)** adds human oversight to multi-agent coordination.
+- **Module 16 (Agent Fundamentals)** provides the single-agent patterns that this module composes into multi-agent systems.
+- **Module 14 (Workflows & Chains)** offers an alternative to multi-agent systems for deterministic pipelines.
+- **Module 20 (Code Generation)** can use multi-agent patterns for plan-implement-review cycles.
+- **Module 21 (Human-in-the-Loop)** adds human oversight to multi-agent coordination.
 
 ---
 
@@ -56,14 +56,14 @@ Each agent is an async function that takes an input string and returns a string.
 > **Decision:** Which coordination pattern? Use **orchestrator-worker** when one agent can plan and farm out independent sub-tasks (§2); use **handoff** when control passes between specialists in sequence, each owning a phase (§7); use **shared state** when agents work concurrently on the same evolving artifact (§4). Real systems combine them — but reach for the simplest that fits before adding coordination machinery.
 
 ```typescript
-import { generateText, stepCountIs } from 'ai'
+import { generateText, isStepCount } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 ```
 
 Your task: build three agent functions and a pipeline that connects them.
 
-- `researchAgent(topic: string): Promise<string>` -- uses `generateText` with `stopWhen: stepCountIs(5)`, a search tool, and a system prompt that limits the agent to research only
+- `researchAgent(topic: string): Promise<string>` -- uses `generateText` with `stopWhen: isStepCount(5)`, a search tool, and a system prompt that limits the agent to research only
 - `writerAgent(researchBrief: string): Promise<string>` -- uses `generateText` with no tools, system prompt focused on writing from a provided brief
 - `reviewerAgent(article: string): Promise<string>` -- uses `generateText` with no tools, system prompt focused on reviewing for accuracy, clarity, structure, and style
 
@@ -71,7 +71,7 @@ Think about:
 
 - What makes a good system prompt boundary? How do you tell an agent what NOT to do?
 - Why does the researcher need `stopWhen` but the writer and reviewer do not?
-- What happens if you pass the research brief as part of the writer's `prompt` rather than the `system`?
+- What happens if you pass the research brief as part of the writer's prompt rather than the `instructions` field?
 
 > **Beginner Note:** Think of multi-agent systems like a team of people. You would not ask one person to simultaneously research, write, edit, and fact-check. You assign roles because specialists do better work than generalists trying to do everything at once.
 
@@ -93,7 +93,7 @@ The orchestrator-worker pattern has one "orchestrator" agent that understands th
 You need worker agents and an orchestrator function that coordinates them. Start with the types:
 
 ```typescript
-import { generateText, Output, stepCountIs } from 'ai'
+import { generateText, Output, isStepCount } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
@@ -108,7 +108,7 @@ interface SubTask {
 
 Build three worker functions:
 
-- `researchWorker(query: string): Promise<string>` -- uses `stopWhen: stepCountIs(3)` and a search tool
+- `researchWorker(query: string): Promise<string>` -- uses `stopWhen: isStepCount(3)` and a search tool
 - `analysisWorker(data: string, question: string): Promise<string>` -- no tools, system prompt focused on data analysis
 - `writingWorker(content: string, format: string): Promise<string>` -- no tools, system prompt focused on transforming content
 
@@ -154,7 +154,7 @@ Then build a `dynamicOrchestrator(task: string, registry: AgentRegistry): Promis
 tools: {
   delegate: {
     description: 'Delegate a sub-task to a specific worker agent',
-    parameters: z.object({
+    inputSchema: z.object({
       worker: z.string().describe('Name of the worker to delegate to'),
       task: z.string().describe('The sub-task description'),
     }),
@@ -382,9 +382,9 @@ Build `runParallel(tasks: ParallelTask[], maxConcurrency: number = 5): Promise<P
 - Split tasks into chunks of size `maxConcurrency`
 - Process each chunk with `Promise.allSettled` (not `Promise.all` -- why?)
 - For each task, record the name, result, duration, and success/failure status
-- Log the total wall-clock time versus the sum of individual durations to show the parallel speedup
+- Return each task's `durationMs` in its `ParallelResult`; the test then proves the speedup with `expect()` — the wall-clock time around a concurrent chunk should be well below the sum of the individual `durationMs` values
 
-The key pattern: chunk the tasks array, iterate through chunks sequentially, but within each chunk use `Promise.allSettled` for concurrent execution. This creates a sliding window of concurrent tasks.
+The key pattern: chunk the tasks array, iterate through chunks sequentially, but within each chunk use `Promise.allSettled` for concurrent execution. This is batched concurrency, not a true sliding window — the next chunk starts only after the entire previous chunk settles.
 
 Think about:
 
@@ -412,7 +412,7 @@ async function mapReduceAgents(
 
 The map phase chunks items and uses `Promise.all` within each chunk. The reduce phase takes all results and synthesizes them. This pattern works for any task that can be decomposed into independent parts and then combined: analyzing multiple companies, reviewing multiple documents, processing multiple data sources.
 
-> **Advanced Note:** Be mindful of API rate limits when running agents in parallel. Most providers have tokens-per-minute and requests-per-minute limits. Set `maxConcurrency` based on your provider's rate limits. Consider adding exponential backoff for 429 (rate limit) errors.
+> **Gotcha:** An unbounded `Promise.all` over N agent calls fires N requests in the same instant — on Mistral's free tier (1 request per second) even five concurrent workers means instant 429s. Cap concurrency to your provider's rate limit, and add exponential backoff for the 429s that still slip through.
 
 ---
 
@@ -425,7 +425,7 @@ Sometimes an agent needs to transfer a conversation to a different specialist. T
 Define the types for the handoff system:
 
 ```typescript
-import { type ModelMessage } from 'ai'
+import { type ModelMessage, type Tool } from 'ai'
 
 interface HandoffRequest {
   targetAgent: string
@@ -438,7 +438,7 @@ interface HandoffRequest {
 interface AgentSpec {
   name: string
   system: string
-  tools: Record<string, any>
+  tools: Record<string, Tool>
   canHandoff: string[] // which agents this one can hand off to
 }
 ```
@@ -552,14 +552,7 @@ How does this pattern save tokens and reduce latency when a downstream service i
 
 The orchestrator-worker pattern from Section 2 dispatches agents one at a time. A coordinator goes further — it manages a **pool** of worker agents that execute in parallel, with concurrency limits, load balancing, and result aggregation.
 
-The coordinator's job:
-
-1. Receive a complex task
-2. Decompose it into independent sub-tasks
-3. Dispatch sub-tasks to available workers (up to a concurrency limit)
-4. Collect results as workers complete
-5. Handle worker failures with retry or fallback
-6. Aggregate all results into a final output
+Nothing in the coordinator is new machinery — it is Section 2's decompose → dispatch → synthesize flow, Section 6's concurrency limit, and Section 8's retry policy combined into one component that owns the whole lifecycle. What is new is the configuration surface:
 
 ```typescript
 interface CoordinatorConfig {
@@ -576,9 +569,7 @@ interface SubTask {
 }
 ```
 
-The concurrency limit is critical. Running too many agents in parallel hits API rate limits. A coordinator with `maxConcurrency: 3` dispatches three workers initially, then dispatches the next worker as each one completes — a sliding window pattern.
-
-Result aggregation depends on the task. For research tasks, concatenate findings. For review tasks, merge feedback. For classification tasks, use majority voting. The coordinator's aggregation logic is what turns individual worker outputs into a coherent result.
+Result aggregation depends on the task. For research tasks, concatenate findings. For review tasks, merge feedback. For classification tasks, use majority voting. The coordinator's aggregation logic is what turns individual worker outputs into a coherent result. Exercise 3 is the integration build for this section.
 
 > **Beginner Note:** Start with sequential dispatch (concurrency 1) to get the pattern working, then increase concurrency once error handling is solid.
 
@@ -597,7 +588,7 @@ Production systems define specialized agent types, each with a focused system pr
 | **Planner**         | Plan  | Read, search       | Architecture and design       |
 | **Reviewer**        | Plan  | Read, search, glob | Code review, no modifications |
 
-The specialization is structural, not just prompt-based. An explorer agent literally cannot write files — it does not have the write tool. This prevents accidental modifications during read-only tasks and makes the agent's capabilities explicit.
+The specialization is structural, not just prompt-based — this is the Plan/Build-mode principle from Module 16: an agent without the write tool cannot modify files, no matter what its prompt says.
 
 ```typescript
 interface AgentType {
@@ -746,14 +737,14 @@ In this module, you learned:
 6. **Parallel execution:** Run independent agents concurrently with concurrency limits and map-reduce patterns for throughput.
 7. **Agent handoff:** Transfer conversations between specialists with context summaries so users do not repeat themselves.
 8. **Error handling:** Retries with exponential backoff, fallback agents, and circuit breakers create resilient multi-agent systems.
-9. **Agent pool coordinator:** A coordinator manages a pool of workers with concurrency limits, dispatching sub-tasks in a sliding window pattern and aggregating results.
+9. **Agent pool coordinator:** One component that combines decomposition (Section 2), bounded concurrency (Section 6), and retries (Section 8) with task-appropriate result aggregation.
 10. **Agent type specialization:** Production systems define agent types with focused prompts, curated tool sets, and per-type step limits — making capabilities explicit and structural.
 11. **Workspace isolation:** Parallel agents that might conflict work in separate directories (or git worktrees), with results merged back by the coordinator.
 12. **Primary and subagent architecture:** Primary agents are persistent and user-facing; subagents are task-scoped, invoked on demand with fresh context, and return results to the caller.
 13. **Agent configuration via markdown:** Declarative agent definitions in markdown files with YAML frontmatter make agent types versionable, shareable, and editable by non-developers.
 14. **@Mention invocation:** Users or parent agents invoke specific subagents with `@agent_name` syntax, enabling explicit delegation alongside automatic routing.
 
-In Module 16, you will learn about workflows and chains — a more deterministic alternative to autonomous multi-agent systems for tasks with well-defined steps.
+You built the deterministic alternative back in Module 14 — workflows and chains for tasks with well-defined steps; multi-agent systems are what you reach for when the steps are not known in advance. Next, in Module 18 (Eve Fundamentals), you will trade this hand-rolled orchestration for a production agent framework that packages these same patterns.
 
 ---
 
@@ -772,7 +763,7 @@ What is the main advantage of splitting a complex task across multiple agents in
 
 ---
 
-### Question 2 (Medium)
+### Question 2 (Easy)
 
 In the orchestrator-worker pattern, what is the orchestrator's primary responsibility?
 
@@ -798,7 +789,7 @@ When running multiple agents in parallel, what is the primary constraint you mus
 
 ---
 
-### Question 4 (Hard)
+### Question 4 (Medium)
 
 An agent handoff system transfers a user from a triage agent to a billing agent, but the billing agent asks the user to repeat their problem. What is the most likely cause?
 
@@ -824,45 +815,15 @@ In a multi-agent system, why is a circuit breaker pattern useful?
 
 ---
 
-### Question 6 (Medium)
-
-Why should subagents start with fresh context rather than inheriting the parent agent's full conversation history?
-
-a) Subagents cannot process conversation history
-b) The parent's conversation history consumes tokens that the subagent should spend on its specific task — passing only relevant context (a summary or task description) prevents context pollution and keeps the subagent focused
-c) Fresh context makes subagents run faster
-d) Conversation history is not serializable
-
-**Answer: B**
-
-**Explanation:** A parent agent with 50 steps of conversation history might have 80,000 tokens of context. If a subagent inherits all of that, most of its token budget is consumed by irrelevant history. Instead, the parent passes only the specific task and any relevant context (a few hundred tokens). This lets the subagent spend its full budget on its task, just like a function call in regular programming passes arguments rather than the entire program state.
-
----
-
-### Question 7 (Hard)
-
-Your multi-agent system defines agent types in markdown files with YAML frontmatter. A reviewer agent is configured with `mode: plan` and `tools: [read, grep, glob]`. A developer accidentally changes the config to `tools: [read, grep, glob, write]` without changing the mode. What architectural principle does this violate, and why is it dangerous?
-
-a) It violates the DRY principle because tools are duplicated
-b) It violates the principle that behavioral constraints should be structural — a plan-mode agent with write tools can modify files despite being designated as read-only, because the tool set is the actual constraint and the mode label is just metadata
-c) It violates the single responsibility principle
-d) It violates the principle of least privilege only if the agent actually writes files
-
-**Answer: B**
-
-**Explanation:** In a well-designed system, the `mode: plan` label should determine the tool set (plan = read-only tools). When the tool set is specified independently, the mode becomes a misleading label — the agent is called "plan" but has write capabilities. The system should either derive tools from mode or validate that the tool set matches the declared mode. This is a real risk in declarative configurations: labels and behavior can drift apart, and the behavior (available tools) is what actually matters.
-
----
-
 ## Exercises
 
 ### Exercise 1: Orchestrator with Research, Writing, and Review Agents
 
-**Objective:** Build a multi-agent system where an orchestrator delegates to three specialized agents: a researcher, a writer, and a reviewer. The system produces a polished article on a given topic.
+**Objective:** Build a multi-agent system where an orchestrator delegates to three specialized agents: a researcher, a writer, and a reviewer. The system produces a polished article on a given topic. This extends the researcher → writer → reviewer functions you wrote in Section 1 — the new work is the review-round loop, per-agent retries, and timing capture.
 
 **Specification:**
 
-1. Create a file `src/exercises/m15/ex01-multi-agent-pipeline.ts`
+1. Create a file `src/exercises/m17/ex01-multi-agent-pipeline.ts`
 2. Export an async function `multiAgentArticle(topic: string, options?: PipelineOptions): Promise<PipelineResult>`
 3. Define the types:
 
@@ -920,10 +881,10 @@ console.log(`Review feedback: ${result.reviewFeedback.join('; ')}`)
 **Test specification:**
 
 ```typescript
-// tests/exercises/m15/ex01-multi-agent-pipeline.test.ts
+// tests/exercises/m17/ex01-multi-agent-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 15: Multi-Agent Article Pipeline', () => {
+describe('Exercise 17: Multi-Agent Article Pipeline', () => {
   it('should produce a final article', async () => {
     const result = await multiAgentArticle('TypeScript best practices')
     expect(result.finalArticle).toBeTruthy()
@@ -968,7 +929,7 @@ describe('Exercise 15: Multi-Agent Article Pipeline', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m15/ex02-support-router.ts`
+1. Create a file `src/exercises/m17/ex02-support-router.ts`
 2. Export an async function `handleSupportRequest(message: string): Promise<SupportResult>`
 3. Define the types:
 
@@ -994,10 +955,10 @@ interface SupportResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m15/ex02-support-router.test.ts
+// tests/exercises/m17/ex02-support-router.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 15: Support Router', () => {
+describe('Exercise 17: Support Router', () => {
   it('should route billing questions to the billing agent', async () => {
     const result = await handleSupportRequest('I was double-charged on my last invoice')
     expect(result.finalAgent).toBe('billing')
@@ -1029,7 +990,7 @@ describe('Exercise 15: Support Router', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m15/ex03-coordinator.ts`
+1. Create a file `src/exercises/m17/ex03-coordinator.ts`
 2. Export an async function `coordinateTask(task: string, options?: CoordinatorOptions): Promise<CoordinatorResult>`
 3. Define the types:
 
@@ -1078,10 +1039,10 @@ interface CoordinatorResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m15/ex03-coordinator.test.ts
+// tests/exercises/m17/ex03-coordinator.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 15: Agent Pool Coordinator', () => {
+describe('Exercise 17: Agent Pool Coordinator', () => {
   it('should decompose task into sub-tasks', async () => {
     const result = await coordinateTask('Compare TypeScript and Rust for backend development')
     expect(result.subTasks.length).toBeGreaterThanOrEqual(2)
@@ -1115,7 +1076,7 @@ describe('Exercise 15: Agent Pool Coordinator', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m15/ex04-specialized-agents.ts`
+1. Create a file `src/exercises/m17/ex04-specialized-agents.ts`
 2. Export a function `createAgentType(config: AgentTypeConfig): AgentType` and a function `runSpecializedAgent(agentType: AgentType, task: string): Promise<AgentOutput>`
 3. Define the types:
 
@@ -1156,10 +1117,10 @@ interface AgentOutput {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m15/ex04-specialized-agents.test.ts
+// tests/exercises/m17/ex04-specialized-agents.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 15: Specialized Agents', () => {
+describe('Exercise 17: Specialized Agents', () => {
   it('should create agents with different tool sets', () => {
     const researcher = createAgentType({
       name: 'researcher',
@@ -1210,7 +1171,7 @@ describe('Exercise 15: Specialized Agents', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m15/ex05-workspace-isolation.ts`
+1. Create a file `src/exercises/m17/ex05-workspace-isolation.ts`
 2. Export an async function `runIsolatedAgents(tasks: IsolatedTask[], sourceDir: string): Promise<IsolationResult>`
 3. Define the types:
 
@@ -1249,10 +1210,11 @@ interface IsolationResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m15/ex05-workspace-isolation.test.ts
+// tests/exercises/m17/ex05-workspace-isolation.test.ts
 import { describe, it, expect } from 'bun:test'
+import { existsSync } from 'fs'
 
-describe('Exercise 15: Workspace Isolation', () => {
+describe('Exercise 17: Workspace Isolation', () => {
   it('should create separate workspaces for each agent', async () => {
     const result = await runIsolatedAgents(
       [
@@ -1284,14 +1246,15 @@ describe('Exercise 15: Workspace Isolation', () => {
       [{ id: '1', description: 'Simple task', agentType: 'researcher' }],
       '/tmp/test-project'
     )
-    expect(result.results[0].workspace).toBeTruthy()
-    // Workspace should be cleaned up after results are collected
+    const ws = result.results[0]?.workspace
+    expect(ws).toBeTruthy()
+    expect(existsSync(ws!)).toBe(false) // removed after results are collected
   })
 })
 ```
 
 > **Advanced Note: Agent SDKs** — This module teaches multi-agent orchestration from scratch, which is valuable for understanding the patterns. In production, consider the official Agent SDKs: Anthropic's Claude Agent SDK, OpenAI's Agents SDK, and Mistral's Agents API all provide built-in primitives for structured handoffs between agents, built-in guardrails, tracing, and orchestration — handling many of the patterns you've implemented manually here. Mistral's Agents API additionally offers built-in connectors (web search, code execution, image generation), persistent memory across conversations, and native multi-agent orchestration.
 
-> **Local Alternative (Ollama):** Multi-agent orchestration works with `ollama('qwen3.5')`. The orchestrator-worker pattern, delegation, and shared state are all code-level patterns independent of the model provider. You can even mix providers — use a capable API model as the orchestrator and local models as cheaper workers.
+> **Local Alternative (Ollama):** Multi-agent orchestration works with `ollama('qwen3.5', { think: false })`. The orchestrator-worker pattern, delegation, and shared state are all code-level patterns independent of the model provider. You can even mix providers — use a capable API model as the orchestrator and local models as cheaper workers.
 
 ---

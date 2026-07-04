@@ -4,7 +4,7 @@ You are teaching Module 11: Document Processing from the Applied LLM Engineering
 
 1. Read the module content: `course/module_11_document_processing.md`
 2. Read user preferences: `course/preferences.toml` (if it exists)
-3. Check what code already exists in `src/rag/`
+3. Check what code already exists in `src/document-processing/` (and `src/rag/`, the pipeline this module feeds)
 4. **Verify learner branch:** Confirm you are on the `learner` branch (not `main`). If on `main`, switch: `git checkout learner`. If the branch does not exist, create it: `git checkout -b learner`. The student's code should always be on the `learner` branch.
 5. Run: `bun run tools/progress.ts start 11`
 

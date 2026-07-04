@@ -1,4 +1,4 @@
-# Module 22: Cost Optimization
+# Module 25: Cost Optimization
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Optimize prompts for cost without sacrificing quality
 - Build monitoring and alerting systems that track spend and enforce budgets
 
-> *Module 22 closes **Part V: Quality & Safety** — complete it to earn the **Quality Gate** badge.*
+> *Module 25 closes **Part V: Quality & Safety** — complete it to earn the **Quality Gate** badge.*
 
 ---
 
@@ -23,7 +23,7 @@ The economics of LLM applications are fundamentally different from traditional s
 
 Cost optimization is not about being cheap. It is about building a sustainable business. The goal is to deliver the same quality at lower cost, or to deliver higher quality within the same budget. Every dollar saved on unnecessary tokens is a dollar you can spend on more test cases, better monitoring, or additional features.
 
-This module teaches practical techniques that can reduce LLM costs by 50-90% without degrading user experience.
+This module teaches practical techniques that can reduce LLM costs by 60-80% without degrading user experience.
 
 ---
 
@@ -32,9 +32,9 @@ This module teaches practical techniques that can reduce LLM costs by 50-90% wit
 - **Module 1 (Setup)** introduces the provider and model selection that drives pricing.
 - **Module 2 (Prompt Engineering)** creates the prompts you will optimize for cost.
 - **Module 9-10 (RAG)** benefits from caching and smart retrieval to reduce redundant calls.
-- **Module 19 (Evals)** provides the measurement framework to ensure cost optimization does not degrade quality.
-- **Module 20 (Fine-tuning)** is a cost optimization strategy itself -- shorter prompts via fine-tuned models.
-- **Module 21 (Safety)** connects through rate limiting and abuse prevention.
+- **Module 22 (Evals)** provides the measurement framework to ensure cost optimization does not degrade quality.
+- **Module 23 (Fine-tuning)** is a cost optimization strategy itself -- shorter prompts via fine-tuned models.
+- **Module 24 (Safety)** connects through rate limiting and abuse prevention.
 
 ---
 
@@ -95,7 +95,7 @@ function projectMonthlyCost(
 
 This function should use `calculateRequestCost` internally and project costs forward. The `breakdown` should show input vs output cost contribution over a month.
 
-Finally, write a `compareModelCosts` function that iterates over all models and logs per-request, monthly, and annual costs for a given scenario. Call it with a typical customer support scenario: 1,500 input tokens, 300 output tokens, 10,000 requests per day.
+Finally, write a `compareModelCosts` function that maps every model to a comparison row for a given scenario — `{ provider, model, tier, costPerRequest, monthlyCost, annualCost }` — and **returns** the rows sorted by monthly cost ascending. The section test asserts on the returned values; printing the table is a scratch-run activity, not part of the function. Run it with a typical customer support scenario: 1,500 input tokens, 300 output tokens, 10,000 requests per day.
 
 Think about: Which component (input or output) dominates the cost? What happens to annual cost when you switch from a premium to an economy model?
 
@@ -196,7 +196,7 @@ Test with two semantically similar queries like "What is the capital of France?"
 
 Think about: What similarity threshold is too aggressive (too many false cache hits)? What threshold is too conservative (too few cache hits)? How would you tune this for your application?
 
-> **Beginner Note:** Semantic caching trades embedding API cost for LLM API cost. An embedding call costs roughly 0.01% of an LLM call. If your cache hit rate is above 5%, you are saving money. Most applications with returning users see cache hit rates of 20-60%.
+> **Beginner Note:** Semantic caching trades embedding API cost for LLM API cost. Since an embedding call costs about 1% of an LLM call (~100×, per the Before / After above), the break-even hit rate is only a few percent — above that you are saving money. Most applications with returning users see cache hit rates of 20-60%.
 
 ---
 
@@ -206,7 +206,7 @@ Think about: What similarity threshold is too aggressive (too many false cache h
 
 Not every query needs the most powerful (and expensive) model. Route simple queries to cheap models and complex queries to premium models.
 
-> **Decision:** Where's the routing threshold? Don't guess — measure. Run your eval set (Module 19) against both the cheap and the premium model, then route to premium only the query *classes* where the cheap model measurably fails. A blind "cheap for short prompts" rule sends hard-but-short queries to the wrong tier. Route on measured quality, not prompt length.
+> **Decision:** Where's the routing threshold? Don't guess — measure. Run your eval set (Module 22) against both the cheap and the premium model, then route to premium only the query *classes* where the cheap model measurably fails. A blind "cheap for short prompts" rule sends hard-but-short queries to the wrong tier. Route on measured quality, not prompt length.
 
 ```typescript
 interface RoutingDecision {
@@ -260,7 +260,7 @@ The system prompt should describe what each complexity level means. Look up the 
 
 When does LLM-based routing pay for itself versus simple regex rules? How would you calculate the break-even point?
 
-> **Advanced Note:** LLM-based routing adds latency and cost (the classification call itself). It pays off when the classification saves enough money by routing queries to cheaper models. Calculate your break-even point: if the classifier costs $0.0001 per call and routes 40% of queries from a $0.01 model to a $0.001 model, you save roughly $0.0035 per routed call. At 10,000 calls/day, that is $35/day saved for $1/day in classification cost.
+> **Advanced Note:** LLM-based routing adds latency and cost (the classification call itself). It pays off when the classification saves enough money by routing queries to cheaper models. Calculate your break-even point: if the classifier costs $0.0001 per call and routes 40% of queries from a $0.01 model to a $0.001 model, you save roughly $0.0035 per call on average. At 10,000 calls/day, that is $35/day saved for $1/day in classification cost.
 
 ---
 
@@ -331,7 +331,7 @@ Build a `UserBudgetManager` class that tracks daily usage per user in a Map. The
 
 Think about: How would you handle a user whose tier changes mid-day? Should you reset their usage or carry it forward?
 
-> **Beginner Note:** Token budgets serve two purposes: preventing accidental cost blowouts (a bug that sends massive prompts) and protecting against abuse (users trying to exhaust your API budget). Setting `maxOutputTokens` on the API call is your most direct tool -- it hard-limits the output regardless of what the model wants to generate.
+> **Beginner Note:** Token budgets serve two purposes: preventing accidental cost blowouts (a bug that sends massive prompts) and protecting against abuse (users trying to exhaust your API budget).
 
 ---
 
@@ -604,7 +604,7 @@ Test with a sample query and log the response, cost, and the list of optimizatio
 
 > **Advanced Note:** Be careful not to over-optimize. Every optimization adds complexity and potential failure modes. Start with the highest-impact, lowest-complexity optimizations (prompt shortening, maxOutputTokens limits) before adding sophisticated systems like semantic caching and model routing. Measure the actual impact of each optimization before adding the next one.
 
-> **Production Patterns: Batch APIs** — For workloads that don't need real-time responses (eval suites, bulk classification, synthetic data generation), both Anthropic and OpenAI offer Batch APIs at 50% cost reduction. You submit a batch of requests and receive results within 24 hours. This is ideal for the eval pipelines from Module 19 and the fine-tuning data preparation from Module 20. Check each provider's documentation for current batch API endpoints and limits.
+> **Production Patterns: Batch APIs** — For workloads that don't need real-time responses (eval suites, bulk classification, synthetic data generation), both Anthropic and OpenAI offer Batch APIs at 50% cost reduction. You submit a batch of requests and receive results within 24 hours. This is ideal for the eval pipelines from Module 22 and the fine-tuning data preparation from Module 23. Check each provider's documentation for current batch API endpoints and limits.
 
 > **Local Alternative (Ollama):** Running models locally via Ollama eliminates per-token API costs entirely — your only cost is electricity and hardware. The optimization patterns here (semantic caching, model routing, prompt optimization) still apply: caching saves inference time, routing between model sizes saves GPU memory, and shorter prompts mean faster generation. Cost optimization with local models becomes performance optimization.
 
@@ -618,23 +618,13 @@ Sections 1–8 are the major cost levers — caching, routing, budgets, batching
 
 ### Real-Time Cost Tracking
 
-Production systems track cost per request in real-time, not as an afterthought. A cost tracking middleware wraps every `generateText` or `streamText` call and records:
-
-- Input tokens consumed
-- Output tokens generated
-- Thinking/reasoning tokens (tracked separately — these can dominate cost on reasoning models)
-- Cost calculated per model (each has different pricing)
-- Running session total
-
-The user sees what they are spending. This transparency changes behavior — developers write shorter prompts and use cheaper models when they see the cost of each request.
-
-**Pattern:** Wrap your LLM calls in a cost tracker that reads token counts from the response's `usage` field and multiplies by the model's per-token price:
+This is Section 1's `CostTracker` plus two production deltas: thinking/reasoning tokens tracked separately (they can dominate cost on reasoning models), and the cumulative session cost surfaced to the user — transparency that measurably shortens prompts and shifts usage to cheaper models. The per-call math is unchanged:
 
 ```ts
 const cost = (usage.inputTokens * inputPrice + usage.outputTokens * outputPrice) / 1_000_000
 ```
 
-Display cumulative cost at the end of each response so the user can make informed decisions about model selection and prompt length.
+Exercise 3 builds this as middleware.
 
 ### Token Budget Allocation
 
@@ -650,7 +640,7 @@ The context window is a finite budget that must be allocated across competing ne
 
 When the total exceeds the window, something must be cut. A budget allocator enforces these limits: tool results are truncated first, then conversation history is compacted, then older messages are dropped. The system prompt and output reservation are never reduced.
 
-**Key insight:** Without explicit allocation, tool results can silently consume most of your context window. A single large file read (10K tokens) might crowd out conversation history that the model needs for coherent responses.
+**Key insight:** Without explicit allocation, tool results are the component most likely to blow the budget — Tool Result Budgeting below owns the truncation mechanics.
 
 ### Compaction as Cost Optimization
 
@@ -721,13 +711,13 @@ In this module, you learned:
 12. **Tool result budgeting:** Capping per-result token counts with head-plus-tail truncation to prevent tool results from dominating the context window and inflating costs.
 13. **Reasoning effort control:** Adapting per-request reasoning budgets (Anthropic thinking tokens, OpenAI reasoning effort) to task complexity, saving 50-80% on simple tasks.
 
-In Module 23, you will learn observability techniques to monitor, trace, and debug LLM applications in production.
+In Module 26, you will learn observability techniques to monitor, trace, and debug LLM applications in production.
 
 ---
 
 ## Quiz
 
-**Question 1:** Why are output tokens typically more expensive than input tokens?
+**Question 1 (Medium):** Why are output tokens typically more expensive than input tokens?
 
 A) Output tokens require more storage
 B) Generating output tokens requires more computation (autoregressive decoding) than processing input tokens
@@ -738,7 +728,7 @@ D) It is an arbitrary pricing decision
 
 ---
 
-**Question 2:** What is the key advantage of semantic caching over exact-match caching for LLM applications?
+**Question 2 (Easy):** What is the key advantage of semantic caching over exact-match caching for LLM applications?
 
 A) Semantic caching is faster
 B) Semantic caching uses less memory
@@ -749,7 +739,7 @@ D) Semantic caching never returns stale results
 
 ---
 
-**Question 3:** When does model routing save the most money?
+**Question 3 (Easy):** When does model routing save the most money?
 
 A) When all queries are equally complex
 B) When query complexity varies widely, with many simple queries and some complex ones
@@ -760,47 +750,25 @@ D) When all queries require the most powerful model
 
 ---
 
-**Question 4:** What is the primary risk of aggressive prompt shortening?
+**Question 4 (Medium):** What is the primary risk of aggressive prompt shortening?
 
 A) It makes the code harder to read
 B) The model may lose important behavioral instructions, degrading output quality
 C) Shorter prompts are slower to process
 D) It violates API terms of service
 
-**Answer: B** -- Every word in a system prompt is there for a reason (or should be). Aggressive shortening can remove critical instructions that guide the model's behavior -- safety guardrails, formatting requirements, tone guidelines, or domain-specific rules. Always evaluate prompt changes with your eval framework (Module 19) to ensure quality is maintained.
+**Answer: B** -- Every word in a system prompt is there for a reason (or should be). Aggressive shortening can remove critical instructions that guide the model's behavior -- safety guardrails, formatting requirements, tone guidelines, or domain-specific rules. Always evaluate prompt changes with your eval framework (Module 22) to ensure quality is maintained.
 
 ---
 
-**Question 5:** Why should cost monitoring include per-user tracking, not just overall spend?
+**Question 5 (Hard):** Your endpoint serves 10,000 queries/day, all currently sent to a premium model at $0.01 per call ($100/day). You deploy the Section 8 pipeline: a semantic cache (every query pays an embedding check at $0.0001, ~1% of an LLM call; hit rate 30%) and, for cache misses, LLM-based routing (classifier $0.0001 per miss; 40% of misses route to a $0.001 economy model, the rest stay premium). Roughly how much does the optimized pipeline save per day?
 
-A) To comply with data privacy regulations
-B) To detect abuse, identify high-cost users, and enforce fair usage across tiers
-C) To make billing calculations easier
-D) Per-user tracking is cheaper than aggregate tracking
+A) Roughly nothing — the ~$1.70/day of embedding and classifier overhead cancels out what the cache and router save
+B) About $30/day — the 3,000 cache hits avoid premium calls, but routing's own overhead roughly cancels routing's savings
+C) About $53/day — $30 from cache hits plus $25.20 from routing 2,800 misses to the economy model, minus $1.70 total overhead
+D) About $65/day — the $30 cache saving plus Section 3's $35/day routing figure, applied independently to all 10,000 queries
 
-**Answer: B** -- Per-user cost tracking serves multiple purposes: detecting abuse (a single user consuming disproportionate resources), enforcing tier-based budgets (free users vs paid users), identifying power users who might benefit from optimization, and providing data for usage-based billing. Aggregate-only monitoring can miss situations where one user is responsible for a cost spike.
-
----
-
-**Question 6 (Medium):** A 100K-token conversation costs $0.30 per LLM call. After compacting to 20K tokens, each subsequent call costs $0.06. When should compaction be triggered?
-
-A) Only when the context window is completely full
-B) When context usage exceeds a threshold (e.g., 60%) so you avoid paying the high-token cost for multiple calls before compaction
-C) After every single message to keep costs minimal
-D) Only at the start of each new session
-
-**Answer: B** -- Triggering compaction at a usage threshold (like 60%) is optimal because it avoids paying the inflated per-call cost for several messages while the window fills up. Waiting until the window is full (A) means you have already overpaid for multiple calls. Compacting after every message (C) wastes the cost of the compaction call itself, which only pays for itself when amortized over several subsequent messages.
-
----
-
-**Question 7 (Hard):** A system uses per-provider reasoning effort controls: Anthropic thinking budgets and OpenAI reasoning effort levels. A request to "fix this typo" is routed with minimal reasoning, while "refactor this module's architecture" gets full reasoning. What is the primary benefit of this approach?
-
-A) It improves response quality for all tasks equally
-B) It saves 50-80% on simple tasks by allocating reasoning budget proportional to task complexity, without degrading complex task quality
-C) It reduces network latency by sending smaller requests
-D) It prevents the model from overthinking and producing worse results
-
-**Answer: B** -- Reasoning effort control adapts cost to complexity. Simple tasks (typo fixes, variable renames) do not need extensive internal reasoning — minimal effort produces equally good results at a fraction of the cost. Complex tasks (architecture refactoring, subtle bug diagnosis) benefit from full reasoning. By classifying tasks and routing to appropriate effort levels, the system saves significantly on the high volume of simple requests while preserving quality where it matters.
+**Answer: C** -- Work the pipeline in order. All 10,000 queries pay the embedding check: $1.00. The 3,000 cache hits (30%) cost nothing more, avoiding $30.00 of premium calls. The 7,000 misses each pay the $0.0001 classifier ($0.70); 40% of them (2,800) run on the economy model (2,800 x $0.001 = $2.80) and 60% (4,200) stay premium ($42.00). Optimized total: $1.00 + $0.70 + $2.80 + $42.00 = $46.50/day versus the $100 baseline — about $53.50 saved (~54%). D double-counts: routing only sees the 70% of traffic the cache did not absorb, so you cannot reuse Section 3's standalone "$35/day at 10,000 calls" figure unchanged. A gets the overhead right ($1.70/day) but that is tiny next to the savings, and B ignores that the classifier pays $0.0001 to move a call from $0.01 to $0.001 — routing overhead is nowhere near canceling its savings.
 
 ---
 
@@ -808,64 +776,45 @@ D) It prevents the model from overthinking and producing worse results
 
 ### Exercise 1: Build a Cost-Optimized Pipeline
 
-Build a complete cost-optimized request handling pipeline that combines semantic caching, model routing, and token budgets.
+Compose the building blocks you already built into one pipeline and measure what they save.
 
 **Specification:**
 
-1. Implement a `SemanticCache` with:
-   - Configurable similarity threshold (try values between 0.85 and 0.95)
-   - TTL-based expiration
-   - Usage statistics (hit rate, estimated savings)
+1. Reuse your Section 2 `SemanticCache`, Section 3 `ModelRouter`, and Section 8 `optimizedRequest` — this exercise is about composition and measurement, not rebuilding them.
 
-2. Implement a `ModelRouter` with at least 5 routing rules:
-   - Simple factual questions -> economy model
-   - Code-related queries -> standard model
-   - Complex analysis -> premium model
-   - High-value customer context -> premium model
-   - Default -> standard model
-
-3. Combine them into an `optimizedRequest` function that:
-   - Checks the cache first
-   - Routes to the appropriate model on cache miss
-   - Enforces token budgets
-   - Tracks costs per request
-
-4. Test with 20 diverse queries (mix of simple, moderate, and complex):
+2. Run 20 diverse queries through the pipeline (mix of simple, moderate, and complex):
    - Include some semantically similar queries to test caching
    - Include queries at different complexity levels to test routing
-   - Track the total cost with and without optimization
+   - Record cost, cache hit/miss, and the optimizations applied per query
+
+3. Compute a naive baseline for the same 20 queries: every query sent to the premium model, no caching.
+
+4. Produce a cost-comparison report: optimized cost vs baseline cost, savings in dollars and percent, and the contribution of each technique (cache hits, routing decisions).
+
+**Create:** `src/cost/exercises/pipeline.ts`
 
 **Expected output:** A cost comparison report showing the savings from each optimization technique and the overall reduction.
 
 ### Exercise 2: Cost Monitoring and Alerting
 
-Build a cost monitoring system that tracks spend and generates alerts.
+Extend your monitoring stack with one new alert type, then stress-test it against a full day of simulated traffic.
 
 **Specification:**
 
-1. Implement a `CostTracker` that records every LLM call with:
-   - Model used, input/output tokens, cost
-   - User ID and feature name
-   - Whether the response was cached
+1. Reuse your Section 1 `CostTracker` and Section 8 `CostMonitor` — do not rebuild them. The new work starts here.
 
-2. Implement a `CostMonitor` with alerts for:
-   - Daily budget threshold (warning at 70%, critical at 90%)
-   - Hourly cost spikes (greater than 3x the rolling average)
-   - Per-user daily limits exceeded
-   - Cache hit rate dropping below threshold
+2. Extend the `CostMonitor` with a **cache-hit-rate alert**: when the daily cache hit rate drops below a configurable threshold, emit a warning alert alongside the existing budget, spike, and per-user checks.
 
-3. Build a dashboard data generator that produces:
-   - Current daily spend vs budget
-   - Cost breakdown by model, feature, and user
-   - Cache savings estimation
-   - Active alerts
+3. Simulate a day of traffic (deterministically — seed events with explicit timestamps rather than calling the clock):
+   - ~100 requests with varying models, users, and costs spread across the last 24 hours
+   - A simulated abuse scenario (one user making many expensive requests)
+   - A simulated cost spike scenario (a burst of calls in the current hour)
 
-4. Simulate a day of traffic:
-   - Generate 100 requests with varying models and costs
-   - Include a simulated abuse scenario (one user making many expensive requests)
-   - Include a simulated cost spike scenario
+4. Run `check()` after the simulation and produce the dashboard data plus a list of optimization recommendations derived from the alert types that fired.
 
-**Expected output:** Dashboard data JSON showing spend breakdown, active alerts, and optimization recommendations.
+**Create:** `src/cost/exercises/monitoring.ts`
+
+**Expected output:** Dashboard data JSON showing spend breakdown, active alerts (budget, spike, per-user, and cache-hit-rate), and optimization recommendations.
 
 ### Exercise 3: Real-Time Cost Tracker
 

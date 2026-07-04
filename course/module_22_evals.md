@@ -1,4 +1,4 @@
-# Module 19: Evals & Testing
+# Module 22: Evals & Testing
 
 ## Learning Objectives
 
@@ -12,7 +12,7 @@
 - Compare human evaluation with automated evaluation and know when to use each
 - Systematically A/B test prompt versions and measure improvements
 
-> *Module 19 opens **Part V: Quality & Safety** — finish the Part to earn the **Quality Gate** badge.*
+> *Module 22 opens **Part V: Quality & Safety** — finish the Part to earn the **Quality Gate** badge.*
 
 ---
 
@@ -33,9 +33,9 @@ This module teaches you to build eval systems from scratch using the Vercel AI S
 - **Module 2 (Prompt Engineering)** provides the prompts you will evaluate and iterate on.
 - **Module 3 (Structured Output)** makes evaluation easier — structured outputs are simpler to score than free-form text.
 - **Module 9-10 (RAG)** produce pipelines that desperately need evaluation to ensure retrieval quality.
-- **Module 14-15 (Agents)** create complex systems where evals catch subtle regressions.
-- **Module 20 (Fine-tuning)** requires evals to compare base vs fine-tuned model performance.
-- **Module 21 (Safety)** uses eval-like patterns to test guardrails and safety mechanisms.
+- **Modules 16-17 (Agents)** create complex systems where evals catch subtle regressions.
+- **Module 23 (Fine-tuning)** requires evals to compare base vs fine-tuned model performance.
+- **Module 24 (Safety)** uses eval-like patterns to test guardrails and safety mechanisms.
 
 ---
 
@@ -61,26 +61,7 @@ Call `generateText` with `temperature: 0` and the same prompt three times. Colle
 
 The real danger is not that a single call varies — it is that a change you make (new prompt, new model, new retrieval strategy) causes systematic degradation that you do not notice until users complain.
 
-```typescript
-interface RegressionExample {
-  input: string
-  previousOutput: string
-  currentOutput: string
-  regressionDetected: boolean
-}
-```
-
-Build a `checkForRegression` function that takes an old prompt, a new prompt, and an array of test inputs. For each input, generate outputs with both prompts and compare them.
-
-```typescript
-async function checkForRegression(
-  oldPrompt: string,
-  newPrompt: string,
-  testInputs: string[]
-): Promise<RegressionExample[]>
-```
-
-How would you detect that the new prompt is worse? You do not have a reference answer, so start with a simple heuristic. What metric could indicate degradation even without understanding the content? Consider: if the new prompt produces outputs that are drastically shorter or longer, that is a signal. What threshold for length difference would you choose, and why?
+Detecting this means running the same test inputs through both the old and the new prompt and comparing the results — and even without a reference answer, cheap heuristics exist: if the new prompt's outputs are drastically shorter or longer than the old one's, something probably broke. You will build this comparison properly in Section 6 as `promptRegressionTest`, with an LLM judge scoring both versions and a safe/risky/blocked verdict.
 
 ### What Makes LLM Evaluation Hard
 
@@ -177,13 +158,13 @@ Build this function. Generate embeddings for both texts using `embed` with `open
 The most flexible evaluation type. We dedicate the next section to this pattern. Here is the core idea — use `Output.object` with a Zod schema to get structured scores from the judge:
 
 ```typescript
-const { output } = await generateText({
+const { output: judgement } = await generateText({
   model: mistral('mistral-small-latest'),
   output: Output.object({
     schema: z.object({ score: z.number().min(1).max(5), reasoning: z.string() }),
   }),
-  system: `You are an expert evaluator. Score the output on: ${criteria}`,
-  prompt: `Output to evaluate:\n${output}`,
+  instructions: `You are an expert evaluator. Score the output on: ${criteria}`,
+  prompt: `Output to evaluate:\n${outputToEvaluate}`,
 })
 ```
 
@@ -287,8 +268,6 @@ async function comparePromptVersions(
 ```
 
 Critical detail: you must **randomize the presentation order** to reduce position bias. For each test input, flip a coin to decide which output is shown as "A" vs "B", then map the winner back to the actual prompt. How would you implement this randomization? What happens to your win counts if you skip this step?
-
-> **Beginner Note:** Position bias is a real problem with LLM judges — they may prefer whichever output is presented first. Randomizing the order and running each comparison twice (swapping positions) helps mitigate this bias.
 
 ### Reference-Based Judge
 
@@ -468,7 +447,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
+      - uses: oven-sh/setup-bun@v2
       - run: bun install
       - run: bun run scripts/run-evals.ts
         env:
@@ -617,7 +596,7 @@ How do you map the LLM's generated objects to your `TestCase` format? What defau
 
 Human evaluation and automated evaluation serve different purposes. Understanding when to use each is critical for building reliable eval systems.
 
-> **Decision:** Use auto-eval for anything you can define a check for — exact match, schema validity, latency, cost, and especially deterministic tools (a type-checker never hallucinates). Use human eval for the subjective axes auto-eval can't see: helpfulness, tone, whether the answer actually solved the problem. The trap is paying an LLM judge where a cheap deterministic check would do — gate on the compiler before you pay for a judge.
+> **Decision:** Use auto-eval for anything you can define a check for — exact match, schema validity, latency, cost, and especially deterministic tools (a type-checker never hallucinates). Use human eval for the subjective axes auto-eval can't see: helpfulness, tone, whether the answer actually solved the problem.
 
 ```typescript
 interface EvalStrategy {
@@ -678,7 +657,7 @@ Why does inter-annotator agreement matter? If two humans disagree on whether an 
 
 ### Calibrating Auto-Eval Against Human Eval
 
-Use human evaluation results to validate and calibrate your automated evaluators.
+Use human evaluation results to validate and calibrate your automated evaluators — and always check inter-annotator agreement first, because human scores are only usable as ground truth when the humans agree with each other.
 
 ```typescript
 async function calibrateAutoEval(
@@ -699,8 +678,6 @@ correlation = sum((h - meanH) * (a - meanA)) / sqrt(sum((h - meanH)^2) * sum((a 
 ```
 
 Also compute bias as `meanAuto - meanHuman`. Generate recommendations based on these thresholds: correlation < 0.7 means the auto-eval does not capture what humans value; bias > 0.5 means the auto-eval is too generous; correlation >= 0.85 with bias < 0.3 means good calibration. What recommendation would you give for each case?
-
-> **Beginner Note:** Inter-annotator agreement measures how much different human evaluators agree with each other. If humans disagree, expecting an automated evaluator to match human judgment is unrealistic. Always check agreement before using human eval as your ground truth.
 
 ---
 
@@ -744,7 +721,7 @@ async function runABTest(config: ABTestConfig): Promise<ABTestResult> {
 }
 ```
 
-Build `runABTest`. For each test case, run both the control and treatment prompts `runsPerTestCase` times using `generateText` and score each with `multiCriterionJudge`. Average the scores per test case, collect them into `controlScores` and `treatmentScores` arrays, then compute overall means. Use `pairedTTest` for the p-value and `computeCohenD` for effect size. Generate a recommendation string: "DEPLOY" if significant and treatment is better, "REJECT" if significant and worse, "HOLD" if not significant.
+Build `runABTest`. The heart of it is the same per-case comparison loop you already built for `promptRegressionTest` in Section 6 — generate an output with each prompt, score both with `multiCriterionJudge`. What A/B testing layers on top is statistical rigor: repeat each test case `runsPerTestCase` times per prompt and average the runs (this repetition is what gives the t-test its power), collect the per-case averages into `controlScores` and `treatmentScores`, then compute overall means. Use `pairedTTest` for the p-value and `computeCohenD` for effect size. Generate a recommendation string: "DEPLOY" if significant and treatment is better, "REJECT" if significant and worse, "HOLD" if not significant.
 
 ### Statistical Helpers
 
@@ -826,7 +803,7 @@ console.log(`Recommendation: ${abResult.recommendation}`)
 
 > **Production Patterns:** In production, eval suites become **deployment gates** — CI/CD steps that block merging if quality metrics drop below a threshold. The eval code you write in this module is exactly what runs in that gate. Maintain a golden dataset (50-100 curated examples), run your suite on every PR, and reject changes that regress accuracy. Tools like Promptfoo and Braintrust provide frameworks for this.
 
-> **Local Alternative (Ollama):** Eval frameworks are model-agnostic — exact match, fuzzy match, and semantic similarity scorers work with any provider. For LLM-as-judge evaluation, `ollama('qwen3.5')` can serve as the judge model, though larger models produce more reliable judgments. Running evals locally means zero API cost for iterating on your test suite.
+> **Local Alternative (Ollama):** Eval frameworks are model-agnostic — exact match, fuzzy match, and semantic similarity scorers work with any provider. For LLM-as-judge evaluation, `ollama('qwen3.5', { think: false })` can serve as the judge model, though larger models produce more reliable judgments. Running evals locally means zero API cost for iterating on your test suite.
 
 ---
 
@@ -904,7 +881,7 @@ Each variant maps to a different prompt version. Evaluation metrics are tagged w
 
 ### Code Quality as an Eval Signal
 
-(See Module 10 §11 for LSP background — there it's a *retrieval* source; here it's an *evaluator*.)
+(See Module 10, Going Further: LSP-Augmented Retrieval.)
 
 #### Compilers and Linters as Evaluators
 
@@ -950,13 +927,13 @@ In this module, you learned:
 12. **Feature flag A/B testing:** Using feature flags to assign users to prompt variants automatically, decoupling deployment from release and enabling percentage-based rollouts.
 13. **LSP diagnostics as eval signal:** Layering deterministic checks (compiler, linter, tests) before expensive LLM-as-judge calls to catch most bad code cheaply.
 
-In Module 20, you will learn when and how to fine-tune models to internalize behavior that prompt engineering alone cannot reliably achieve.
+In Module 23, you will learn when and how to fine-tune models to internalize behavior that prompt engineering alone cannot reliably achieve.
 
 ---
 
 ## Quiz
 
-**Question 1:** Why is exact match evaluation insufficient for most LLM applications?
+**Question 1 (Easy):** Why is exact match evaluation insufficient for most LLM applications?
 
 A) It is too slow to compute
 B) LLMs produce varied valid outputs for the same input
@@ -967,7 +944,7 @@ D) It only works with numbers
 
 ---
 
-**Question 2:** What is position bias in LLM-as-judge evaluation?
+**Question 2 (Easy):** What is position bias in LLM-as-judge evaluation?
 
 A) The judge model is biased toward certain topics
 B) The judge tends to prefer whichever output is presented first (or last)
@@ -978,7 +955,7 @@ D) The judge always gives the same score
 
 ---
 
-**Question 3:** When should you prefer human evaluation over automated evaluation?
+**Question 3 (Medium):** When should you prefer human evaluation over automated evaluation?
 
 A) When evaluating thousands of test cases per day
 B) When the quality criteria are highly subjective and sample sizes are small
@@ -989,7 +966,7 @@ D) When evaluating classification accuracy
 
 ---
 
-**Question 4:** What is the purpose of a prompt registry in regression testing?
+**Question 4 (Medium):** What is the purpose of a prompt registry in regression testing?
 
 A) To store API keys securely
 B) To version control prompts and enable comparison between versions
@@ -1000,36 +977,14 @@ D) To generate new prompts automatically
 
 ---
 
-**Question 5:** What does a p-value of 0.03 mean in an A/B test of two prompt versions?
+**Question 5 (Hard):** What does a p-value of 0.03 mean in an A/B test of two prompt versions?
 
 A) The treatment prompt is 3% better
-B) There is a 3% chance the observed difference is due to random chance
+B) There is a 3% probability of observing a difference this large if the two prompts performed identically
 C) 3% of test cases showed improvement
 D) The test has 3% statistical power
 
 **Answer: B** — A p-value of 0.03 means there is a 3% probability of observing a difference this large (or larger) if the two prompts actually performed identically. Since this is below the conventional 0.05 threshold, we consider the difference statistically significant. However, statistical significance does not tell you the magnitude of the difference — that is what effect size (Cohen's d) measures.
-
----
-
-**Question 6 (Medium):** Why should production evaluation systems track cost alongside quality scores?
-
-A) Cost tracking is required by LLM provider terms of service
-B) A response that costs 10x more for marginal quality improvement may fail the eval, preventing prompt bloat
-C) Cost and quality are always inversely correlated
-D) Cost tracking makes evals run faster
-
-**Answer: B** — Without cost as an evaluation dimension, there is a natural tendency toward prompt bloat — adding more instructions that improve quality marginally but increase cost substantially. By including cost thresholds in the eval, a test case can pass on quality but fail on cost. When comparing two prompt versions with equivalent quality, the cheaper one wins. This keeps prompts lean and cost-efficient.
-
----
-
-**Question 7 (Hard):** A code generation eval pipeline runs three evaluation layers: compiler type-checking, test suite execution, and LLM-as-judge for style. Why is this ordering important?
-
-A) The LLM-as-judge must run first to provide context for the other checks
-B) The ordering does not matter because all three checks are independent
-C) Cheapest checks run first so most bad code is caught before invoking the expensive LLM judge
-D) The compiler must run last because it is the most thorough check
-
-**Answer: C** — Running deterministic, cheap checks (compiler, tests) before the expensive LLM-as-judge call saves significant cost. Most bad code has type errors or fails tests, and these are caught by the compiler and test suite without paying for an LLM call. The LLM judge only evaluates code that already compiles and passes tests, which is a small fraction of all generated code. This layered approach can reduce eval costs by an order of magnitude.
 
 ---
 
@@ -1044,7 +999,7 @@ Build a complete evaluation framework that evaluates a question-answering system
 1. Create a `QAEvalFramework` class that:
    - Accepts a set of test cases with questions, reference answers, and categories
    - Runs each test case through the LLM to get an output
-   - Evaluates each output using three methods: `contains_match`, `semantic_similarity`, and `llm_judge`
+   - Evaluates each output using the evaluators its category assigns, drawn from four types: `exact_match`, `contains`, `semantic_similarity`, and `llm_judge`
    - The LLM judge should evaluate on three criteria: accuracy, completeness, and clarity
    - Produces a JSON report with per-test-case and aggregate scores
 
@@ -1090,7 +1045,7 @@ Build a regression testing system for a RAG-powered question-answering pipeline.
 
 **Specification:**
 
-1. Create a file `src/exercises/m19/ex03-multi-dim-eval.ts`
+1. Create a file `src/exercises/m22/ex03-multi-dim-eval.ts`
 2. Export an async function `multiDimEval(testCases: MultiDimTestCase[], options?: MultiDimOptions): Promise<MultiDimReport>`
 3. Define the types:
 
@@ -1130,10 +1085,10 @@ interface MultiDimReport {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m19/ex03-multi-dim-eval.test.ts
+// tests/exercises/m22/ex03-multi-dim-eval.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 19: Multi-Dimensional Eval', () => {
+describe('m22 Exercise 3: multiDimEval', () => {
   it('should evaluate on multiple dimensions', async () => {
     const report = await multiDimEval([{ input: 'What is 2+2?', reference: '4' }])
     expect(report.results[0].dimensions.length).toBeGreaterThanOrEqual(4)
@@ -1157,7 +1112,7 @@ describe('Exercise 19: Multi-Dimensional Eval', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m19/ex04-compiler-eval.ts`
+1. Create a file `src/exercises/m22/ex04-compiler-eval.ts`
 2. Export an async function `compilerEval(codeSnippets: CodeSnippet[]): Promise<CompilerEvalReport>`
 3. Define the types:
 
@@ -1195,10 +1150,10 @@ interface CompilerEvalReport {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m19/ex04-compiler-eval.test.ts
+// tests/exercises/m22/ex04-compiler-eval.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 19: Compiler-as-Eval', () => {
+describe('m22 Exercise 4: compilerEval', () => {
   it('should catch type errors without invoking LLM judge', async () => {
     const report = await compilerEval([{ description: 'bad types', code: 'const x: number = "hello"' }])
     expect(report.results[0].compilerPass).toBe(false)

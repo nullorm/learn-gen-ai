@@ -28,8 +28,8 @@ This module is the bedrock of the entire course. Every subsequent module assumes
 
 - **Module 2 (Prompt Engineering)** builds directly on the message roles and `generateText` calls introduced here.
 - **Module 3 (Structured Output)** extends `generateText` with `Output.object()` and Zod schemas — you need to be comfortable with the basic call pattern first.
-- **Module 4 (Conversational AI)** uses `streamText` extensively for real-time chat interfaces.
-- **Module 5+ (Tools, Agents, RAG)** all build on the provider configuration and error handling patterns established in this module.
+- **Module 4 (Conversations & Memory)** builds on the message roles here to manage multi-turn history, and **Module 6 (Streaming & Real-time)** uses `streamText` extensively for real-time chat interfaces.
+- **Modules 7 (Tool Use), 9 (RAG Fundamentals), and 16 (Agent Fundamentals)** all build on the provider configuration and error handling patterns established in this module.
 
 Think of this module as installing the engine in your car. Nothing else works until the engine runs.
 
@@ -37,63 +37,32 @@ Think of this module as installing the engine in your car. Nothing else works un
 
 ## Section 1: Project Setup
 
-### Initializing a Bun Project
+### The Course Repo Is Your Project
 
 We use [Bun](https://bun.sh) as our runtime and package manager. Bun is fast, has native TypeScript support, and simplifies the development experience compared to Node.js with a separate TypeScript compilation step.
 
 > **Beginner Note:** If you have never used Bun before, install it with `curl -fsSL https://bun.sh/install | bash` on macOS/Linux or visit bun.sh for Windows instructions. Bun replaces both Node.js and npm/yarn/pnpm for our purposes.
 
-Create your project directory and initialize it:
+There is nothing to scaffold: this course repo _is_ the project, and you will build inside it for all 27 modules. If you have not already, install the dependencies:
 
 ```bash
-mkdir llm-engineering && cd llm-engineering
-bun init -y
+bun install
 ```
 
-This creates a minimal project with `package.json`, `tsconfig.json`, and an `index.ts` entry point.
+### The Dependencies You Just Installed
 
-### Installing Dependencies
+The Vercel AI SDK is split into a core package (`ai`) and provider-specific packages. The repo's `package.json` already pins the whole AI stack:
 
-The Vercel AI SDK is split into a core package (`ai`) and provider-specific packages. Install the core SDK and the Mistral provider (our default):
+- `ai` (v7) — the core SDK: `generateText`, `streamText`, `Output`
+- `@ai-sdk/mistral`, `@ai-sdk/groq`, `@ai-sdk/anthropic`, `@ai-sdk/openai` (v4) — first-party providers
+- `ai-sdk-ollama` (v4) — community provider for local Ollama models
+- `zod` (v4) — schema validation, which takes center stage in Module 3
 
-```bash
-bun add ai @ai-sdk/mistral
-```
-
-For additional providers (recommended for experimentation):
-
-```bash
-bun add @ai-sdk/groq @ai-sdk/anthropic @ai-sdk/openai ai-sdk-ollama
-```
-
-Your `package.json` should now look similar to this:
-
-```json
-{
-  "name": "llm-engineering",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "bun run src/index.ts",
-    "test": "bun test"
-  },
-  "dependencies": {
-    "ai": "^6.0.0",
-    "@ai-sdk/mistral": "^3.0.0",
-    "@ai-sdk/groq": "^3.0.0",
-    "@ai-sdk/anthropic": "^3.0.0",
-    "@ai-sdk/openai": "^3.0.0",
-    "ai-sdk-ollama": "^3.8.0"
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
-  }
-}
-```
+No `bun add` needed — everything you import in this course is already declared there.
 
 ### TypeScript Configuration
 
-Bun handles TypeScript natively, but we want a strict configuration for LLM development. Strict types catch entire categories of bugs when working with model responses, schemas, and prompt templates.
+Bun handles TypeScript natively, and the repo already pins a strict configuration for LLM development. Strict types catch entire categories of bugs when working with model responses, schemas, and prompt templates. This is the `tsconfig.json` in place at the repo root:
 
 ```json
 {
@@ -102,82 +71,60 @@ Bun handles TypeScript natively, but we want a strict configuration for LLM deve
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInImports": true,
-    "resolveJsonModule": true,
-    "declaration": false,
-    "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
+    "declaration": false,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "tools/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
 ```
+
+Note `noUncheckedIndexedAccess`: every indexed read is typed `T | undefined`, which keeps you honest when you index into model responses and token arrays later in the course.
 
 > **Advanced Note:** The `"moduleResolution": "nodenext"` setting enforces strict ESM — TypeScript will error if you forget `.js` extensions on relative imports. This is stricter than `"bundler"` but catches issues early.
 
 > **Gotcha: ESM Import Extensions** — Always use `.js` extensions in relative imports, even though the source files are `.ts`. This is the correct ESM convention: `import { createModel } from './provider.js'`, not `from './provider'`. TypeScript resolves `.js` to the corresponding `.ts` file at compile time. Omitting extensions works in some bundlers but breaks in strict ESM environments.
 
-### Project Structure
+### Where Your Code Goes
 
-Create the following directory layout:
+You build code incrementally across all 27 modules, and later modules import from earlier ones — so the repo has a fixed layout. For this module:
 
-```bash
-mkdir -p src/providers src/examples src/utils
-touch src/index.ts src/providers/mistral.ts src/providers/groq.ts src/providers/anthropic.ts src/providers/openai.ts src/utils/env.ts
-```
-
-```
-llm-engineering/
-  src/
-    index.ts              # Entry point
-    providers/
-      mistral.ts          # Mistral provider config (default)
-      groq.ts             # Groq provider config
-      anthropic.ts        # Anthropic provider config
-      openai.ts           # OpenAI provider config
-      ollama.ts           # Ollama provider config (local)
-    examples/
-      first-call.ts       # Section 3 examples
-      roles.ts            # Section 4 examples
-      streaming.ts        # Section 5 examples
-      parameters.ts       # Section 6 examples
-      error-handling.ts   # Section 7 examples
-    utils/
-      env.ts              # Environment variable helpers
-  .env                    # API keys (never commit this)
-  .env.example            # Template for required env vars
-  package.json
-  tsconfig.json
-```
+- `src/core/` — Module 1's builds: `env.ts` (this section), `provider.ts` (Section 2), then `generate.ts`, `stream.ts`, and `error-handling.ts` as you work through Sections 3-7
+- `src/core/demos/` — one-off scratch scripts you write while exploring a section; run them with `bun run` and move on
+- `src/exercises/m01/` — the end-of-module exercises (`ex01-first-call.ts` through `ex05-retry-wrapper.ts`)
+- `tests/` — mirrors `src/` (e.g., `tests/core/env.test.ts`, `tests/exercises/m01/`); run everything with `bun test`
 
 ### Environment Variables
 
-Create a `.env.example` file documenting the required keys:
+API keys live in environment variables, never in source code. The repo ships a `.env.example` documenting the keys each provider expects:
 
 ```bash
 # .env.example — copy to .env and fill in your keys
-MISTRAL_API_KEY=...           # Free tier: 1 RPS, 500K tok/min, 1B tok/month — https://console.mistral.ai
-GROQ_API_KEY=gsk_...          # Free tier: ~500K tokens/day — https://console.groq.com
+MISTRAL_API_KEY=...
+GROQ_API_KEY=gsk_...
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
-# Ollama runs locally, no key needed
+# No key needed for Ollama (local)
 ```
 
-Create your actual `.env` file (this should be in `.gitignore`):
+For this module you only need `MISTRAL_API_KEY` — grab one at https://console.mistral.ai (free, no credit card). Create your actual `.env` file:
 
 ```bash
 cp .env.example .env
 # Edit .env with your actual API keys
 ```
 
-Now create a utility to validate that keys are present at startup. Create a file `src/utils/env.ts` that exports these three functions:
+The repo's `.gitignore` already lists `.env` — open it and verify that line is there before you paste in a real key. A committed key is compromised the moment it hits a remote; this one-line check is the cheapest security habit you will ever build.
+
+Now create a utility to validate that keys are present at startup. Create a file `src/core/env.ts` that exports these three functions:
 
 ```typescript
-// src/utils/env.ts
+// src/core/env.ts
 
 export function requireEnv(name: string): string {
   /* ... */
@@ -204,9 +151,9 @@ export function validateEnv(): void {
 
 ### Verifying the Setup
 
-Create a simple smoke test to confirm everything works. Create `src/index.ts` that:
+Create a simple smoke test to confirm everything works. Create `src/core/demos/smoke-test.ts` that:
 
-1. Imports `validateEnv` from your `./utils/env.js` and calls it first
+1. Imports `validateEnv` from `'../env.js'` (your build from this section) and calls it first
 2. Imports `generateText` from `'ai'` and `mistral` from `'@ai-sdk/mistral'`
 3. Defines an async `smokeTest` function that calls `generateText` with a simple prompt like `"Say 'hello' and nothing else."`
 4. Logs the response text and usage information
@@ -226,7 +173,7 @@ console.log(result.usage) // { inputTokens, outputTokens, totalTokens }
 Run it:
 
 ```bash
-bun run src/index.ts
+bun run src/core/demos/smoke-test.ts
 ```
 
 If you see `"hello"` (or some variation) printed to the console, your setup is complete. If you see an error, check the troubleshooting section at the end of this module.
@@ -248,12 +195,9 @@ This abstraction has profound implications:
 
 ### Setting Up the Mistral Provider
 
-Mistral is our default provider throughout this course. Their generous free tier (1 billion tokens per month, all models, no credit card required) makes it the best starting point. The `@ai-sdk/mistral` package handles all the details.
+Mistral is our default provider throughout this course. Their generous free tier makes it the best starting point. The `@ai-sdk/mistral` package handles all the details — the import is `mistral` from `'@ai-sdk/mistral'`.
 
-Create `src/providers/mistral.ts`. It should import `mistral` from `'@ai-sdk/mistral'` and export:
-
-- A pre-configured model constant `mistralSmall` using `mistral('mistral-small-latest')`
-- A factory function `createMistralModel(modelId?: string)` that defaults to `'mistral-small-latest'`
+All the provider wiring for this module lives in one file, `src/core/provider.ts`, which you will build in the factory subsection at the end of this section. The subsections before that are a tour of each provider: where its key comes from and which model IDs to reach for.
 
 The provider reads `MISTRAL_API_KEY` from the environment automatically. Free tier: 1 RPS, 500K tokens/min, 1B tokens/month per model, no credit card required. Sign up at https://console.mistral.ai.
 
@@ -270,9 +214,9 @@ const model = mistral('mistral-small-latest')
 
 ### Setting Up the Groq Provider
 
-Groq provides ultra-fast inference on open-source models with a free tier (~500K tokens per day, no credit card required). It is an excellent alternative when you need speed.
+Groq provides ultra-fast inference on open-source models with a free tier. It is an excellent alternative when you need speed.
 
-Create `src/providers/groq.ts` following the same pattern. Import `groq` from `'@ai-sdk/groq'` and export a default constant and a factory function.
+The import is `groq` from `'@ai-sdk/groq'`.
 
 Groq reads `GROQ_API_KEY` from the environment automatically. Free tier: ~500K tokens/day, no credit card required. Sign up at https://console.groq.com.
 
@@ -282,7 +226,7 @@ Common model IDs: `"openai/gpt-oss-20b"` (fastest, cheapest), `"openai/gpt-oss-1
 
 Anthropic's Claude models are a premium option — highly capable but require a paid API key. Use Claude when you need top-tier reasoning and instruction following.
 
-Create `src/providers/anthropic.ts` following the same pattern. Import `anthropic` from `'@ai-sdk/anthropic'`. Export constants for commonly used models and a factory function.
+The import is `anthropic` from `'@ai-sdk/anthropic'`.
 
 Anthropic reads `ANTHROPIC_API_KEY` from the environment automatically. Common model IDs: `"claude-sonnet-4-6"` (best speed/quality balance), `"claude-opus-4-8"` (most capable), `"claude-haiku-4-5-20251001"` (fastest, cheapest).
 
@@ -290,7 +234,7 @@ Anthropic reads `ANTHROPIC_API_KEY` from the environment automatically. Common m
 
 If you want to experiment with GPT models as an alternative:
 
-Create `src/providers/openai.ts` following the same pattern. Import `openai` from `'@ai-sdk/openai'`.
+The import is `openai` from `'@ai-sdk/openai'`.
 
 OpenAI reads `OPENAI_API_KEY` from the environment automatically. Common model IDs: `"gpt-5.5"` (latest, fast and capable), `"gpt-5-mini"` (smaller, cheaper, faster).
 
@@ -298,7 +242,7 @@ OpenAI reads `OPENAI_API_KEY` from the environment automatically. Common model I
 
 Ollama lets you run open-source models locally — no API key needed, no usage costs, and full data privacy. This is ideal for offline development and experimentation.
 
-Create `src/providers/ollama.ts`. Import `ollama` from `'ai-sdk-ollama'` (note: not `@ai-sdk/ollama`). Export a default constant and a factory function.
+The import is `ollama` from `'ai-sdk-ollama'` (note: not `@ai-sdk/ollama`).
 
 Prerequisites: Install Ollama from https://ollama.com, pull a model with `ollama pull qwen3.5`, and the server runs on `http://localhost:11434` by default.
 
@@ -310,10 +254,10 @@ Recommended local models: `"qwen3.5"` (primary choice — best all-rounder), `"m
 
 ### A Unified Provider Factory
 
-Here is a useful pattern that lets you select a provider at runtime. Create `src/providers/factory.ts` with these types and exports:
+Here is a useful pattern that lets you select a provider at runtime. Create `src/core/provider.ts` with these types and exports:
 
 ```typescript
-// src/providers/factory.ts
+// src/core/provider.ts
 
 import type { LanguageModel } from 'ai'
 
@@ -369,7 +313,7 @@ The function signature accepts a configuration object with many options, but onl
 
 ### Your Absolute First Call
 
-Create `src/examples/first-call.ts`. It should:
+Create `src/core/demos/first-call.ts`. It should:
 
 1. Import `generateText` from `'ai'` and `mistral` from `'@ai-sdk/mistral'`
 2. Define an async function that calls `generateText` with your Mistral model and a simple prompt like `'What is the capital of France?'`
@@ -388,14 +332,14 @@ console.log(result.text)
 Run it:
 
 ```bash
-bun run src/examples/first-call.ts
+bun run src/core/demos/first-call.ts
 ```
 
 That is it. One import, one function call, one result. Let us now unpack what happened.
 
 ### Understanding the Result Object
 
-`generateText` returns a rich result object. Create `src/examples/result-object.ts` that makes a `generateText` call and logs each property of the result. The key properties to explore are:
+`generateText` returns a rich result object. Create `src/core/demos/result-object.ts` that makes a `generateText` call and logs each property of the result. The key properties to explore are:
 
 ```typescript
 result.text // The generated text string
@@ -406,7 +350,7 @@ result.response.modelId // Which model actually responded
 result.warnings // Array of warnings (e.g., unsupported features)
 ```
 
-The `finishReason` is especially important: `"stop"` means the model completed naturally, while `"length"` means it was cut off by `maxOutputTokens`.
+The `finishReason` tells you _why_ generation ended: `"stop"` (natural completion), `"length"` (token limit reached), `"tool-calls"`, or `"error"`.
 
 Build this file yourself — call `generateText` with a prompt, then log each of the properties above to see what the result object contains.
 
@@ -440,21 +384,21 @@ The `messages` format gives you full control over the conversation, including sy
 
 ### System Prompts
 
-The `system` parameter sets the model's persona and instructions. The pattern is:
+The `instructions` parameter sets the model's persona and rules (in earlier AI SDK versions it was called `system` — that name is now a deprecated alias). The pattern is:
 
 ```typescript
 const result = await generateText({
   model: mistral('mistral-small-latest'),
-  system: 'You are a pirate captain. Respond in pirate speak. Keep responses under 50 words.',
+  instructions: 'You are a pirate captain. Respond in pirate speak. Keep responses under 50 words.',
   prompt: 'How do I learn to code?',
 })
 ```
 
-Create `src/examples/system-prompt.ts` — try a few different system prompts (a pirate, a poet, a strict teacher) and see how they change the model's response to the same user prompt. This is your first taste of how the system message shapes behavior.
+Create `src/core/demos/system-prompt.ts` — try a few different system prompts (a pirate, a poet, a strict teacher) and see how they change the model's response to the same user prompt. This is your first taste of how the system message shapes behavior.
 
 ### Multiple Examples with Different Prompts
 
-Create `src/examples/various-prompts.ts` that demonstrates four different use cases of `generateText`:
+Create `src/core/demos/various-prompts.ts` that demonstrates four different use cases of `generateText`:
 
 1. **Factual question** — a simple prompt with no system message (e.g., "What are the three laws of thermodynamics?")
 2. **Creative writing** — a system message setting a creative persona, with a story prompt
@@ -489,17 +433,17 @@ LLM conversations are structured as sequences of messages, each tagged with a **
 
 The system message is your primary control surface. It tells the model _how to behave_ before the user says anything. Think of it as writing an employee's job description.
 
-Create `src/examples/roles-system.ts` that demonstrates how different system messages change the model's behavior. Use the `messages` array format instead of the `system` + `prompt` shorthand:
+Create `src/core/demos/roles-system.ts` that demonstrates how different system messages change the model's behavior. In AI SDK v7 the system prompt goes in the dedicated `instructions` field — a `role: 'system'` message placed inside `messages` is rejected by default (a prompt-injection safeguard):
 
 ```typescript
 const result = await generateText({
   model,
-  messages: [
-    { role: 'system', content: 'Your persona instructions here...' },
-    { role: 'user', content: 'The user question here...' },
-  ],
+  instructions: 'Your persona instructions here...',
+  messages: [{ role: 'user', content: 'The user question here...' }],
 })
 ```
+
+> **Gotcha (v7):** The examples below show `{ role: 'system', ... }` inside a `messages` array to illustrate the _concept_ of a system turn. Real v7 calls put that content in `instructions` instead. If you genuinely need a system message inside the array — you'll do exactly that in the `Conversation` class below, and again in Module 4's memory work — opt in explicitly with `allowSystemInMessages: true`.
 
 Build two functions in this file:
 
@@ -524,7 +468,7 @@ User messages represent what the end user typed. In a chatbot, these come from a
 
 Assistant messages represent previous model responses. Including them creates the illusion of a continuous conversation. This is how multi-turn chat works — you replay the full conversation history with each API call.
 
-Create `src/examples/roles-multiturn.ts` that simulates a multi-turn conversation by providing message history. The messages array should alternate between `user` and `assistant` roles, starting with an optional `system` message:
+Create `src/core/demos/roles-multiturn.ts` that simulates a multi-turn conversation by providing message history. The messages array should alternate between `user` and `assistant` roles, starting with an optional `system` message:
 
 ```typescript
 messages: [
@@ -537,7 +481,7 @@ messages: [
 ]
 ```
 
-Build a conversation with at least 3 turns of history (e.g., a cooking assistant, a travel planner, or a debugging helper). The key insight: the model has no memory — you must include the full history each time. The model responds to the **last user message** in the context of everything above it.
+Build a conversation with at least 3 turns of history (e.g., a cooking assistant, a travel planner, or a debugging helper). Because this array keeps its system turn inside `messages`, the `generateText` call must opt in with `allowSystemInMessages: true`. The model responds to the **last user message** in the context of everything above it.
 
 > **Beginner Note:** The model has no memory between API calls. Every call is stateless. If you want the model to "remember" previous messages, you must include them in the `messages` array. This is why chatbots grow more expensive over time — each message includes the entire conversation history.
 
@@ -550,7 +494,7 @@ The ordering of messages matters and follows strict rules:
 3. **The last message should be from the user** — this is what the model responds to.
 
 ```typescript
-// CORRECT ordering
+// CORRECT ordering (in-array system turn — requires allowSystemInMessages: true)
 const messages = [
   { role: 'system' as const, content: 'You are helpful.' },
   { role: 'user' as const, content: 'Hello' },
@@ -568,7 +512,7 @@ const badMessages = [
 
 ### Practical Pattern: Building Conversation History
 
-Now build a reusable pattern for managing conversation history incrementally. Create `src/examples/conversation-builder.ts` with a `Conversation` class:
+Now build a reusable pattern for managing conversation history incrementally. Create `src/core/demos/conversation-builder.ts` with a `Conversation` class:
 
 ```typescript
 import type { ModelMessage } from 'ai'
@@ -594,7 +538,7 @@ class Conversation {
 **What each method should do:**
 
 - **constructor** — If a `systemPrompt` is provided, push a system message onto the `messages` array. Also store a model instance.
-- **say** — Push the user message, call `generateText` with the full `messages` array, push the assistant response, and return the text. This is the core loop of any chatbot.
+- **say** — Push the user message, call `generateText` with the full `messages` array — passing `allowSystemInMessages: true`, because the history carries its system turn inside `messages` and v7 rejects that by default — then push the assistant response and return the text. This is the core loop of any chatbot.
 - **getHistory** — Return a copy of the messages array (use spread: `[...this.messages]`).
 - **getTokenEstimate** — Sum the character lengths of all message contents and divide by ~4 (a rough token estimate).
 
@@ -618,9 +562,9 @@ The key metric is **Time to First Token (TTFT)**. A 500-token response that take
 
 ### The streamText Function
 
-`streamText` has the same interface as `generateText` — same `model`, `messages`, `system`, and configuration options. The difference is in the return value: instead of a completed result, you get a stream.
+`streamText` has the same interface as `generateText` — same `model`, `messages`, `instructions`, and configuration options. The difference is in the return value: instead of a completed result, you get a stream.
 
-Create `src/examples/streaming-basic.ts`. The key differences from `generateText`:
+Create `src/core/demos/streaming-basic.ts`. The key differences from `generateText`:
 
 1. `streamText` is **not awaited** when called — it returns a stream object immediately
 2. You consume the stream with `for await...of` on `result.textStream`
@@ -646,7 +590,7 @@ Build this file — call `streamText`, consume the text stream with `process.std
 
 ### Stream Consumption Patterns
 
-There are several ways to consume a stream. Create `src/examples/streaming-patterns.ts` that demonstrates all three patterns:
+There are several ways to consume a stream. Create `src/core/demos/streaming-patterns.ts` that demonstrates all three patterns:
 
 **Pattern 1: Token-by-token with `textStream`** — iterate with `for await...of` and write each chunk to stdout.
 
@@ -656,7 +600,7 @@ There are several ways to consume a stream. Create `src/examples/streaming-patte
 const fullText = await result.text // Waits for the entire stream, returns the full string
 ```
 
-**Pattern 3: Using callbacks** — pass `onChunk` and `onFinish` callbacks directly to `streamText`:
+**Pattern 3: Using callbacks** — pass `onChunk` and `onEnd` callbacks directly to `streamText`:
 
 ```typescript
 const result = streamText({
@@ -665,7 +609,7 @@ const result = streamText({
   onChunk(event) {
     /* called for each chunk */
   },
-  onFinish(event) {
+  onEnd(event) {
     /* called when stream completes, event.usage available */
   },
 })
@@ -675,7 +619,7 @@ Build one function per pattern, run them sequentially in a `main()` function, an
 
 ### Streaming with Timing Information
 
-Measuring token delivery speed helps you understand model performance and detect issues. Create `src/examples/streaming-timing.ts` that wraps a `streamText` call with timing instrumentation.
+Measuring token delivery speed helps you understand model performance and detect issues. Create `src/core/demos/streaming-timing.ts` that wraps a `streamText` call with timing instrumentation.
 
 **What to track:**
 
@@ -688,7 +632,7 @@ Measuring token delivery speed helps you understand model performance and detect
 
 **Guiding questions:** Why is `performance.now()` better than `Date.now()` for this? What is TTFT and why does it matter for user experience? How would you compute average characters per second from the values you tracked?
 
-> **Advanced Note:** Time to First Token (TTFT) is a critical metric in production. It determines how quickly your user sees _something_ happen. TTFT varies by model (Haiku < Sonnet < Opus), prompt length (longer prompts = slower TTFT), and server load. Monitor TTFT in production to catch regressions.
+> **Advanced Note:** TTFT varies by model (Haiku < Sonnet < Opus), prompt length (longer prompts = slower TTFT), and server load. Monitor TTFT in production to catch regressions.
 
 ### When to Use generateText vs streamText
 
@@ -714,7 +658,7 @@ Measuring token delivery speed helps you understand model performance and detect
 - **Temperature 1.0:** Creative. The model explores less likely tokens. Good for brainstorming and creative writing.
 - **Temperature > 1.0:** Very random. Outputs become increasingly incoherent. Rarely useful.
 
-Create `src/examples/temperature-comparison.ts` that empirically demonstrates temperature's effect. The approach:
+Create `src/core/demos/temperature-comparison.ts` that empirically demonstrates temperature's effect. The approach:
 
 1. Pick a creative prompt (e.g., "Write a one-sentence description of a sunset.")
 2. Loop through several temperature values: `[0, 0.3, 0.7, 1.0]`
@@ -754,7 +698,7 @@ const result = await generateText({
 
 **maxOutputTokens** sets an upper limit on the response length. This is critical for cost control and preventing runaway responses.
 
-Create `src/examples/max-tokens.ts` that demonstrates the effect of `maxOutputTokens`. Make two calls with the same prompt (e.g., "Explain the theory of relativity in detail."):
+Create `src/core/demos/max-tokens.ts` that demonstrates the effect of `maxOutputTokens`. Make two calls with the same prompt (e.g., "Explain the theory of relativity in detail."):
 
 1. One with a very small limit (`maxOutputTokens: 50`) — the model will be cut off
 2. One with a generous limit (`maxOutputTokens: 1000`) — the model finishes naturally
@@ -771,7 +715,7 @@ For each, log the text, `finishReason`, and `usage.outputTokens`. You should see
 
 **Stop sequences** tell the model to stop generating when it produces a specific string. This is useful for structured output and preventing the model from going off-topic.
 
-Create `src/examples/stop-sequences.ts` that demonstrates how stop sequences work. For example, stopping at the first newline forces single-line output:
+Create `src/core/demos/stop-sequences.ts` that demonstrates how stop sequences work. For example, stopping at the first newline forces single-line output:
 
 ```typescript
 const result = await generateText({
@@ -790,7 +734,7 @@ These parameters reduce repetition in generated text:
 - **Frequency penalty** (0 to 2): Penalizes tokens based on how many times they have appeared. Higher values reduce word repetition.
 - **Presence penalty** (0 to 2): Penalizes tokens based on whether they have appeared at all. Higher values encourage topic diversity.
 
-Create `src/examples/penalties.ts` that compares outputs with and without frequency/presence penalties. Use a prompt that tends to produce repetition (e.g., "List 10 creative uses for a paperclip.") and make two calls:
+Create `src/core/demos/penalties.ts` that compares outputs with and without frequency/presence penalties. Use a prompt that tends to produce repetition (e.g., "List 10 creative uses for a paperclip.") and make two calls:
 
 1. One with `frequencyPenalty: 0, presencePenalty: 0` (default — may repeat ideas)
 2. One with `frequencyPenalty: 0.5, presencePenalty: 0.5` (should produce more diverse ideas)
@@ -852,7 +796,7 @@ Robust error handling is not optional — it is the difference between a demo an
 
 ### Basic Error Handling Pattern
 
-Create `src/examples/error-handling-basic.ts` with a `safeGenerate` function:
+Create `src/core/demos/error-handling-basic.ts` with a `safeGenerate` function:
 
 ```typescript
 async function safeGenerate(prompt: string): Promise<string | null> {
@@ -877,7 +821,7 @@ async function safeGenerate(prompt: string): Promise<string | null> {
 
 Rate limits are the most common error in LLM applications. The standard approach is exponential backoff: wait, retry, wait longer, retry again.
 
-Create `src/examples/error-handling-retry.ts` that implements retry with exponential backoff. You will need these types and helpers:
+Create `src/core/demos/error-handling-retry.ts` that implements retry with exponential backoff. You will need these types and helpers:
 
 ```typescript
 import type { LanguageModel } from 'ai'
@@ -908,15 +852,38 @@ async function generateTextWithRetry(
 
 - **`sleep`** — Return a promise that resolves after `ms` milliseconds (use `setTimeout` inside `new Promise`).
 - **`isRetryable`** — Check `error.message` for status codes. Return `true` for transient errors (429, 500, 502, 503, timeout, ECONNRESET). Return `false` for permanent errors (401, 403, 400, 404). Default to `true` for unknown errors.
-- **`generateTextWithRetry`** — Loop from attempt 0 to `maxRetries`. On each attempt: if not the first attempt, sleep for the current delay then multiply the delay by `backoffMultiplier` (capped at `maxDelayMs`). Call `generateText`. If it succeeds, return the text. If it fails with a non-retryable error, throw immediately. If all retries are exhausted, throw with a descriptive message.
+- **`generateTextWithRetry`** — Loop from attempt 0 to `maxRetries`. On each attempt: if not the first attempt, sleep for the current delay then multiply the delay by `backoffMultiplier` (capped at `maxDelayMs`). Call `generateText`, passing the `system` param through as `instructions:` (the v7 name for the system-prompt parameter). If it succeeds, return the text. If it fails with a non-retryable error, throw immediately. If all retries are exhausted, throw with a descriptive message.
 
 **Guiding questions:** Why should you NOT retry a 401 error? Why multiply the delay on each attempt instead of using a fixed delay? What should the default delay progression look like (1s, 2s, 4s, 8s...)?
+
+### Exponential Backoff with Jitter
+
+Plain exponential backoff has a problem: if 100 clients all get rate-limited at the same time, they all retry after 1 second, then 2 seconds, then 4 seconds — in perfect synchrony. This creates "retry storms" that keep hammering the server at regular intervals.
+
+Jitter solves this by adding randomness. The "full jitter" strategy picks a random delay between 0 and the exponential backoff ceiling:
+
+```typescript
+// Exponential backoff with full jitter
+function calculateDelay(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  /* ... */
+}
+
+// With baseDelayMs = 1000:
+// attempt 0: random between 0 and 1000ms
+// attempt 1: random between 0 and 2000ms
+// attempt 2: random between 0 and 4000ms
+// attempt 3: random between 0 and 8000ms (capped at maxDelayMs)
+```
+
+The formula in words: compute the exponential delay (`baseDelayMs` times 2 to the power of `attempt`), cap it at `maxDelayMs`, then return a random value between 0 and that cap. You will implement `calculateDelay` yourself in Exercise 5.
+
+> **Beginner Note:** Jitter may seem like a small detail, but it is the difference between a retry strategy that works in development and one that works at scale. AWS, Google Cloud, and every major API client library uses jitter for exactly this reason.
 
 ### Timeout Handling
 
 Long responses can hang if the provider is experiencing issues. Always set reasonable timeouts:
 
-Create `src/examples/error-handling-timeout.ts` with a `generateWithTimeout` function:
+Create `src/core/demos/error-handling-timeout.ts` with a `generateWithTimeout` function:
 
 ```typescript
 async function generateWithTimeout(prompt: string, timeoutMs: number = 30000): Promise<string> {
@@ -945,10 +912,10 @@ Test it with a reasonable timeout (30s) and an impossibly short one (100ms) to s
 
 ### Comprehensive Error Handler
 
-Now build a production-grade wrapper that combines retry logic, timeouts, and structured error reporting. Create `src/utils/llm-client.ts` with these types and exports:
+Now build a production-grade wrapper that combines retry logic, timeouts, and structured error reporting. Create `src/core/error-handling.ts` with these types and exports:
 
 ```typescript
-// src/utils/llm-client.ts
+// src/core/error-handling.ts
 
 import type { LanguageModel, ModelMessage } from 'ai'
 
@@ -994,7 +961,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMResult> {
 
 - **`LLMError`** — Extends `Error` with a `code` string (e.g., `'RATE_LIMIT'`, `'AUTH_ERROR'`, `'TIMEOUT'`, `'CONTEXT_LENGTH'`, `'SERVER_ERROR'`), a `retryable` boolean, and an optional `originalError`.
 - **`classifyError`** — Inspect the error message to determine the type. Map `'401'`/`'authentication'` to `AUTH_ERROR` (not retryable), `'429'`/`'rate'` to `RATE_LIMIT` (retryable), `'500'`/`'502'`/`'503'` to `SERVER_ERROR` (retryable), `'timeout'`/`'AbortError'` to `TIMEOUT` (retryable), `'context'`/`'token'` to `CONTEXT_LENGTH` (not retryable). Default to `UNKNOWN` (retryable).
-- **`llmCall`** — Combine everything: destructure options with defaults, loop with retry, create an `AbortController` with timeout for each attempt, call `generateText`, measure duration with `performance.now()`, classify errors on failure, only retry if `retryable` is true, use exponential backoff.
+- **`llmCall`** — Combine everything: destructure options with defaults, loop with retry, create an `AbortController` with timeout for each attempt, call `generateText` (passing the `system` option through as `instructions:` — the v7 name for the system-prompt parameter), measure duration with `performance.now()`, classify errors on failure, only retry if `retryable` is true, use exponential backoff.
 
 **Guiding questions:** Why create a new `AbortController` for each attempt? Why measure `durationMs` inside the function instead of letting the caller do it? What should happen if `options.model` is not provided?
 
@@ -1002,9 +969,7 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMResult> {
 
 ### Error Categorization
 
-The comprehensive error handler above uses `classifyError` to turn raw exceptions into typed `LLMError` instances. This is a production-essential pattern: different error types require different responses, and treating all errors the same leads to poor user experience and wasted retries.
-
-Here are the five error categories every LLM application should distinguish:
+For reference, the five error categories every LLM application should distinguish:
 
 | Category             | HTTP Status         | Retryable?                | User-Facing Action                       |
 | -------------------- | ------------------- | ------------------------- | ---------------------------------------- |
@@ -1013,8 +978,6 @@ Here are the five error categories every LLM application should distinguish:
 | **Network**          | Timeout, ECONNRESET | Yes                       | "Connection issue — retrying"            |
 | **Model Not Found**  | 404                 | No                        | "Invalid model ID — check configuration" |
 | **Context Overflow** | 400 (token-related) | No (need to reduce input) | "Input too long — try a shorter message" |
-
-The key insight is that **retryable errors** (rate limit, network, server errors) should trigger automatic retry with backoff, while **non-retryable errors** (auth, model not found, context overflow) should fail immediately with a clear message. Retrying a 401 wastes time; failing immediately on a 429 wastes an opportunity.
 
 A typed error class makes downstream handling clean:
 
@@ -1046,71 +1009,6 @@ try {
 
 ---
 
-## Section 8: Resilient API Clients
-
-### Why Resilience Matters
-
-In production, your LLM application will make thousands of API calls per day. Transient failures — rate limits, server hiccups, network blips — are not exceptions, they are routine. A resilient API client handles these automatically so your application logic never sees them.
-
-The three building blocks of a resilient client are:
-
-1. **Retry with exponential backoff** — wait longer between each retry attempt
-2. **Jitter** — add randomness to the delay so multiple clients do not all retry at the same instant
-3. **Error classification** — only retry errors that are actually transient
-
-### Exponential Backoff with Jitter
-
-Plain exponential backoff has a problem: if 100 clients all get rate-limited at the same time, they all retry after 1 second, then 2 seconds, then 4 seconds — in perfect synchrony. This creates "retry storms" that keep hammering the server at regular intervals.
-
-Jitter solves this by adding randomness. The "full jitter" strategy picks a random delay between 0 and the exponential backoff ceiling:
-
-```typescript
-// Exponential backoff with full jitter
-function calculateDelay(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
-  const exponentialDelay = baseDelayMs * Math.pow(2, attempt)
-  const cappedDelay = Math.min(exponentialDelay, maxDelayMs)
-  // Full jitter: random value between 0 and the capped delay
-  return Math.random() * cappedDelay
-}
-
-// attempt 0: random between 0 and 1000ms
-// attempt 1: random between 0 and 2000ms
-// attempt 2: random between 0 and 4000ms
-// attempt 3: random between 0 and 8000ms (capped at maxDelayMs)
-```
-
-### Building the Retry Wrapper
-
-A production retry wrapper combines backoff, jitter, error classification, and abort signal support:
-
-```typescript
-import type { LanguageModel } from 'ai'
-
-interface RetryConfig {
-  maxRetries: number
-  baseDelayMs: number
-  maxDelayMs: number
-}
-
-const DEFAULT_RETRY_CONFIG: RetryConfig = {
-  maxRetries: 3,
-  baseDelayMs: 1000,
-  maxDelayMs: 30000,
-}
-```
-
-The wrapper should:
-
-1. Accept any `generateText` parameters plus a `RetryConfig`
-2. Classify each error to decide whether to retry
-3. Calculate the delay with jitter for each attempt
-4. Respect an optional `AbortSignal` for cancellation
-5. Throw the last error if all retries are exhausted
-
-> **Beginner Note:** Jitter may seem like a small detail, but it is the difference between a retry strategy that works in development and one that works at scale. AWS, Google Cloud, and every major API client library uses jitter for exactly this reason.
-
----
-
 ## Going Further: Troubleshooting Setup
 
 ### Common Setup Issues
@@ -1124,7 +1022,7 @@ The wrapper should:
 | `ECONNREFUSED 127.0.0.1:11434` | Ollama not running | Start Ollama with `ollama serve` |
 | Response is empty string | Model returned no content | Check your prompt — it may be too vague |
 
-> **Advanced Note: AI SDK Middleware** — The Vercel AI SDK supports a middleware system via `wrapLanguageModel()` that lets you intercept and transform model calls. You can add logging, caching, guardrails, or custom logic as composable wrappers around any model — without changing your application code. You'll see patterns throughout this course (observability in Module 23, guardrails in Module 21, caching in Module 22) that can all be implemented as middleware. We'll use direct implementations for clarity, but know that middleware is the idiomatic way to compose these concerns in production.
+> **Advanced Note: AI SDK Middleware** — The Vercel AI SDK supports a middleware system via `wrapLanguageModel()` that lets you intercept and transform model calls. You can add logging, caching, guardrails, or custom logic as composable wrappers around any model — without changing your application code. You'll see patterns throughout this course (observability in Module 26, guardrails in Module 24, caching in Module 25) that can all be implemented as middleware. We'll use direct implementations for clarity, but know that middleware is the idiomatic way to compose these concerns in production.
 
 ---
 
@@ -1138,8 +1036,7 @@ In this module, you learned:
 4. **Roles:** The system/user/assistant message roles and how to build multi-turn conversations.
 5. **streamText:** How to stream responses for real-time output and measure timing metrics.
 6. **Parameters:** How temperature, top-P, max tokens, and penalties shape model behavior.
-7. **Error handling:** How to handle API errors, implement retries with exponential backoff, and set timeouts.
-8. **Resilient API clients:** How to build production retry wrappers with exponential backoff and jitter to handle transient failures automatically.
+7. **Error handling & resilience:** How to classify API errors, set timeouts, and retry with exponential backoff and jitter so transient failures are handled automatically.
 
 You now have the foundation to build any LLM application. In Module 2, we will use these tools to master the art and science of prompt engineering.
 
@@ -1212,32 +1109,6 @@ You have a production application that makes 100 LLM calls per minute. Occasiona
 
 ---
 
-### Question 6 (Medium)
-
-Why is jitter added to exponential backoff in a resilient API client?
-
-- A) To make the retry delay shorter on average
-- B) To prevent synchronized retry storms when many clients are rate-limited simultaneously
-- C) To randomize which provider receives the retry request
-- D) To ensure retries happen at exact power-of-two intervals
-
-**Answer: B** — Without jitter, all clients that hit a rate limit at the same time will retry in lockstep (1s, 2s, 4s), creating periodic spikes that keep hammering the server. Jitter adds randomness to the delay so retries spread out over time, preventing these synchronized retry storms.
-
----
-
-### Question 7 (Hard)
-
-A resilient retry wrapper classifies errors before deciding whether to retry. Which of these errors should NOT be retried?
-
-- A) HTTP 429 (Too Many Requests)
-- B) HTTP 500 (Internal Server Error)
-- C) HTTP 401 (Unauthorized — invalid API key)
-- D) A network timeout (ETIMEDOUT)
-
-**Answer: C** — A 401 error means the API key is invalid or missing. Retrying will never succeed because the credentials are wrong — this is a permanent error. Rate limits (429), server errors (500), and network timeouts are transient and may succeed on retry. Retrying permanent errors wastes time and resources.
-
----
-
 ## Exercises
 
 ### Exercise 1: Make a Successful generateText Call
@@ -1277,9 +1148,10 @@ describe('Exercise 1: First Call', () => {
 **Specification:**
 
 1. Create a file `src/exercises/m01/ex02-provider-factory.ts`
-2. Define a type `ProviderName = 'anthropic' | 'openai'`
+2. Define a type `ProviderName = 'mistral' | 'anthropic' | 'openai'`
 3. Export a function `createModel(provider: ProviderName, modelId?: string): LanguageModel`
 4. If no `modelId` is provided, use sensible defaults:
+   - Mistral (the default provider): `"mistral-small-latest"`
    - Anthropic: `"claude-sonnet-4-6"`
    - OpenAI: `"gpt-5.5"`
 5. Throw a descriptive error for unknown providers
@@ -1307,7 +1179,7 @@ describe('Exercise 2: Provider Factory', () => {
   })
 
   it('should generate text using the factory', async () => {
-    const response = await testModel('anthropic')
+    const response = await testModel('mistral')
     expect(response.length).toBeGreaterThan(0)
   })
 })

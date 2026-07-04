@@ -30,7 +30,7 @@ The Vercel AI SDK's `generateText` function with `Output.object()`, combined wit
 - **Module 2 (Prompt Engineering)** taught you how to craft prompts. Here, you combine prompt engineering with schema definitions for maximum precision.
 - **Module 7 (Tool Use)** defines tools using Zod schemas — the same pattern you learn here.
 - **Module 9 (RAG Fundamentals)** uses structured output for citation extraction and metadata.
-- **Module 14 (Agent Fundamentals)** uses structured output for planning and decision-making.
+- **Module 16 (Agent Fundamentals)** uses structured output for planning and decision-making.
 
 ---
 
@@ -46,7 +46,7 @@ import { mistral } from '@ai-sdk/mistral'
 
 const result = await generateText({
   model: mistral('mistral-small-latest'),
-  system: 'Analyze the review. Return sentiment, confidence, and topics.',
+  instructions: 'Analyze the review. Return sentiment, confidence, and topics.',
   prompt: 'This laptop is blazing fast but the battery dies after 2 hours. The screen is gorgeous though.',
 })
 
@@ -190,20 +190,7 @@ z.string().describe("The user's full name as it appears on their ID")
 z.number().describe('Confidence score between 0 and 1')
 ```
 
-> **Beginner Note:** The `.describe()` method is especially important for LLM output. It tells the model what each field should contain, acting as inline documentation that guides generation.
-
-### Schema Descriptions Guide the Model
-
-Adding `.describe()` to your schema fields dramatically improves output quality. The descriptions are sent to the model as part of the schema definition.
-
-```typescript
-const ReviewAnalysis = z.object({
-  sentiment: z.enum(['positive', 'negative', 'neutral', 'mixed']).describe('Overall sentiment of the review'),
-  confidence: z.number().min(0).max(1).describe('How confident the analysis is, from 0 (uncertain) to 1 (certain)'),
-  topics: z.array(z.string()).describe('Key topics or aspects mentioned in the review'),
-  summary: z.string().max(200).describe('A one-sentence summary of the review'),
-})
-```
+> **Beginner Note:** The `.describe()` method is especially important for LLM output. It tells the model what each field should contain, acting as inline documentation that guides generation. Section 10 is devoted to writing descriptions that work.
 
 ---
 
@@ -245,7 +232,7 @@ const CitySchema = z.object({
 type City = z.infer<typeof CitySchema>
 ```
 
-Now write a `main()` function that calls `generateText` with `Output.object({ schema: CitySchema })` and the prompt `'Tell me about Tokyo.'`. The result comes back on `result.output`, which is fully typed as `City`. Log each field to the console, and also log `result.usage.totalTokens` to see how many tokens the call consumed.
+Create `src/structured/sentiment.ts` — Section 3's builds live there — define the schema, and write a `main()` function that calls `generateText` with `Output.object({ schema: CitySchema })` and the prompt `'Tell me about Tokyo.'`. The result comes back on `result.output`, which is fully typed as `City`. Log each field to the console, and also log `result.usage.totalTokens` to see how many tokens the call consumed.
 
 What type does `result.output` have? How does TypeScript know the shape without you writing a type assertion?
 
@@ -262,7 +249,7 @@ const SentimentSchema = z.object({
 })
 ```
 
-Write an `analyzeSentiment(text: string)` function that calls `generateText` with this schema. Pass a `system` prompt that instructs the model to act as a sentiment analysis expert, consider both explicit statements and implied tone, and lean toward the dominant emotion for mixed sentiment. Set `temperature: 0` for deterministic results.
+Add an `analyzeSentiment(text: string)` function to `src/structured/sentiment.ts` that calls `generateText` with this schema. Pass `instructions` that tell the model to act as a sentiment analysis expert, consider both explicit statements and implied tone, and lean toward the dominant emotion for mixed sentiment. Set `temperature: 0` for deterministic results.
 
 Then write a `main()` that loops over a few test reviews — one clearly positive, one mixed, one deadpan neutral — and logs the sentiment, confidence percentage, reasoning, and key phrases for each.
 
@@ -314,7 +301,7 @@ type JobPosting = z.infer<typeof JobPostingSchema>
 
 Notice how `company: CompanySchema` embeds one schema inside another, and the inline `z.object(...)` for `location` and `salary` creates anonymous nested structures.
 
-Write an `extractJobPosting(text: string): Promise<JobPosting>` function that uses `generateText` with `Output.object()` to extract job posting data from free text. Use a system prompt that tells the model to infer reasonable values when details are not explicitly stated. Test it with a paragraph describing a job posting that includes company info, location, salary range, requirements, and benefits.
+Create `src/structured/review.ts` with an `extractJobPosting(text: string): Promise<JobPosting>` function that uses `generateText` with `Output.object()` to extract job posting data from free text. Pass `instructions` telling the model to infer reasonable values when details are not explicitly stated. Test it with a paragraph describing a job posting that includes company info, location, salary range, requirements, and benefits.
 
 What type does `z.infer<typeof JobPostingSchema>` produce? How deep does the nesting go?
 
@@ -340,7 +327,7 @@ const DetailedReviewSchema = z.object({
 
 The key pattern here is `z.array(AspectSchema).min(1)` — an array of complex objects with a minimum length constraint. The model will produce one `AspectSchema` object per product aspect it finds in the review.
 
-Write an `analyzeReview(review: string)` function that uses this schema with `generateText` + `Output.object()`. Test it with a multi-aspect review (e.g., a laptop review that discusses performance, display, battery, and keyboard). Log the overall sentiment and score, then loop through the `aspects` array and log each one.
+Add an `analyzeReview(review: string)` function to `src/structured/review.ts` that uses this schema with `generateText` + `Output.object()`. Test it with a multi-aspect review (e.g., a laptop review that discusses performance, display, battery, and keyboard). Log the overall sentiment and score, then loop through the `aspects` array and log each one.
 
 How many aspects does the model find? Does each `quote` field actually appear in the original text?
 
@@ -390,7 +377,7 @@ const TicketSchema = z.object({
 
 Every field except `title` is an enum, which means every output value is one of a known finite set. This is what makes structured output so powerful for classification — there is zero ambiguity in the result.
 
-Write a `classifyTicket(description: string)` function that uses this schema. In your system prompt, define what each priority level means (e.g., critical = system down or data loss, low = cosmetic issue). Then test it with three tickets: an authentication outage, a minor UI bug, and a feature request.
+Create `src/structured/tickets.ts` with a `classifyTicket(description: string)` function that uses this schema. In your `instructions`, define what each priority level means (e.g., critical = system down or data loss, low = cosmetic issue). Then test it with three tickets: an authentication outage, a minor UI bug, and a feature request.
 
 What priority does the model assign to each? Does the `assignTo` field make sense for each ticket? What happens if you change the enum values in the system prompt description but not in the schema itself?
 
@@ -431,7 +418,7 @@ const ContactSchema = z.object({
 type Contact = z.infer<typeof ContactSchema>
 ```
 
-Write an `extractContact(text: string): Promise<Contact>` function using `generateText` with `Output.object()`. Your system prompt should instruct the model to only fill in fields that are explicitly mentioned — not infer or fabricate missing data — and to use `"unknown"` for `preferredContact` when not stated.
+Create `src/structured/contacts.ts` with an `extractContact(text: string): Promise<Contact>` function using `generateText` with `Output.object()`. Pass `instructions` telling the model to only fill in fields that are explicitly mentioned — not infer or fabricate missing data — and to use `"unknown"` for `preferredContact` when not stated.
 
 Test with three inputs of varying completeness: one with full details (name, company, email), one with just a name and phone, and one with only a name. For each result, log the fields using `?? '(not provided)'` for missing optional values.
 
@@ -445,7 +432,7 @@ Use `.default()` for fields that should have a fallback value:
 const ConfigSchema = z.object({
   model: z.string().default('mistral-small-latest'),
   temperature: z.number().default(0.7),
-  maxTokens: z.number().default(1000),
+  maxOutputTokens: z.number().default(1000),
   language: z.string().default('en'),
   verbose: z.boolean().default(false),
 })
@@ -606,7 +593,7 @@ const StrictSchema = z.object({
 })
 ```
 
-Write a `safeExtract(text: string)` function that wraps `generateText` + `Output.object()` in a try/catch. On success, return `{ success: true as const, data: result.output }`. On failure, catch the error and return `{ success: false as const, error: error.message }`. This pattern gives the caller a discriminated union — they can check `result.success` and TypeScript narrows the type.
+Create `src/structured/orders.ts` — Section 8's builds all live there — and write a `safeExtract(text: string)` function that wraps `generateText` + `Output.object()` in a try/catch. On success, return `{ success: true as const, data: result.output }`. On failure, catch the error and return `{ success: false as const, error: error.message }`. This pattern gives the caller a discriminated union — they can check `result.success` and TypeScript narrows the type.
 
 Test with a clear input ("Great wireless headphones, 5 stars! Verified purchase.") and an ambiguous one ("Hmm."). Does the ambiguous input succeed or fail? What does the error message tell you?
 
@@ -633,7 +620,7 @@ type Order = z.infer<typeof OrderSchema>
 
 Zod validates that all fields are present and have the right types, but it cannot verify that the `subtotal` actually equals the sum of `quantity * pricePerUnit` across items, or that `total` equals `subtotal + tax`.
 
-Write a `validateOrderMath(order: Order): string[]` function that computes the expected subtotal and total, compares them to the model's values (with a tolerance of 0.01 for floating-point), and returns an array of error strings for any mismatches.
+In the same file, write a `validateOrderMath(order: Order): string[]` function that computes the expected subtotal and total, compares them to the model's values (with a tolerance of 0.01 for floating-point), and returns an array of error strings for any mismatches.
 
 Then write an `extractOrder(text: string): Promise<Order>` function that calls `generateText` with `Output.object()`, runs `validateOrderMath` on the result, and logs warnings for any math errors. Test it with: "I ordered 3 widgets at $12.99 each and 2 gadgets at $24.50 each."
 
@@ -643,7 +630,7 @@ Does the model get the math right? What would you do in production if it does no
 
 ### Retry on Validation Failure
 
-When structured output fails validation, retrying with a more explicit prompt often succeeds. Write a generic retry wrapper:
+When structured output fails validation, retrying with a more explicit prompt often succeeds. Add a generic retry wrapper to `src/structured/orders.ts`:
 
 ```typescript
 async function generateWithRetry<T extends z.ZodType>(
@@ -673,7 +660,7 @@ Streaming structured output serves two purposes:
 `streamText` with `Output.object()` works like `generateText` with `Output.object()` but delivers partial objects as the model generates them:
 
 ```typescript
-// src/examples/structured-streaming.ts
+// src/structured/streaming.ts
 
 import { streamText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -695,18 +682,16 @@ async function streamArticleAnalysis(text: string): Promise<void> {
 streamArticleAnalysis('...sample article text...').catch(console.error)
 ```
 
-Build this function using `streamText` with `Output.object({ schema: ArticleSchema })`. Iterate over `result.partialOutputStream` with a `for await` loop and display each field as it arrives (check for `undefined` before logging each one). After the stream completes, call `await result.output` to get the final validated object and log it as JSON.
+Create `src/structured/streaming.ts` and build this function using `streamText` with `Output.object({ schema: ArticleSchema })`. Iterate over `result.partialOutputStream` with a `for await` loop and display each field as it arrives (check for `undefined` before logging each one). After the stream completes, call `await result.output` to get the final validated object and log it as JSON.
 
 Why do you need to check each field for `undefined` in the partial objects? What happens if you try to call `.join()` on `partialObject.tags` before the array has been populated?
-
-> **Beginner Note:** The `partialOutputStream` delivers incomplete objects — fields may be `undefined` even if they are required in the schema. Always check for field presence when rendering partial results. The final `result.output` is the fully validated output.
 
 ### Streaming with Callbacks
 
 For more control over the streaming lifecycle:
 
 ```typescript
-// src/examples/structured-streaming-callbacks.ts
+// src/structured/streaming.ts (continued)
 
 import { streamText, Output } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -729,9 +714,9 @@ async function streamWithCallbacks(text: string): Promise<void> {
 streamWithCallbacks('...sample text with entities...').catch(console.error)
 ```
 
-Build this function using `streamText` with `Output.object({ schema: ExtractSchema })`. Add an `onFinish` callback that logs the total number of partial updates received and token usage from `event.usage`. In the `for await` loop over `partialOutputStream`, track an `updateCount` and use `process.stdout.write` to show a live entity count (using `\r` to overwrite the line). After the loop, call `await result.output` and log the final validated result as JSON.
+Build this function using `streamText` with `Output.object({ schema: ExtractSchema })`. Add an `onEnd` callback that logs the total number of partial updates received and token usage from `event.usage`. In the `for await` loop over `partialOutputStream`, track an `updateCount` and use `process.stdout.write` to show a live entity count (using `\r` to overwrite the line). After the loop, call `await result.output` and log the final validated result as JSON.
 
-How does `onFinish` differ from awaiting `result.output`? What information is available in `onFinish` that is not available on the partial objects?
+How does `onEnd` differ from awaiting `result.output`? What information is available in `onEnd` that is not available on the partial objects?
 
 ### When to Use streamText vs generateText with Output.object()
 
@@ -825,20 +810,7 @@ What is the primary advantage of `generateText` with `Output.object()` over plai
 
 ---
 
-### Question 2 (Easy)
-
-Which Zod method adds a description that helps the LLM understand a field's purpose?
-
-- A) `.label()`
-- B) `.comment()`
-- C) `.describe()`
-- D) `.hint()`
-
-**Answer: C** — The `.describe()` method adds a description string to the schema field. This description is included in the schema sent to the model and helps it understand what each field should contain, improving output accuracy.
-
----
-
-### Question 3 (Medium)
+### Question 2 (Medium)
 
 You define a schema with `z.enum(['critical', 'high', 'medium', 'low'])`. What happens if the model tries to return `"urgent"`?
 
@@ -851,7 +823,7 @@ You define a schema with `z.enum(['critical', 'high', 'medium', 'low'])`. What h
 
 ---
 
-### Question 4 (Medium)
+### Question 3 (Medium)
 
 When should you use `z.string().optional()` vs `z.string().nullable()` in a schema for LLM output?
 
@@ -864,7 +836,7 @@ When should you use `z.string().optional()` vs `z.string().nullable()` in a sche
 
 ---
 
-### Question 5 (Hard)
+### Question 4 (Hard)
 
 You have a schema with a `total` field that should equal the sum of item prices. The model consistently returns a `total` that is off by a few cents. What is the best approach?
 
@@ -877,20 +849,7 @@ You have a schema with a `total` field that should equal the sum of item prices.
 
 ---
 
-### Question 6 (Medium)
-
-When streaming structured output with `streamText` + `Output.object()`, what is true about the objects delivered via `partialOutputStream`?
-
-- A) Each partial object is fully validated against the Zod schema
-- B) Fields may be `undefined` even if they are required in the schema
-- C) The stream only delivers the final complete object
-- D) Partial objects contain error messages for missing fields
-
-**Answer: B** — The `partialOutputStream` delivers incomplete objects as the model generates them. Required fields may still be `undefined` in early partial objects because the model has not generated them yet. You must check for field presence when rendering partial results. Only the final `result.output` is fully validated against the schema.
-
----
-
-### Question 7 (Hard)
+### Question 5 (Easy)
 
 A schema field is defined as `z.string()` with no `.describe()` annotation. A second version adds `.describe('The absolute path to the file to read')`. How does this affect the model's output?
 
@@ -905,21 +864,23 @@ A schema field is defined as `z.string()` with no `.describe()` annotation. A se
 
 ## Exercises
 
-### Exercise 1: Product Review Schema
+### Exercise 1: Review Comparison & Aspect Aggregation
 
-**Objective:** Design and use a comprehensive product review analysis schema.
+**Objective:** Apply Section 4's aspect-array pattern to a batch of reviews and aggregate per-aspect sentiment across them — the new logic is the aggregation, not the schema.
 
 **Specification:**
 
 1. Create a file `src/exercises/m03/ex01-review-schema.ts`
-2. Define a `ReviewAnalysis` schema with:
+2. Define a `ReviewAnalysis` schema (the same shape you built in Section 4's `src/structured/review.ts`):
    - `sentiment`: enum (positive, negative, neutral, mixed)
    - `rating`: number 1-5
    - `aspects`: array of `{ aspect: string, sentiment: enum, quote: string }`
    - `recommendation`: boolean
    - `summary`: string (max 150 chars)
 3. Export an async function `analyzeReview(text: string): Promise<ReviewAnalysis>`
-4. Test with at least 3 reviews: one clearly positive, one clearly negative, one mixed
+4. New: export a pure function `aggregateAspects(analyses: ReviewAnalysis[]): Record<string, { positive: number; negative: number; neutral: number }>` that tallies each aspect's sentiment across all reviews — normalize aspect names with `.trim().toLowerCase()` so "Battery" and "battery" merge
+5. New: export `compareReviews(texts: string[]): Promise<{ analyses: ReviewAnalysis[]; aspects: ReturnType<typeof aggregateAspects> }>` that analyzes each review and returns the aggregate
+6. Test with at least 3 reviews of the same product — one clearly positive, one clearly negative, one mixed — and check which aspects are contested (both positive and negative counts)
 
 ---
 
@@ -942,36 +903,36 @@ A schema field is defined as `z.string()` with no `.describe()` annotation. A se
 
 ### Exercise 3: Form Filler
 
-**Objective:** Build an AI form filler that extracts structured information from conversational text.
+**Objective:** Extend Section 6's `extractContact` pattern (`src/structured/contacts.ts`) into a form filler that also reports how complete the extraction was.
 
 **Specification:**
 
 1. Create a file `src/exercises/m03/ex03-form-filler.ts`
-2. Define a `RegistrationForm` schema with:
+2. The schema follows the Section 6 optional-fields pattern; the deltas are a `ticketType` enum (`general`, `vip`, `speaker`) and the completeness metric below. Define `RegistrationForm` with:
    - Required: `fullName`, `email`
    - Optional: `phone`, `company`, `role`, `dietaryRestrictions`
    - Enum: `ticketType` (general, vip, speaker)
 3. Export `fillForm(conversationalText: string): Promise<{ form: RegistrationForm, completeness: number }>`
-4. `completeness` should be the percentage of fields filled (0-100)
+4. The new logic: compute `completeness` — the percentage (0-100) of the form's fields that came back filled — in a pure helper in your own code; do not ask the model for it
 5. Test with inputs of varying completeness (full info, partial info, minimal info)
 
 ---
 
-### Exercise 4: Streaming Structured Output Demo
+### Exercise 4: Streaming with Early Abort
 
-**Objective:** Build a streaming structured output demo that shows progressive field population.
+**Objective:** Build the early-abort pattern the Section 9 decision table promises: stream a structured analysis and stop mid-stream the moment a partial field fails a business rule.
 
 **Specification:**
 
 1. Create a file `src/exercises/m03/ex04-stream-object.ts`
 2. Define a schema with at least 6 fields for a "Movie Analysis":
    - `title`, `year`, `genre` (enum), `rating` (1-10), `themes` (string array), `synopsis` (string)
-3. Export `streamMovieAnalysis(description: string): Promise<MovieAnalysis>`
-4. During streaming, log each field as it becomes available
-5. After streaming completes, log the final validated object
-6. Include timing: report how long streaming took and time-to-first-field
+3. Export `streamMovieAnalysis(description: string, opts?: { minYear?: number }): Promise<StreamResult>` using `streamText` + `Output.object()` and a `for await` loop over `partialOutputStream`
+4. The business rule (the new logic — Section 9 only displayed partials): create an `AbortController` and pass its signal as `abortSignal`. As soon as the partial object's `year` field arrives, check it against `opts.minYear` (default 1970). If it fails, call `controller.abort()`, stop consuming the stream, and catch the resulting abort error instead of waiting for the full generation
+5. Return a discriminated union `StreamResult`: `{ aborted: false; analysis: MovieAnalysis; msToFirstField: number; msTotal: number }` on success, or `{ aborted: true; reason: string; msTotal: number }` when the rule trips
+6. Test both paths: a modern movie description (completes) and a description of a 1950s film with `minYear: 2000` (aborts before the synopsis is generated)
 
-> **Local Alternative (Ollama):** Structured output with `generateText` and `Output.object()` works with Ollama models that support JSON mode. Use `ollama('qwen3.5')` — it handles JSON generation well for most schemas. Very complex nested schemas may need a larger model like `ollama('qwen3.5:cloud')`. If you encounter malformed JSON, add "Respond in valid JSON only" to your system prompt.
+> **Local Alternative (Ollama):** Structured output with `generateText` and `Output.object()` works with Ollama models that support JSON mode. Use `ollama('qwen3.5', { think: false })` — it handles JSON generation well for most schemas. Very complex nested schemas may need a larger model like `ollama('qwen3.5:cloud', { think: false })`. If you encounter malformed JSON, add "Respond in valid JSON only" to your system prompt.
 
 ---
 

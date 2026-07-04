@@ -1,4 +1,4 @@
-# Module 16: Workflows & Chains
+# Module 14: Workflows & Chains
 
 ## Learning Objectives
 
@@ -11,13 +11,13 @@
 - Monitor pipelines with logging, timing, and token usage tracking
 - Choose between chains and agents for a given problem
 
-> *Module 16 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
+> *Module 14 opens **Part IV: Agents & Orchestration** — begin the eight-module arc that earns the **Agent Deployer** badge.*
 
 ---
 
 ## Why Should I Care?
 
-Agents are powerful but unpredictable. When an agent decides its own path through a task, you gain flexibility but lose predictability. For many production applications, you know the steps in advance: extract data, transform it, validate it, generate a report. In these cases, a deterministic chain is faster to build, easier to debug, cheaper to run, and more reliable than an agent.
+You'll build autonomous **agents** later in this Part, in Module 16 — systems that decide their own path through a task. Agents are powerful but unpredictable: you gain flexibility but lose predictability. For many production applications, though, you know the steps in advance: extract data, transform it, validate it, generate a report. In these cases, a deterministic **chain** — the subject of this module — is faster to build, easier to debug, cheaper to run, and more reliable than an agent.
 
 Chains are the workhorses of production LLM applications. Content pipelines, data processing, document generation, classification workflows — all benefit from the predictability of chains. You decide the steps. The LLM executes them. No loop, no tool selection, no stuck detection. Just a pipeline that does what you designed it to do.
 
@@ -27,10 +27,11 @@ This module teaches you when to reach for a chain instead of an agent, and how t
 
 ## Connection to Other Modules
 
-- **Module 14 (Agent Fundamentals)** covers the autonomous approach. This module is the deterministic counterpart.
-- **Module 15 (Multi-Agent Systems)** uses agents for each step. This module uses LLM calls without agent loops.
-- **Module 17 (Code Generation)** can use chains for generate-test-fix pipelines.
-- **Module 18 (Human-in-the-Loop)** adds approval gates within chain steps.
+- **Module 15 (Durable Workflows)** — next — makes these chains survive crashes and week-long waits.
+- **Module 16 (Agent Fundamentals)** — later in Part IV — introduces the autonomous approach. This module opens Part IV with the deterministic counterpart, giving you a concrete baseline to contrast agents against.
+- **Module 17 (Multi-Agent Systems)** — later in Part IV — uses an agent for each step. Here we use plain LLM calls with no agent loop.
+- **Module 20 (Code Generation)** can use chains for generate-test-fix pipelines.
+- **Module 21 (Human-in-the-Loop)** adds approval gates within chain steps.
 
 ---
 
@@ -49,22 +50,9 @@ LLM applications exist on a spectrum between full determinism and full autonomy:
 | Cost           | Predictable: N calls               | Variable: 1 to step limit calls                 |
 | Flexibility    | Low -- handles only designed paths | High -- adapts to unexpected situations         |
 
-### When to Use Each
+The short version: reach for a **chain** when you can write the steps down in advance, and an **agent** when the path depends on what the model finds along the way — Section 8 builds the full decision framework (including the hybrid middle ground) once you have built both.
 
-**Use a chain when:**
-
-- You know the steps in advance
-- Each step has a single, clear purpose
-- You need predictable cost and latency
-- The pipeline will run in production at scale
-- Debugging and monitoring are priorities
-
-**Use an agent when:**
-
-- The steps depend on what the LLM finds
-- The task is exploratory or open-ended
-- You need the LLM to decide when it has enough information
-- Flexibility matters more than predictability
+**File:** `src/agents/chains-vs-agents.ts`
 
 Build two functions that take a topic and produce an article, using different approaches:
 
@@ -76,11 +64,11 @@ Build two functions that take a topic and produce an article, using different ap
 
 **Agent approach** -- `agentApproach(topic: string): Promise<string>`:
 
-- Single `generateText` call with `stopWhen: stepCountIs(10)`, a system prompt saying "research and write an article, stop when you have enough," and a search tool
+- Single `generateText` call with `stopWhen: isStepCount(10)`, a system prompt saying "research and write an article, stop when you have enough," and a search tool
 - The LLM decides how many searches to do and when to stop
 
 ```typescript
-import { generateText, Output, stepCountIs } from 'ai'
+import { generateText, Output, isStepCount } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 ```
@@ -94,6 +82,8 @@ Think about: which approach gives you more control over the output structure? Wh
 ## Section 2: Sequential Chains
 
 ### Output Feeds Input
+
+**File:** `src/agents/sequential.ts`
 
 The fundamental chain pattern: each step produces output that becomes input for the next step. Start with the types:
 
@@ -192,6 +182,8 @@ What happens at compile time if you try to chain a step that expects `ArticleOut
 
 When steps do not depend on each other, run them in parallel to reduce total latency.
 
+**File:** `src/agents/parallel.ts`
+
 Build a parallel step runner with this signature:
 
 ```typescript
@@ -239,6 +231,8 @@ Think about:
 ### Conditional Routing Based on LLM Output
 
 Sometimes a chain needs to take different paths based on what the LLM produces. This is branching -- a hybrid of chain determinism and agent flexibility.
+
+**File:** `src/agents/branching.ts`
 
 Build `branchByClassification(text: string): Promise<{ classification: string; result: string }>`:
 
@@ -291,6 +285,8 @@ How deep should the tree go? What are the latency implications of each classific
 Individual chain steps can fail due to API errors, malformed output, or timeouts. Robust chains include retry logic and fallbacks.
 
 > **Gotcha:** Retry only what's *idempotent*. Retrying a step that already charged a card, sent an email, or appended to a file replays the side effect — now you've double-charged. Make side-effecting steps idempotent (dedupe keys, upserts) before wrapping them in retry, or you've built an automatic way to do the wrong thing twice.
+
+**File:** `src/agents/retry-fallback.ts`
 
 Build `withRetry<T>(name: string, fn: () => Promise<T>, config: RetryConfig): Promise<T>`:
 
@@ -353,6 +349,8 @@ Why is it valuable to catch a bad outline before spending tokens on writing the 
 
 ### Building Reusable Pipeline Units
 
+**File:** `src/agents/composable.ts`
+
 Create small, focused chain functions that can be composed into larger pipelines. Start with the composition utilities:
 
 ```typescript
@@ -414,6 +412,8 @@ This pattern lets you create multiple pipeline configurations (`englishPipeline`
 ## Section 7: Pipeline Monitoring
 
 ### Logging, Timing, and Token Usage
+
+**File:** `src/agents/monitoring.ts`
 
 Production chains need observability. Track what happens at each step. Define the metrics types:
 
@@ -480,6 +480,8 @@ Think about: what metric would you alert on in production? Duration spikes? Toke
 
 ### Decision Framework
 
+**File:** `src/agents/decision.ts`
+
 Build `recommendApproach(taskDescription: string): Promise<{ recommendation: 'chain' | 'agent' | 'hybrid'; reasoning: string; factors: Record<string, string> }>`:
 
 Use `Output.object` to have the LLM analyze a task description and recommend an approach. The schema should include:
@@ -510,9 +512,7 @@ Test it with a few examples to see how the recommendations differ:
 | Email drafting from template  | Chain    | Fill template, review, format -- fixed steps       |
 | Multi-source fact checking    | Hybrid   | Chain structure with agent-like search flexibility |
 
-> **Beginner Note:** When in doubt, start with a chain. Chains are simpler to build, test, and debug. If you find that your chain needs too many branches or conditional paths, that is a signal to consider an agent or hybrid approach.
-
-> **Advanced Note:** Many production systems use a hybrid: a chain provides the overall structure, but individual steps within the chain use agent patterns when they need flexibility. For example, a content pipeline chain might use an agent for the "research" step but chains for the "format" and "publish" steps.
+> **Advanced Note:** In production, the hybrid from the Decision above usually looks like one agent-powered stage boxed inside an otherwise fixed chain: a content pipeline might use an agent for the "research" step (where the path depends on findings) but plain chain steps for "format" and "publish". The agent's unpredictability stays contained in a single stage while everything around it remains deterministic and debuggable.
 
 ---
 
@@ -604,7 +604,7 @@ For tasks that the workflow eventually needs, use a future/promise pattern: star
 
 ### Undo/Redo for Workflow Steps
 
-*Related: Module 17 applies this same reversibility idea to code edits.*
+*Related: Module 20 applies this same reversibility idea to code edits.*
 
 #### Reversible Workflows
 
@@ -614,8 +614,8 @@ The pattern:
 
 1. Before each step executes, record a snapshot or diff of the state it will modify
 2. After execution, store the change record in a changelog
-3. `/undo` reverts the most recent change by applying the inverse operation
-4. `/redo` reapplies a reverted change from the changelog
+3. **Undo** rolls back the most recent step's change by applying the inverse operation
+4. **Redo** reapplies a rolled-back change from the changelog
 
 ```typescript
 interface ChangeRecord {
@@ -630,9 +630,9 @@ interface ChangeRecord {
 }
 ```
 
-The key insight: only side effects are reversed. The conversation history (why the changes were made, what reasoning led to them) is preserved. Undo does not erase the decision — it reverts the outcome while keeping the context.
+The key insight: only side effects are reversed. The step log — which steps ran, with what inputs, outputs, and validation results — is preserved. Rolling a step back reverts its outcome without erasing the execution record, so when the pipeline re-runs after a rollback it still has the previous run's log to compare against (and can skip steps whose outputs were already validated).
 
-For file-based workflows, undo means restoring the previous file content. For database workflows, undo means running a compensating transaction. For API calls, undo may not be possible — flag irreversible steps so the user knows before executing.
+For file-based pipelines, undo means restoring the previous file content. For database pipelines, undo means running a compensating transaction. For API calls, undo may not be possible — flag irreversible steps so the operator knows before executing.
 
 > **Advanced Note:** Implement a change stack with a cursor. The cursor points to the current position. Undo moves the cursor back, redo moves it forward. New changes after an undo discard the redo history (just like text editor undo). This gives you a navigable history of workflow execution.
 
@@ -640,7 +640,7 @@ For file-based workflows, undo means restoring the previous file content. For da
 
 ### Headless Execution for CI/CD
 
-*Module 24 (Deployment) owns the full headless/CI story; here the focus is the workflow logic itself.*
+*Module 27 (Deployment) owns the full headless/CI story; here the focus is the workflow logic itself.*
 
 #### Non-Interactive Workflows
 
@@ -683,7 +683,7 @@ In this module, you learned:
 
 1. **Chains vs agents:** Chains have predefined steps for predictable, debuggable pipelines. Agents decide their own steps for flexible, adaptive behavior. Choose based on how well-defined the task is.
 2. **Sequential chains:** Each step's output feeds the next step. Type-safe chain builders catch errors at compile time.
-3. **Parallel chains:** Independent steps run concurrently to reduce total latency. Use `Promise.all` with concurrency limits.
+3. **Parallel chains:** Independent steps run concurrently to reduce total latency. Use `Promise.all`.
 4. **Branching:** Conditional routing based on LLM classification creates adaptive chains without full agent autonomy. Multi-level branching handles complex routing trees.
 5. **Retry and fallback:** Retry with exponential backoff handles transient errors. Fallbacks provide degraded but functional results when primary steps fail. Validation between steps catches bad data early.
 6. **Composable chain functions:** Small, focused step functions compose into larger pipelines. Factory patterns create configurable pipeline variants.
@@ -694,7 +694,7 @@ In this module, you learned:
 11. **Undo/redo for workflow steps:** Recording state snapshots before each side-effecting step enables reversible workflows — undo reverts outcomes while preserving decision history.
 12. **Headless execution:** The same workflow logic supports interactive and non-interactive modes, enabling CI/CD integration, scheduled tasks, and batch processing without code changes.
 
-In Module 17, you will apply chain and agent patterns to code generation — a domain where iterative refinement and test-driven approaches produce the best results.
+Next, **Module 15 (Durable Workflows)** takes the chains you built here and makes them durable — able to survive crashes, redeploys, and week-long waits between steps. Later in the course, Module 20 applies these chain patterns to code generation, a domain where iterative refinement and test-driven approaches produce the best results.
 
 ---
 
@@ -713,7 +713,7 @@ What is the fundamental difference between a chain and an agent?
 
 ---
 
-### Question 2 (Medium)
+### Question 2 (Easy)
 
 When running parallel chain steps, what must be true about the steps?
 
@@ -752,7 +752,7 @@ A content pipeline processes 1000 documents daily. Each document goes through: c
 
 ---
 
-### Question 5 (Hard)
+### Question 5 (Medium)
 
 What is the main advantage of composable chain functions over monolithic pipelines?
 
@@ -765,36 +765,6 @@ What is the main advantage of composable chain functions over monolithic pipelin
 
 ---
 
-### Question 6 (Medium)
-
-A workflow step sends an email notification after generating a report. The email API sometimes takes 3 seconds to respond. How should background execution handle this without blocking the pipeline?
-
-a) Add a 3-second sleep after the step
-b) Run the notification as a fire-and-forget background task with `.catch()` error handling — the main workflow continues immediately while the email sends in parallel, and a delivery failure does not crash the pipeline
-c) Remove the notification step entirely
-d) Run the entire workflow asynchronously
-
-**Answer: B**
-
-**Explanation:** Background execution with `runInBackground()` starts the email task and returns immediately. The main workflow proceeds to the next step without waiting. The `.catch()` handler ensures that if the email fails, it logs the error silently rather than crashing the pipeline. This pattern is appropriate for any non-critical side effect where the main flow does not depend on the result — analytics, notifications, cache warming, and similar tasks.
-
----
-
-### Question 7 (Hard)
-
-Your workflow modifies files across three sequential steps. After step 3 completes, the user requests an undo. The undo system reverts the file changes from step 3 but preserves the conversation history explaining why those changes were made. Why is this separation between side effects and reasoning important?
-
-a) Conversation history uses less storage than file changes
-b) The reasoning context (why the changes were made) remains available for the next attempt — the user can see the original decision, understand what went wrong, and guide the system to a better result without starting from scratch
-c) File changes are always reversible but conversation history is not
-d) The model cannot process conversation history and file changes together
-
-**Answer: B**
-
-**Explanation:** Undo should revert outcomes (file edits, database writes) while preserving context (the reasoning chain, user feedback, error observations). If undo erased the reasoning too, the system would lose the information needed to make a better decision on the next attempt. This mirrors how text editors work — undo reverts the change but you still remember why you made it. In workflow systems, this means the change record tracks file diffs (before/after content) for reversal, while the conversation log remains intact.
-
----
-
 ## Exercises
 
 ### Exercise 1: Content Pipeline
@@ -803,7 +773,7 @@ d) The model cannot process conversation history and file changes together
 
 **Specification:**
 
-1. Create a file `src/exercises/m16/ex01-content-pipeline.ts`
+1. Create a file `src/exercises/m14/ex01-content-pipeline.ts`
 2. Export an async function `contentPipeline(topic: string, options?: PipelineOptions): Promise<PipelineResult>`
 3. Define the types:
 
@@ -859,10 +829,10 @@ console.log(`Review score: ${result.reviewScore}/10`)
 **Test specification:**
 
 ```typescript
-// tests/exercises/m16/ex01-content-pipeline.test.ts
+// tests/exercises/m14/ex01-content-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 16: Content Pipeline', () => {
+describe('Exercise 14: Content Pipeline', () => {
   it('should produce final content', async () => {
     const result = await contentPipeline('TypeScript generics')
     expect(result.finalContent).toBeTruthy()
@@ -903,38 +873,40 @@ describe('Exercise 16: Content Pipeline', () => {
 
 ### Exercise 2: Composable Pipeline Library
 
-**Objective:** Build a library of composable chain functions that can be snapped together to create different pipelines.
+**Objective:** You already built the composition utilities and step factories in Section 6 (`src/agents/composable.ts`). Reuse that library — do not rebuild it — to assemble pipelines you have not built before, and take a shot at the type-safe `pipe` that Section 6's closing question teased.
 
 **Specification:**
 
-1. Create a file `src/exercises/m16/ex02-composable-chains.ts`
-2. Export these composable step functions:
+1. Create a file `src/exercises/m14/ex02-composable-chains.ts`
+2. Port your Section 6 factories into the exercise library, adding an optional trailing `model` parameter (defaulting to your provider's model) so a pipeline can run against a different model — or a mock — without editing the factory:
 
 ```typescript
-// Each function returns a step function: (input: string) => Promise<string>
+// Each factory returns a step function: (input: string) => Promise<string>
 
-export function summarize(maxWords?: number): (text: string) => Promise<string>
-export function translate(targetLanguage: string): (text: string) => Promise<string>
-export function formatAs(format: 'markdown' | 'html' | 'bullet-points'): (text: string) => Promise<string>
-export function reviewAndImprove(): (text: string) => Promise<string>
-export function extractKeyPoints(count?: number): (text: string) => Promise<string[]>
+export function summarize(maxWords?: number, model?: LanguageModel): (text: string) => Promise<string>
+export function translate(targetLanguage: string, model?: LanguageModel): (text: string) => Promise<string>
+export function formatAs(format: 'markdown' | 'html' | 'bullet-points', model?: LanguageModel): (text: string) => Promise<string>
+export function reviewAndImprove(model?: LanguageModel): (text: string) => Promise<string>
+export function extractKeyPoints(count?: number, model?: LanguageModel): (text: string) => Promise<string[]>
 ```
 
-3. Export a `pipeline` function that composes steps:
+3. Export a `pipeline` function that composes steps (your Section 6 `pipe`, under its exercise name):
 
 ```typescript
 export function pipeline<T>(...steps: Array<(input: any) => Promise<any>>): (input: T) => Promise<any>
 ```
 
-4. Each step function should use the Vercel AI SDK with Mistral
+4. Assemble at least three pipelines you did **not** build in Section 6 — for example: summarize then translate('French'); summarize then reviewAndImprove then formatAs('markdown'); extractKeyPoints then a joining step then formatAs('bullet-points')
+5. Each step function should use the Vercel AI SDK with Mistral by default
+6. **Bonus:** build the type-safe `pipe` teased by Section 6's "could you build a type-safe version?" question — model it on Section 2's `TypedChain` builder so that composing a step returning `string[]` into a step expecting `string` fails at compile time
 
 **Test specification:**
 
 ```typescript
-// tests/exercises/m16/ex02-composable-chains.test.ts
+// tests/exercises/m14/ex02-composable-chains.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 16: Composable Chains', () => {
+describe('Exercise 14: Composable Chains', () => {
   it('should summarize text', async () => {
     const step = summarize(50)
     const result = await step('A very long text about programming...')
@@ -959,11 +931,11 @@ describe('Exercise 16: Composable Chains', () => {
 
 ### Exercise 3: Multi-Step Command Chain
 
-**Objective:** Build a workflow chain where each step's output feeds the next, with proper error handling, early termination, and step-level reporting.
+**Objective:** Extend your Section 2 `runChain` (`src/agents/sequential.ts`) into a production-grade executor. Keep the same output-feeds-input threading, and layer on Section 5's validation gates plus error handling, lifecycle hooks, `stopOnFailure`, skip support, and step-level reporting. This is an upgrade of code you already have, not a from-scratch rebuild.
 
 **Specification:**
 
-1. Create a file `src/exercises/m16/ex03-command-chain.ts`
+1. Create a file `src/exercises/m14/ex03-command-chain.ts`
 2. Export an async function `runCommandChain(input: string, steps: ChainStep[], options?: ChainOptions): Promise<ChainResult>`
 3. Define the types:
 
@@ -976,7 +948,7 @@ interface ChainStep {
 
 interface ChainOptions {
   stopOnFailure?: boolean // default: true
-  hooks?: WorkflowHook[]
+  hooks?: WorkflowHook[] // the WorkflowHook type from Going Further ("Workflow Middleware and Hooks")
   verbose?: boolean // default: false
 }
 
@@ -1000,7 +972,7 @@ interface ChainResult {
 ```
 
 4. Implement the chain executor:
-   - Execute steps in sequence, passing each step's output as the next step's input
+   - Start from your Section 2 `runChain` loop: execute steps in sequence, passing each step's output as the next step's input
    - If a step throws, catch the error, record it in the step report, and either abort (if `stopOnFailure`) or continue with the previous step's output
    - If a step's `validate` function returns false, abort the chain at that step
    - Run any registered hooks at the appropriate lifecycle points
@@ -1010,10 +982,10 @@ interface ChainResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m16/ex03-command-chain.test.ts
+// tests/exercises/m14/ex03-command-chain.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 16: Multi-Step Command Chain', () => {
+describe('Exercise 14: Multi-Step Command Chain', () => {
   it('should execute all steps in sequence', async () => {
     const steps: ChainStep[] = [
       { name: 'uppercase', execute: async s => s.toUpperCase() },
@@ -1075,7 +1047,7 @@ describe('Exercise 16: Multi-Step Command Chain', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m16/ex04-model-fallback.ts`
+1. Create a file `src/exercises/m14/ex04-model-fallback.ts`
 2. Export an async function `generateWithFallback(prompt: string, options?: FallbackOptions): Promise<FallbackResult>`
 3. Define the types:
 
@@ -1123,10 +1095,10 @@ interface FallbackResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m16/ex04-model-fallback.test.ts
+// tests/exercises/m14/ex04-model-fallback.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 16: Model Fallback Chain', () => {
+describe('Exercise 14: Model Fallback Chain', () => {
   it('should return a response', async () => {
     const result = await generateWithFallback('Explain closures in JavaScript')
     expect(result.finalResponse).toBeTruthy()
@@ -1159,6 +1131,6 @@ describe('Exercise 16: Model Fallback Chain', () => {
 })
 ```
 
-> **Local Alternative (Ollama):** Workflows and chains are code-level orchestration — sequential steps, parallel execution, branching, and retries work identically with `ollama('qwen3.5')`. Workflows are especially well-suited to local models because each step is a focused, bounded LLM call rather than a complex open-ended generation.
+> **Local Alternative (Ollama):** Workflows and chains are code-level orchestration — sequential steps, parallel execution, branching, and retries work identically with `ollama('qwen3.5', { think: false })`. Workflows are especially well-suited to local models because each step is a focused, bounded LLM call rather than a complex open-ended generation.
 
 ---

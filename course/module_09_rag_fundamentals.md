@@ -9,7 +9,7 @@
 - Inject retrieved context into LLM prompts with proper citation attribution
 - Assess RAG pipeline quality using faithfulness, relevance, and correctness metrics
 
-> *Module 9 is part of **Part II: Core Patterns** — RAG is where embeddings, retrieval, and generation finally meet.*
+> *Module 9 closes **Part II: Core Patterns** — complete it to earn the **Core Patterns** badge.*
 
 ---
 
@@ -82,7 +82,7 @@ The script should:
 
 1. Call `generateText` with a question about a fictional company's refund policy (no context provided) and log the result
 2. Define a `retrievedContext` string containing a fake refund policy document
-3. Call `generateText` again, this time injecting the context into a user message alongside the question, with a system message instructing the model to answer based on the provided context and cite the source
+3. Call `generateText` again, this time injecting the context into a user message alongside the question, with the `instructions` field (system prompt) telling the model to answer based on the provided context and cite the source
 4. Log both results and compare
 
 Think about: what system prompt instructions prevent the model from going beyond the provided sources? How does the `messages` array differ from a simple `prompt` call when you need to separate instructions from context?
@@ -92,10 +92,8 @@ The key API pattern for injecting context:
 ```typescript
 const { text } = await generateText({
   model: mistral('mistral-small-latest'),
-  messages: [
-    { role: 'system', content: `Answer based on provided context...` },
-    { role: 'user', content: `Context:\n${context}\n\nQuestion: ${question}` },
-  ],
+  instructions: `Answer based on provided context...`,
+  messages: [{ role: 'user', content: `Context:\n${context}\n\nQuestion: ${question}` }],
 })
 ```
 
@@ -171,7 +169,7 @@ class SimpleRAG {
 
 For `ingest`: iterate over documents, chunk each one using `chunkDocument`, embed all chunk texts with `embedMany`, and store the results in `this.chunks`. Return the total number of chunks indexed.
 
-For `query`: embed the question with `embed`, compute `cosineSimilarity` against every stored chunk, take the top-K, format them as numbered sources in a prompt, and call `generateText` with a system message that instructs the model to cite sources using `[Source N]` notation. Return the answer and source metadata.
+For `query`: embed the question with `embed`, compute `cosineSimilarity` against every stored chunk, take the top-K, format them as numbered sources in a prompt, and call `generateText` with the `instructions` field (system prompt) telling the model to cite sources using `[Source N]` notation. Return the answer and source metadata.
 
 For `chunkDocument`: split content by whitespace into words, create chunks of `chunkSize` words with `overlap` word overlap. Skip tiny chunks (fewer than 20 words). Assign each chunk an ID of `${source}-${index}`.
 
@@ -240,7 +238,7 @@ Split by heading regex (`/^(#{1,6}\s.+)$/gm`). Track the current heading and its
 
 ### Why Overlap?
 
-> **Gotcha:** A fact split across a chunk boundary becomes invisible to retrieval — neither chunk contains the whole answer, so neither scores high enough to be retrieved. Overlap is the cheap fix, but the deeper lesson is that *where* you cut matters as much as how big the chunks are: cut on semantic boundaries (paragraphs, headings) whenever you can.
+> **Gotcha:** Overlap is the cheap fix, but the deeper lesson is that *where* you cut matters as much as how big the chunks are: cut on semantic boundaries (paragraphs, headings) whenever you can.
 
 Without overlap, information at chunk boundaries gets split:
 
@@ -370,7 +368,7 @@ Format each chunk as an XML-style source tag:
 ;`<source id="${i + 1}" name="${chunk.source}" relevance="${chunk.score.toFixed(2)}">\n${chunk.text}\n</source>`
 ```
 
-Call `generateText` with a system message containing guidelines: only use provided sources, cite inline with `[Source N]`, cite multiple sources when they agree, note contradictions, state what is missing if sources are insufficient, do not add information beyond sources. The user message wraps the formatted context in `<context>` tags followed by the question.
+Call `generateText` with the `instructions` field (system prompt) containing guidelines: only use provided sources, cite inline with `[Source N]`, cite multiple sources when they agree, note contradictions, state what is missing if sources are insufficient, do not add information beyond sources. The user message wraps the formatted context in `<context>` tags followed by the question.
 
 **Function 2: `selectChunksWithinBudget(chunks, maxTokens, reserveForPrompt?): RetrievedChunk[]`**
 
@@ -446,11 +444,11 @@ Why is verification important? LLMs sometimes fabricate quotes even when explici
 
 ### Production-Ready RAG
 
-Now bring all the pieces together into a complete, production-oriented RAG pipeline that ingests a directory of markdown files and answers questions with citations.
+Now bring all the pieces together into a complete, production-oriented RAG pipeline that ingests a directory of markdown files and answers questions with citations. Section 2's `SimpleRAG` stays what it was — the naive, self-contained first pass. `RAGPipeline` is the production companion that reuses the dedicated pieces you have built since: Section 3's markdown-aware chunking, Section 5's `retrieve()`, and Section 6's context formatting.
 
 ### What to Build
 
-Create `src/rag/pipeline.ts` with a `RAGPipeline` class. This class composes the chunking, embedding, retrieval, and generation steps you built in earlier sections.
+Create `src/rag/pipeline.ts` with a `RAGPipeline` class. This class composes — by importing, not re-implementing — the chunking, retrieval, and injection functions you built in earlier sections.
 
 Here are the types:
 
@@ -509,17 +507,15 @@ class RAGPipeline {
 **`ingestDirectory`** should:
 
 1. Read all `.md` files from the directory using `readdir` and filter by `extname`
-2. For each file, chunk using a markdown-aware chunker that splits by headings, then by paragraphs for oversized sections (max 800 chars per chunk)
+2. For each file, chunk with your Section 3 `recursiveMarkdownChunk` approach — split by headings, then by paragraphs for oversized sections (max 800 chars per chunk) — adapted so each chunk carries `documentId`, `filePath`, and `chunkIndex`
 3. Embed all chunks in batches of 100 using `embedMany`, prepending the heading to the text for better embeddings (`${heading}\n${text}`)
 4. Store in `this.index` and track total token usage
 
-**`query`** should:
+**`query`** composes Sections 5 and 6 — do not re-implement scoring or prompt formatting here:
 
-1. Embed the question
-2. Score all indexed chunks by cosine similarity, filter by `minScore` (default 0.3), take top-K (default 5)
-3. Format chunks as XML `<source>` tags with file path and section heading
-4. Call `generateText` with a system prompt that requires source-only answers with `[Source N]` citations
-5. Return the answer, source metadata (truncated to 200 chars), and token usage from both embedding and generation
+1. Retrieve with Section 5's `retrieve()`: it embeds the question, scores by cosine similarity, filters by `minScore` (default 0.3), and returns the top-K (default 5). Its `IndexedChunk` shape carries a `metadata` record — put `filePath` and `heading` there when you index, or make `retrieve` generic over your `IndexedDocChunk`. One wrinkle: `QueryResult` reports `embeddingTokens`, so split `retrieve`'s embed step from its ranking step — embed the question yourself, capture usage, and hand the embedding to the ranking logic
+2. Format the retrieved chunks with Section 6's machinery: map them to `RetrievedChunk`s (`source` = file path plus section heading), reuse the XML `<source>` tag formatting and the source-only/`[Source N]` instructions from your `generateRAGAnswer`, and — if the context could overflow — trim with `selectChunksWithinBudget` first
+3. Return the answer, source metadata (text truncated to 200 chars), and token usage from both embedding and generation
 
 **`getStats`** should return the total chunk count, unique document count (by `documentId`), and average chunk length.
 
@@ -582,7 +578,7 @@ async function assessRAGResponse(
 }
 ```
 
-Build this function using `generateText` with `Output.object({ schema: AssessmentSchema })`. Format the sources with numbered labels (e.g., `[Source 1]: ...`). The system message should instruct the judge model to assess faithfulness, relevance, and completeness, each scored 0-1. The user message should include the question, formatted sources, generated answer, and optional ground truth. Return the parsed output.
+Build this function using `generateText` with `Output.object({ schema: AssessmentSchema })`. Format the sources with numbered labels (e.g., `[Source 1]: ...`). The `instructions` field (system prompt) should instruct the judge model to assess faithfulness, relevance, and completeness, each scored 0-1. The user message should include the question, formatted sources, generated answer, and optional ground truth. Return the parsed output.
 
 What makes a good system prompt for an LLM-as-judge? Why is it important to tell the judge to "be strict and objective"?
 
@@ -653,7 +649,7 @@ Why is F1 more informative than precision or recall alone? If you retrieve 100 s
 
 > **Provider Tip: Native Citations** — This module teaches citation attribution using structured output and manual source tracking. Several providers offer native citation features that can simplify this: **Mistral** supports citations via tool calls — you pass documents as tool responses and the model returns `ReferenceChunk` objects linking claims to specific sources. **Anthropic** offers a native Citations feature that returns precise character-range citations grounded to exact spans in provided documents. Both approaches can replace the manual citation extraction pattern taught here.
 
-> **Local Alternative (Ollama):** RAG pipelines work with any model. Use `ollama('qwen3.5')` for generation and `ollama.embedding('qwen3-embedding:0.6b')` for embeddings (see Module 8). The retrieval and chunking logic is entirely model-agnostic. Local RAG is especially appealing for privacy-sensitive documents that you don't want to send to external APIs.
+> **Local Alternative (Ollama):** RAG pipelines work with any model. Use `ollama('qwen3.5', { think: false })` for generation and `ollama.embedding('qwen3-embedding:0.6b')` for embeddings (see Module 8). The retrieval and chunking logic is entirely model-agnostic. Local RAG is especially appealing for privacy-sensitive documents that you don't want to send to external APIs.
 
 ---
 
@@ -671,6 +667,8 @@ When you retrieve more context than fits in the available window, you need a pri
 6. **Tool results** — truncated if needed, lowest priority
 
 This priority ordering applies directly to RAG. When your retrieval returns 20 relevant chunks but only 5 fit in the context window, you need to decide which chunks to include. The same principle applies: closer to the user's immediate question means higher priority.
+
+You already built the single-source version of this in Section 6 — `selectChunksWithinBudget` greedily packs relevance-sorted chunks into a token budget; `assembleContext` is its multi-source generalization, packing items ordered by priority instead of similarity score.
 
 ```typescript
 interface ContextSource {
@@ -719,8 +717,6 @@ This is lazy retrieval: deferring the cost of loading until the benefit is clear
 The pattern is straightforward: instructions contain pointers (file paths or references), not content. When the user's request touches a relevant area, the system resolves the pointer and injects the content. This avoids consuming context window space with information that may never be needed.
 
 Eager retrieval — loading everything up front — wastes context. In a RAG pipeline, this translates to a practical design principle: do not retrieve all potentially relevant chunks at query time. Instead, retrieve a focused set, generate, and if the answer is insufficient, retrieve additional context in a follow-up step. This is analogous to the "iterative retrieval" pattern where the system retrieves, generates, evaluates, and retrieves again if needed.
-
-> **Advanced Note:** Treat references as pointers, not as content to preload. Retrieve late, not early. This applies both to file-based configuration injection and to vector-based RAG pipeline design.
 
 ---
 
@@ -818,74 +814,31 @@ D) When you need the highest possible accuracy
 
 RAG is preferred when: (1) the document collection exceeds the context window, (2) you have many queries (amortize embedding cost), or (3) data changes frequently (re-embed changed chunks vs. re-send everything). For small, static documents with few queries, full context is usually simpler and more accurate.
 
-### Question 6 (Medium)
-
-In a context priority ordering strategy, why do system instructions and recent conversation typically rank higher than retrieved chunks?
-
-a) System instructions and conversation are cheaper to process
-b) They define the task constraints and immediate context — retrieved chunks are supplementary, and dropping them degrades quality less than losing the user's recent messages or behavioral instructions
-c) Retrieved chunks are always less accurate
-d) The model cannot process more than two context types at once
-
-**Answer: B**
-
-**Explanation:** System instructions define how the model should behave, and recent conversation captures the user's immediate intent. If you drop system instructions, the model may ignore constraints. If you drop recent conversation, the model loses track of what the user just said. Retrieved chunks supplement the answer with evidence but are lower priority because the model can still produce a useful response without them — it just may lack supporting detail. This priority ordering ensures the most critical context survives when the window is tight.
-
----
-
-### Question 7 (Hard)
-
-You have a RAG system where project instructions reference five external files (coding standards, API spec, etc.), but loading all of them consumes 40% of the context window. How does lazy-loading referenced files improve this?
-
-a) It compresses the files to use fewer tokens
-b) It loads referenced files only when the current task is relevant to their content, avoiding context waste on information that may never be needed
-c) It caches all files in memory so they load faster
-d) It splits each file into chunks and embeds them
-
-**Answer: B**
-
-**Explanation:** Lazy-loading treats file references as pointers, not preloaded content. If the user asks about database queries, there is no reason to load the coding standards file. Only when the task touches a referenced area does the system resolve the pointer and inject the content. This keeps context available for retrieval results and conversation history instead of consuming it with potentially irrelevant configuration files.
-
 ---
 
 ## Exercises
 
 ### Exercise 1: Complete RAG Pipeline over Markdown Files with Citations
 
-Build a RAG pipeline that indexes a directory of markdown files and answers questions with citations.
+Extend your Section 8 `RAGPipeline` into a citation-verified, cost-tracked RAG system. You already built directory ingestion, markdown chunking, batch embedding, and top-K retrieval — import and reuse them. This exercise adds only the genuinely new work: overlap-aware chunking, verified citations, and cost math.
+
+**What to build:** Create `src/rag/exercises/markdown-rag.ts`
 
 **Requirements:**
 
-1. Recursively ingest all `.md` files from a directory
-2. Implement recursive markdown chunking (split by heading, then paragraph)
-3. Use 15% chunk overlap
-4. Embed with `embedMany` using OpenAI `text-embedding-3-small`
-5. Store the index in memory (optionally persist to a JSON file)
-6. Implement retrieval with top-K similarity search (default K=5)
-7. Generate answers with source citations using `[Source N]` notation
-8. After each answer, verify that citations reference actual source text
-9. Track and report token usage and estimated cost for each query
+1. **Reuse, do not rebuild.** Import your Section 8 `RAGPipeline` (from `src/rag/pipeline.ts`) and extend it — subclass it, wrap it, or add options to it. Directory ingestion, heading/paragraph chunking, batched `embedMany` embedding, the in-memory index, and top-K retrieval (default K=5) all come from the pipeline as-is. Extending real code often means loosening it slightly — e.g., making its index `protected` instead of `private`, or adding a constructor option.
+2. **New — 15% chunk overlap.** Add an overlap option to ingestion. Note that `recursiveMarkdownChunk` has no overlap parameter — overlap comes from a second pass when sections are split further: run your Section 4 `chunkWithOverlap` over each heading section's text, so oversized sections become overlapping word windows while short sections collapse to a single window.
+3. **New — verified citations.** Generate answers as structured output using Section 7's `CitedAnswerSchema`, then check every quote with Section 7's `verifyCitations` and mark each citation `verified: true/false`.
+4. **New — cost math.** Track embedding, input, and output tokens per query and compute an `estimatedCostUSD` from per-token prices.
+5. (Optional) Persist the index to a JSON file so re-runs skip re-embedding.
 
 **Starter code:**
 
 ```typescript
-import { embed, embedMany, generateText, cosineSimilarity } from 'ai'
-import { openai } from '@ai-sdk/openai'
-import { mistral } from '@ai-sdk/mistral'
-import { readdir, readFile } from 'node:fs/promises'
-import { join, extname } from 'node:path'
-
-interface Chunk {
-  id: string
-  text: string
-  filePath: string
-  heading: string
-  index: number
-}
-
-interface IndexedChunk extends Chunk {
-  embedding: number[]
-}
+import { generateText, Output } from 'ai'
+import { RAGPipeline } from '../pipeline.js'
+import { chunkWithOverlap } from '../chunking.js'
+import { CitedAnswerSchema, verifyCitations } from '../citations.js'
 
 interface RAGAnswer {
   answer: string
@@ -905,31 +858,24 @@ interface RAGAnswer {
   }
 }
 
-class MarkdownRAG {
-  private index: IndexedChunk[] = []
+// Rough per-token prices (USD) — swap in your provider's published rates
+const PRICE = { embed: 0.02 / 1_000_000, input: 0.2 / 1_000_000, output: 0.6 / 1_000_000 }
 
-  async ingest(dirPath: string): Promise<void> {
-    // TODO: Read all .md files
-    // TODO: Chunk with recursive markdown chunking + overlap
-    // TODO: Embed all chunks
-    // TODO: Store in this.index
-  }
-
-  async query(question: string): Promise<RAGAnswer> {
-    // TODO: Embed question
-    // TODO: Retrieve top-K chunks
-    // TODO: Generate answer with citations
-    // TODO: Verify citations
-    // TODO: Calculate cost
-    throw new Error('Not implemented')
-  }
+class MarkdownRAG extends RAGPipeline {
+  // TODO: extend ingestion with the 15% overlap pass — re-window each heading
+  //       section with chunkWithOverlap(sectionText, chunkSize, 0.15)
+  // TODO: add queryWithCitations(question): Promise<RAGAnswer>
+  //       - retrieve top-K the same way RAGPipeline.query does
+  //       - generate with Output.object({ schema: CitedAnswerSchema })
+  //       - run verifyCitations against the retrieved source texts
+  //       - assemble citations, retrievalScores, and cost from token usage
 }
 
 // Usage
 const rag = new MarkdownRAG()
-await rag.ingest('./docs')
+await rag.ingestDirectory('./docs')
 
-const answer = await rag.query('How do I get started with the project?')
+const answer = await rag.queryWithCitations('How do I get started with the project?')
 console.log(answer.answer)
 console.log('\nCitations:')
 for (const c of answer.citations) {
@@ -992,7 +938,7 @@ Build a configuration loader that walks up a directory tree, collecting and merg
 
 **Requirements:**
 
-1. Create `src/exercises/m09/ex03-hierarchical-retrieval.ts`
+1. Create `src/rag/exercises/hierarchical-retrieval.ts`
 2. Implement a `collectInstructions(filePath, rootDir)` function that:
    - Starts at the directory containing `filePath`
    - Walks up to `rootDir`, checking each directory for an `INSTRUCTIONS.md` file
@@ -1031,7 +977,7 @@ function mergeInstructions(instructions: InstructionFile[], maxTokens: number): 
 **Test specification:**
 
 ```typescript
-// tests/exercises/m09/ex03-hierarchical-retrieval.test.ts
+// tests/rag/exercises/hierarchical-retrieval.test.ts
 import { describe, it, expect } from 'bun:test'
 
 describe('Exercise 9.3: Hierarchical Config Retrieval', () => {

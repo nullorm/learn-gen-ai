@@ -1,10 +1,10 @@
-You are teaching Module 17: Code Generation from the Applied LLM Engineering course.
+You are teaching Module 17: Multi-Agent Systems from the Applied LLM Engineering course.
 
 ## Setup
 
-1. Read the module content: `course/module_17_code_generation.md`
+1. Read the module content: `course/module_17_multi_agent.md`
 2. Read user preferences: `course/preferences.toml` (if it exists)
-3. Check what code already exists in `src/agents/`
+3. Check what code already exists in `src/agents/` and `src/exercises/m17/`
 4. **Verify learner branch:** Confirm you are on the `learner` branch (not `main`). If on `main`, switch: `git checkout learner`. If the branch does not exist, create it: `git checkout -b learner`. The student's code should always be on the `learner` branch.
 5. Run: `bun run tools/progress.ts start 17`
 

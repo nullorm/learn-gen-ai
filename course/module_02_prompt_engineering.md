@@ -30,7 +30,7 @@ This module also introduces the critical engineering discipline of prompt manage
 - **Module 3 (Structured Output)** combines prompt engineering with Zod schemas — your prompts will guide the model toward structured responses.
 - **Module 5 (Long Context & Caching)** depends on well-structured prompts that work efficiently with prompt caching.
 - **Module 7 (Tool Use)** requires precise system prompts that instruct the model when and how to call tools.
-- **Module 19 (Evals & Testing)** formalizes the A/B testing and evaluation patterns introduced informally here.
+- **Module 22 (Evals & Testing)** formalizes the A/B testing and evaluation patterns introduced informally here.
 
 ---
 
@@ -68,7 +68,7 @@ The model has no idea what kind of review you want, what to focus on, or how to 
 // Strong: clear role, task, constraints, format
 const strong = await generateText({
   model: mistral('mistral-small-latest'),
-  system: `You are a senior TypeScript code reviewer.
+  instructions: `You are a senior TypeScript code reviewer.
 Focus on: type safety, error handling, and performance.
 Ignore: styling and formatting (handled by Prettier).
 For each issue found, provide:
@@ -104,10 +104,10 @@ The right level depends on how predictable you need the output to be. Classifica
 
 ### Demonstrating the Four Components
 
-Build a file `src/examples/prompt-anatomy.ts` that calls `generateText` with all four components clearly labeled. Your function signature:
+Build a file `src/prompts/anatomy.ts` that calls `generateText` with all four components clearly labeled. Your function signature:
 
 ```typescript
-// src/examples/prompt-anatomy.ts
+// src/prompts/anatomy.ts
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -141,10 +141,10 @@ Every production LLM application should have a carefully crafted system prompt. 
 
 The persona tells the model who it is. This shapes vocabulary, confidence level, depth of explanation, and communication style.
 
-Build a file `src/examples/system-prompt-persona.ts` that compares how two different personas answer the same question. Your function signature:
+Create `src/prompts/system-prompts.ts` and start with a function that compares how two different personas answer the same question. Your function signature:
 
 ```typescript
-// src/examples/system-prompt-persona.ts
+// src/prompts/system-prompts.ts
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -167,10 +167,10 @@ Notice how the same question produces radically different responses. What change
 
 Rules tell the model what it must and must not do. Be explicit — models follow instructions they are given, but they cannot infer unstated requirements.
 
-Build a file `src/examples/system-prompt-rules.ts` that demonstrates a rule-heavy system prompt. Your function signature:
+Add a `rulesDemo` function to `src/prompts/system-prompts.ts` that demonstrates a rule-heavy system prompt. Your function signature:
 
 ```typescript
-// src/examples/system-prompt-rules.ts
+// src/prompts/system-prompts.ts (continued)
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -193,10 +193,10 @@ What happens if you remove the "do not guess" rule? Does the model start making 
 
 Telling the model exactly how to format its output eliminates parsing guesswork and makes responses predictable.
 
-Build a file `src/examples/system-prompt-format.ts` that forces a structured output format via the system prompt. Your function signature:
+Add a `formatDemo` function to `src/prompts/system-prompts.ts` that forces a structured output format via the system prompt. Your function signature:
 
 ```typescript
-// src/examples/system-prompt-format.ts
+// src/prompts/system-prompts.ts (continued)
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -235,7 +235,7 @@ The terminology comes from machine learning:
 ### Basic Few-Shot Pattern
 
 ```typescript
-// src/examples/few-shot-basic.ts
+// src/prompts/few-shot.ts
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -247,7 +247,7 @@ async function sentimentClassifier(): Promise<void> {
 sentimentClassifier().catch(console.error)
 ```
 
-Build this function using `generateText`. Use a `system` message that instructs the model to classify sentiment as positive, negative, or neutral (responding with one word only). Then provide at least 3 few-shot examples as user/assistant message pairs in the `messages` array — one for each category. End with the actual user input to classify. Log the classification result.
+Create `src/prompts/few-shot.ts` and build this function using `generateText`. Use the `instructions` field to tell the model to classify sentiment as positive, negative, or neutral (responding with one word only). Then provide at least 3 few-shot examples as user/assistant message pairs in the `messages` array — one for each category. End with the actual user input to classify. Log the classification result.
 
 How does placing examples in the `messages` array differ from putting them in the `system` prompt? Which approach makes it clearer to the model what format you expect?
 
@@ -277,7 +277,7 @@ const goodExamples = [
 ]
 ```
 
-Now build a reusable helper that converts these example arrays into the message format `generateText` expects. Create `src/examples/few-shot-selection.ts` with this function signature:
+Now build a reusable helper that converts these example arrays into the message format `generateText` expects. Add it to `src/prompts/few-shot.ts` with this function signature:
 
 ```typescript
 function buildFewShotMessages(
@@ -294,16 +294,16 @@ Here is what to build:
 - Append the actual user input as the final `user` message.
 - Return the complete messages array.
 
-Then write a `main` function that calls `buildFewShotMessages` with the `goodExamples` above and a system prompt like `'Classify the sentiment as: positive, negative, neutral, or mixed. Respond with one word.'` Pass the result to `generateText`.
+Then write a `main` function that calls `buildFewShotMessages` with the `goodExamples` above and a system prompt like `'Classify the sentiment as: positive, negative, neutral, or mixed. Respond with one word.'` Pass the result to `generateText` — and because the array's first element is a `role: 'system'` message, set `allowSystemInMessages: true` (v7 rejects in-array system messages by default).
 
 Try it with `'The design is beautiful but it keeps crashing.'` — what classification do you get? What happens if you use `badExamples` instead?
 
 ### Few-Shot for Formatting
 
-Few-shot is especially powerful for teaching the model a specific output format. Build a file `src/examples/few-shot-formatting.ts` with an entity extractor that learns a format from examples.
+Few-shot is especially powerful for teaching the model a specific output format. Add an entity extractor to `src/prompts/few-shot.ts` that learns a format from examples.
 
 ```typescript
-// src/examples/few-shot-formatting.ts
+// src/prompts/few-shot.ts (continued)
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -342,10 +342,10 @@ The insight is that LLMs generate text left-to-right. If you force the model to 
 
 ### Zero-Shot CoT: The Magic Phrase
 
-The simplest form of CoT is adding "Let's think step by step" to your prompt. Build a file `src/examples/cot-zero-shot.ts` that compares direct answering vs CoT on a trick question.
+The simplest form of CoT is adding "Let's think step by step" to your prompt. Create `src/prompts/chain-of-thought.ts` and start with a function that compares direct answering vs CoT on a trick question.
 
 ```typescript
-// src/examples/cot-zero-shot.ts
+// src/prompts/chain-of-thought.ts
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -367,10 +367,10 @@ Run it and compare. Does the CoT version catch the trick? Try other trick questi
 
 ### Structured CoT with System Prompts
 
-For production use, structure the reasoning process explicitly. Build a file `src/examples/cot-structured.ts` that enforces a GIVEN/REASONING/ANSWER format.
+For production use, structure the reasoning process explicitly. Add a `structuredCoT` function to `src/prompts/chain-of-thought.ts` that enforces a GIVEN/REASONING/ANSWER format.
 
 ```typescript
-// src/examples/cot-structured.ts
+// src/prompts/chain-of-thought.ts (continued)
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -390,10 +390,10 @@ The structured format makes the reasoning parseable. You could split the respons
 
 ### Few-Shot CoT
 
-Combine few-shot examples with chain-of-thought for the best results on complex reasoning. Build a file `src/examples/cot-few-shot.ts` that provides worked examples before the real problem.
+Combine few-shot examples with chain-of-thought for the best results on complex reasoning. Add a `fewShotCoT` function to `src/prompts/chain-of-thought.ts` that provides worked examples before the real problem.
 
 ```typescript
-// src/examples/cot-few-shot.ts
+// src/prompts/chain-of-thought.ts (continued)
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -405,7 +405,7 @@ async function fewShotCoT(): Promise<void> {
 
 Here is what to build:
 
-- Use a `messages` array with a system message: `'Solve math word problems step by step. Show your reasoning clearly.'`
+- Put `'Solve math word problems step by step. Show your reasoning clearly.'` in the `instructions` field, and build the `messages` array from the example pairs
 - Provide two worked examples as user/assistant pairs. Each assistant response should show numbered steps and end with `ANSWER: [value]`. For example:
   - A percentage discount problem (calculate discount amount, subtract from price)
   - A distance/rate/time problem (calculate each leg, sum them)
@@ -473,20 +473,18 @@ Here is what each should do:
 
 **`summarizePrompt`:** Create a `styleGuide` object mapping each style to a description (technical = precise language, casual = simple language, executive = business impact focus). Build a system prompt from the style guide and max sentences. Return `{ system, messages }` where the user message asks to summarize the given text.
 
-Both functions return the same shape: `{ system: string, messages: ModelMessage[] }`. This shape is designed to spread directly into a `generateText` call. What advantage does returning this object have over returning just a string?
+Both functions return the same shape: `{ system: string, messages: ModelMessage[] }`. This shape is designed to drop straight into a `generateText` call — the `system` field maps to the v7 `instructions` parameter, as the next subsection shows. What advantage does returning this object have over returning just a string?
 
 ### Using Templates with generateText
 
-Build a file `src/examples/template-usage.ts` that imports your templates and uses them with `generateText`. The usage pattern is straightforward:
+Try your templates straight from the file you just built: add a short `main()` at the bottom of `src/prompts/templates.ts` and run it with `bun run`. The usage pattern is straightforward:
 
 ```typescript
-import { codeReviewPrompt, summarizePrompt } from '../prompts/templates.js'
-
 // Call the template to get { system, messages }
 const reviewPrompt = codeReviewPrompt({ code: '...', language: 'TypeScript', focusAreas: ['type safety'] })
 
-// Spread into generateText
-const result = await generateText({ model, system: reviewPrompt.system, messages: reviewPrompt.messages })
+// The template's `system` field maps to the v7 `instructions` parameter
+const result = await generateText({ model, instructions: reviewPrompt.system, messages: reviewPrompt.messages })
 ```
 
 Try both templates:
@@ -615,11 +613,15 @@ interface ABTestResult {
   durationMs: number
 }
 
-async function abTestPrompts(versions: PromptVersion[], testInput: string, runs?: number): Promise<ABTestResult[]> {
+export async function abTestPrompts(
+  versions: PromptVersion[],
+  testInput: string,
+  runs?: number
+): Promise<ABTestResult[]> {
   // Your implementation here
 }
 
-function printABResults(results: ABTestResult[]): void {
+export function printABResults(results: ABTestResult[]): void {
   // Your implementation here
 }
 ```
@@ -681,7 +683,7 @@ After implementing, register two versions of a `'code-review'` prompt — v1.0 (
 Prompt injection occurs when user input overwrites or subverts your system prompt. This is the most important security concern in LLM applications.
 
 ```typescript
-// src/examples/prompt-injection.ts
+// src/prompts/pitfalls.ts
 
 import { generateText } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
@@ -706,11 +708,11 @@ async function safer(userInput: string): Promise<string> {
 }
 ```
 
-Build the `safer` version using `generateText` with the `system` and `messages` parameters separated. The system prompt should define the model's role as a French translator, explicitly state rules forbidding it from following instructions in the user text, and specify a fallback response for non-translatable input. The user message should wrap `userInput` with clear delimiters (e.g., `---`) to visually separate user content from instructions.
+Build the `safer` version in `src/prompts/pitfalls.ts` using `generateText` with the `instructions` and `messages` parameters separated. The system prompt (passed via `instructions`) should define the model's role as a French translator, explicitly state rules forbidding it from following instructions in the user text, and specify a fallback response for non-translatable input. The user message should wrap `userInput` with clear delimiters (e.g., `---`) to visually separate user content from instructions.
 
 What are the key differences from the `vulnerable` version? Why does separating the system prompt from the user content make injection harder?
 
-> **Beginner Note:** No prompt defense is 100% effective against injection. Defense in depth — combining prompt design, input validation, output filtering, and application-level checks — is the right approach. We cover this comprehensively in Module 21 (Safety & Guardrails).
+> **Beginner Note:** No prompt defense is 100% effective against injection. Defense in depth — combining prompt design, input validation, output filtering, and application-level checks — is the right approach. We cover this comprehensively in Module 24 (Safety & Guardrails).
 
 ### Ambiguity
 
@@ -873,8 +875,14 @@ For maximum portability across providers:
 4. Avoid relying on provider-specific behaviors
 5. Use few-shot examples — they work universally
 
+Do not build a new classifier here — refactor the one you already have. Your Section 3 sentiment classifier hardcodes its provider; portability is a one-parameter refactor away.
+
+> **Before / After:** Before — the Section 3 classifier constructs its model internally, so switching providers means editing the function. After — `portableClassifier(model, text)` receives the model as a parameter, and the identical function runs on Mistral, Groq, Claude, or Ollama unchanged.
+
+Create `src/prompts/portable.ts`:
+
 ```typescript
-// src/examples/portable-prompt.ts
+// src/prompts/portable.ts
 
 import { generateText } from 'ai'
 import type { LanguageModel } from 'ai'
@@ -884,7 +892,7 @@ async function portableClassifier(model: LanguageModel, text: string): Promise<s
 }
 ```
 
-Build this function using `generateText` with the passed-in `model` parameter (not a hardcoded provider). Use the few-shot pattern from Section 3: a system message defining the classification task, at least 3 user/assistant example pairs (one per category), and the actual `text` as the final user message. Set `temperature: 0` for deterministic output. Normalize the result with `.trim().toLowerCase()` before returning.
+Port the Section 3 body across: reuse `buildFewShotMessages` (import it from `'./few-shot.js'`) with the same system prompt and example pairs, but call `generateText` with the passed-in `model` instead of a hardcoded one (and keep `allowSystemInMessages: true`, since the builder puts the system turn inside the array). Set `temperature: 0` for deterministic output. Normalize the result with `.trim().toLowerCase()` before returning.
 
 Why does accepting a `LanguageModel` parameter make this function portable across providers? What happens if one provider returns "Positive" (capitalized) and another returns "positive"?
 
@@ -923,14 +931,12 @@ interface PromptSource {
   priority: number // lower = higher priority (applied later, can override)
 }
 
-// Compose by sorting and joining — higher priority sources appear last
 function composeSystemPrompt(sources: PromptSource[]): string {
-  return sources
-    .sort((a, b) => b.priority - a.priority)
-    .map(s => s.content)
-    .join('\n\n')
+  /* ... */
 }
 ```
+
+The semantics: sort so that higher-priority (lower number) content lands _last_ in the merged string, then join with blank lines — you will build this yourself, plus name-based deduplication, in Exercise 6.
 
 This is different from template interpolation (Section 5). Templates fill in variables within a single prompt. Composition merges independent prompt _fragments_ from different origins into one coherent instruction set.
 
@@ -1064,44 +1070,18 @@ You have a classification prompt that works perfectly with Claude but returns in
 
 ---
 
-### Question 6 (Medium)
-
-What is the key difference between prompt composition and prompt templates?
-
-- A) Composition is for system prompts while templates are for user prompts
-- B) Templates fill variables within a single prompt; composition merges independent prompt fragments from different sources
-- C) Composition requires an LLM call while templates are pure string operations
-- D) Templates support TypeScript types while composition does not
-
-**Answer: B** — Prompt templates use variable interpolation to fill in values within a single prompt string. Prompt composition merges independent fragments from different origins (base instructions, project config, environment context, user preferences) into one coherent system prompt. Each fragment is maintained separately and assembled at runtime.
-
----
-
-### Question 7 (Hard)
-
-In a hierarchical rule file system, instruction files are found at `~/.config/app/instructions.md`, `~/project/INSTRUCTIONS.md`, and `~/project/src/INSTRUCTIONS.md`. Which file's rules take highest priority, and why?
-
-- A) The global config file, because it is loaded first and sets defaults
-- B) The project root file, because it is the most commonly edited
-- C) The subdirectory file (`src/INSTRUCTIONS.md`), because more specific (closer to working directory) rules override general ones
-- D) All three have equal priority and are concatenated without ordering
-
-**Answer: C** — Hierarchical resolution gives highest priority to the most specific file — the one closest to the current working directory. The subdirectory-level instructions can override or extend project-root rules, which in turn override global defaults. This mirrors how CSS specificity and `.gitignore` rules work.
-
----
-
 ## Exercises
 
 ### Exercise 1: Code Review Prompt
 
-**Objective:** Build a production-quality code review prompt that provides actionable, structured feedback.
+**Objective:** Extend the Section 2 code-review prompt you already wrote into a production-quality reviewer with parsing and a security variant.
 
 **Specification:**
 
 1. Create a file `src/exercises/m02/ex01-code-review-prompt.ts`
-2. Export a function `reviewCode(code: string, language: string): Promise<string>` that uses `generateText` with a carefully crafted system prompt
-3. The system prompt must define a role, specify focus areas (correctness, type safety, performance, security), and require a structured output format
-4. The output format should include: issue description, severity (critical/warning/info), the problematic code, and a fix
+2. Export a function `reviewCode(code: string, language: string): Promise<string>` that reuses your Section 2 `formatDemo` system prompt — role, focus areas (correctness, type safety, performance, security), and the labeled `ISSUE`/`SEVERITY`/`LINE`/`PROBLEM`/`FIX` output format separated by `---`
+3. New: export `parseSeverityBlocks(review: string): Array<{ severity: string; problem: string }>` that splits the review on `---` and extracts the `SEVERITY` and `PROBLEM` values from each block
+4. New: export a security-focused variant `reviewCodeForSecurity(code: string, language: string): Promise<string>` that swaps the focus areas for injection risks, auth mistakes, and unsafe input handling — same output format, so `parseSeverityBlocks` works on both
 5. Test with at least two code samples: one clean and one with obvious issues
 
 ---
@@ -1144,12 +1124,12 @@ In a hierarchical rule file system, instruction files are found at `~/.config/ap
 
 ### Exercise 4: Template Registry
 
-**Objective:** Build a named template registry on top of the `buildPrompt` and `createTemplate` functions you already built in `src/prompts/templates.ts`.
+**Objective:** Build a named template registry on top of the `buildPrompt` and `createTemplate` functions you already built in `src/prompts/builder.ts`.
 
 **Specification:**
 
 1. Create a file `src/exercises/m02/ex04-template-registry.ts`
-2. Import `buildPrompt` from `../prompts/templates.js`
+2. Import `buildPrompt` from `'../../prompts/builder.js'`
 3. Register at least three named templates (translation, summarization, code explanation) in a `Map<string, string>` — each template uses `{{variable}}` placeholders
 4. Export a `renderTemplate(name: string, variables: Record<string, string>)` function that looks up the template by name and renders it with `buildPrompt`
 5. Throw if the template name is not found
@@ -1158,12 +1138,13 @@ In a hierarchical rule file system, instruction files are found at `~/.config/ap
 
 ### Exercise 5: Prompt A/B Comparison
 
-**Objective:** Build a prompt comparison tool that runs two prompt versions against the same inputs and reports metrics.
+**Objective:** Turn Section 6's `abTestPrompts` into a decision tool — run it across multiple inputs and produce a winner with a verdict.
 
 **Specification:**
 
 1. Create a file `src/exercises/m02/ex05-prompt-ab-test.ts`
-2. Export an async function:
+2. Import `abTestPrompts` from `'../../prompts/ab-test.js'` — do not reimplement the run loop; this exercise builds _on_ Section 6, not around it
+3. Export an async function:
    ```typescript
    async function comparePrompts(
      promptA: { name: string; system: string },
@@ -1172,9 +1153,9 @@ In a hierarchical rule file system, instruction files are found at `~/.config/ap
      runs: number
    ): Promise<ComparisonReport>
    ```
-3. Define `ComparisonReport` with: average tokens, average duration, and sample responses for each version
-4. Run each prompt version against each test input for the specified number of runs
-5. Print a formatted comparison report to the console
+4. For each entry in `testInputs`, call `abTestPrompts` with both versions, then aggregate the results into per-version averages (tokens, duration) and sample responses
+5. The new logic — a winner heuristic: define `ComparisonReport` with the per-version averages plus a `winner: string` and a one-line `verdict: string`. Declare the version with fewer average tokens the winner (cost proxy); break ties with average duration. The verdict string should state the margin, e.g. `"B wins: 22% fewer tokens at similar latency"`
+6. Print a formatted comparison report to the console
 
 ---
 

@@ -5,12 +5,12 @@
 - Understand what tools are and how LLMs use them to interact with the external world
 - Define tools with Zod schemas including names, descriptions, and typed parameters
 - Execute single and multi-step tool calls with proper result handling
-- Use the Vercel AI SDK's `stopWhen` with `stepCountIs()` for automatic tool execution loops
+- Use the Vercel AI SDK's `stopWhen` with `isStepCount()` for automatic tool execution loops
 - Implement robust error handling and validation for tool inputs and outputs
 - Apply tool design patterns for granularity, naming, and composability
 - Address security considerations including input validation, sandboxing, and allowlists
 
-> *Module 7 is part of **Part II: Core Patterns** — tools are what turn a chatbot into something that acts.*
+> *Module 7 is part of **Part II: Core Patterns**, building toward the **Core Patterns** badge — tools are what turn a chatbot into something that acts.*
 
 ---
 
@@ -30,7 +30,7 @@ The Vercel AI SDK makes tool use straightforward with Zod-based tool definitions
 - **Module 3 (Structured Output)** introduced Zod schemas. Tools use the same schema system for parameter definitions.
 - **Module 4 (Conversations)** built multi-turn conversations. Tool calls add a new message type to the conversation flow.
 - **Module 6 (Streaming)** showed `streamText`. Streaming with tools involves pausing the stream during tool execution.
-- **Modules 14-15 (Agents)** build heavily on tool use. Tools are the actions that agents take.
+- **Modules 16-17 (Agents)** build heavily on tool use. Tools are the actions that agents take.
 
 ---
 
@@ -86,14 +86,14 @@ You might think: "Can I just tell the model to output structured commands and pa
 The Vercel AI SDK uses Zod schemas to define tool parameters. Each tool has a name, description, parameter schema, and an optional execute function. The key imports are:
 
 ```typescript
-import { generateText, tool, stepCountIs } from 'ai'
+import { generateText, tool, isStepCount } from 'ai'
 import { z } from 'zod'
 ```
 
 A tool definition has three parts:
 
 - **`description`**: A string that tells the model when and why to use this tool. This is critical — a bad description means the model will not call the tool correctly.
-- **`parameters`**: A Zod schema defining what arguments the tool accepts. Use `.describe()` on each field to help the model understand what to provide.
+- **`inputSchema`**: A Zod schema defining what arguments the tool accepts. Use `.describe()` on each field to help the model understand what to provide.
 - **`execute`**: An async function that runs when the model calls this tool. This is optional — you can handle execution manually instead.
 
 Here is the minimal shape:
@@ -101,7 +101,7 @@ Here is the minimal shape:
 ```typescript
 const myTool = tool({
   description: 'Get the current weather for a location',
-  parameters: z.object({
+  inputSchema: z.object({
     location: z.string().describe('City name or coordinates'),
   }),
   execute: async ({ location }) => {
@@ -110,27 +110,22 @@ const myTool = tool({
 })
 ```
 
-To use tools with `generateText`, pass them in the `tools` object and set `stopWhen: stepCountIs(N)` to allow the model to call tools and then respond:
+To use tools with `generateText`, pass them in the `tools` object and set `stopWhen: isStepCount(N)` to allow the model to call tools and then respond:
 
 ```typescript
 const { text } = await generateText({
   model: yourModel,
   prompt: 'What is the weather like in Tokyo?',
   tools: { getWeather: myTool },
-  stopWhen: stepCountIs(2),
+  stopWhen: isStepCount(2),
 })
 ```
 
-Build a weather tool that accepts a `location` (string) and optional `units` parameter (enum of `'celsius'` or `'fahrenheit'`, defaulting to `'celsius'`). The execute function should return a simulated weather object with `location`, `temperature`, `units`, `condition`, `humidity`, and `windSpeed`. Then wire it up with `generateText` and `stopWhen: stepCountIs(2)`.
+Build a weather tool that accepts a `location` (string) and optional `units` parameter (enum of `'celsius'` or `'fahrenheit'`, defaulting to `'celsius'`). The execute function should return a simulated weather object with `location`, `temperature`, `units`, `condition`, `humidity`, and `windSpeed`. Then wire it up with `generateText` and `stopWhen: isStepCount(2)`.
 
 ### The Anatomy of a Tool Definition
 
 A more complete tool definition uses rich Zod schemas with optional fields, enums, numeric ranges, and descriptions on every parameter. Think about what a product search tool would need: a query string, an optional category enum, optional min/max price numbers, and a result limit with `z.int().min(1).max(50)`.
-
-What makes a good `description`? It should tell the model _when_ to use the tool, _what_ it does, and ideally _what it does not do_. Compare these:
-
-- Bad: `'Search for stuff'`
-- Good: `'Search the product catalog by keyword, category, or price range. Returns up to 20 matching products. Does NOT check inventory.'`
 
 ### Multiple Tools
 
@@ -138,13 +133,13 @@ You can define multiple tools in a single `tools` object and let the model choos
 
 1. **`calculator`**: Accepts a math `expression` string. The execute function should validate that the expression contains only safe math characters (`/^[\d\s+\-*/().]+$/`), then evaluate it. What should happen if the expression contains non-math characters? Return a structured error, not a thrown exception.
 
-   > **WARNING:** `Function()` is `eval()` in disguise. In production, use a math parser library like `mathjs`.
+   > **Gotcha:** `Function()` is `eval()` in disguise. In production, use a math parser library like `mathjs`.
 
 2. **`unitConverter`**: Accepts a `value` (number), `fromUnit` (string), and `toUnit` (string). Use a conversion lookup table. What should the tool return when a conversion is not found?
 
 3. **`dateCalculator`**: Accepts an `operation` enum (`'daysBetween'` or `'addDays'`), a `date1` string, and a `date2OrDays` string. For `daysBetween`, calculate the difference in days between two dates. For `addDays`, add N days to a date and return the result.
 
-Pass all three tools to `generateText` with `stopWhen: stepCountIs(5)` and a prompt that requires multiple tool calls.
+Pass all three tools to `generateText` with `stopWhen: isStepCount(5)` and a prompt that requires multiple tool calls.
 
 > **Advanced Note:** The descriptions you write for tools are essentially prompts. The model reads them to decide when and how to use each tool. Invest time in writing clear, specific descriptions with examples of when the tool should and should not be used. This is one of the highest-leverage improvements you can make.
 
@@ -158,7 +153,7 @@ The simplest tool use pattern: the model calls one tool, gets the result, and re
 
 Build a dictionary lookup tool. It should accept a `word` parameter (string) and look up the definition from a hardcoded `Record<string, string>` map. Include at least three words. When the word is found, return `{ word, definition, found: true }`. When it is not found, return `{ word, definition: null, found: false }`.
 
-Wire it up with `generateText` and `stopWhen: stepCountIs(2)`. The result object contains `text`, `toolCalls`, and `toolResults` — log all three to see the full lifecycle.
+Wire it up with `generateText` and `stopWhen: isStepCount(2)`. The result object contains `text`, `toolCalls`, and `toolResults` — log all three to see the full lifecycle.
 
 ### Inspecting Tool Call Details
 
@@ -167,8 +162,8 @@ Build a stock price lookup tool that accepts a `symbol` parameter. Use a hardcod
 Iterate over `result.steps` and for each step log:
 
 - `step.finishReason` — was it `'tool-calls'` or `'stop'`?
-- `step.toolCalls` — what tool was called and with what args? Each call has `toolName`, `toolCallId`, and `args`.
-- `step.toolResults` — what did the tool return? Each has a `result` property.
+- `step.toolCalls` — what tool was called and with what arguments? Each call has `toolName`, `toolCallId`, and `input`.
+- `step.toolResults` — what did the tool return? Each has an `output` property.
 - `step.text` — any text the model generated in this step.
 
 This step inspection pattern is how you debug tool use in practice. What do you expect the `finishReason` to be for the first step (when the model calls a tool) versus the last step (when it generates text)?
@@ -179,12 +174,12 @@ This step inspection pattern is how you debug tool use in practice. What do you 
 
 ### Manual Tool Execution (Without execute Function)
 
-Sometimes you want to handle tool execution yourself instead of providing an `execute` function. Define a tool with only `description` and `parameters` — no `execute`.
+Sometimes you want to handle tool execution yourself instead of providing an `execute` function. Define a tool with only `description` and `inputSchema` — no `execute`.
 
 When you call `generateText` without an `execute` function and without `stopWhen`, the model returns `finishReason: 'tool-calls'` and you must handle the loop manually. The workflow is:
 
 1. Call `generateText` — check `step1.finishReason === 'tool-calls'`
-2. Read `step1.toolCalls[0]` to get `toolName`, `toolCallId`, and `args`
+2. Read `step1.toolCalls[0]` to get `toolName`, `toolCallId`, and `input`
 3. Execute the tool yourself (e.g., read a file, call an API)
 4. Call `generateText` again, passing the conversation history as `messages` — the original user message, the assistant's tool call (as a `'tool-call'` content block), and the tool result (as a `'tool-result'` content block)
 
@@ -194,14 +189,10 @@ The message format for sending tool results back uses these content block types:
 
 ```typescript
 // Assistant message content: array of tool-call blocks
-{
-  type: ('tool-call' as const, toolCallId, toolName, args)
-}
+{ type: 'tool-call' as const, toolCallId, toolName, input }
 
 // Tool message content: array of tool-result blocks
-{
-  type: ('tool-result' as const, toolCallId, result)
-}
+{ type: 'tool-result' as const, toolCallId, toolName, output: { type: 'json', value: result } }
 ```
 
 ### Async Tool Execution
@@ -210,9 +201,9 @@ Tools often involve async operations — API calls, database queries, file opera
 
 Build a geocoding tool that converts place names to latitude/longitude coordinates. Use a simulated lookup (a `Record<string, { lat: number; lon: number }>` map). Add a small `setTimeout` delay to simulate network latency. What should the tool return when a place name is not found?
 
-Use `stopWhen: stepCountIs(5)` and ask the model about coordinates for multiple cities to see how it handles multiple tool calls.
+Use `stopWhen: isStepCount(5)` and ask the model about coordinates for multiple cities to see how it handles multiple tool calls.
 
-> **Beginner Note:** Tool execution happens on your server, not in the model. The model only generates the request (function name + arguments). Your `execute` function runs the actual logic. This means you can do anything a normal function can do: call APIs, query databases, read files, run computations.
+> **Beginner Note:** Your `execute` function can do anything a normal function can do: call APIs, query databases, read files, run computations.
 
 ---
 
@@ -230,7 +221,7 @@ Build an employee directory system with three tools:
 
 Use a dataset of at least 5 employees with a management hierarchy (some employees report to others).
 
-Then ask the model: "Who reports to Alice? What is the total salary budget for her direct reports?" This question requires multiple tool calls in sequence — the model must search for Alice, get her direct reports, then look up each report's salary. Use `stopWhen: stepCountIs(10)`.
+Then ask the model: "Who reports to Alice? What is the total salary budget for her direct reports?" This question requires multiple tool calls in sequence — the model must search for Alice, get her direct reports, then look up each report's salary. Use `stopWhen: isStepCount(10)`.
 
 After getting the result, iterate over `result.steps` to trace what the model did at each step. How many steps did it take? Did the model chain calls in the order you expected?
 
@@ -244,50 +235,44 @@ After execution, check the steps: if `step.toolCalls.length > 1` in any step, th
 
 ## Section 6: stopWhen and Automatic Loops
 
-### How stopWhen with stepCountIs Works
+### How stopWhen with isStepCount Works
 
-The `stopWhen` parameter with `stepCountIs(N)` controls the maximum number of LLM call iterations. Each "step" is one call to the model. Without `stopWhen`, the model makes a single call and if it wants to use a tool, it stops with `finishReason: 'tool-calls'` and you must handle the loop yourself.
+The `stopWhen` parameter with `isStepCount(N)` controls the maximum number of LLM call iterations. Each "step" is one call to the model. Without `stopWhen`, the model makes a single call and if it wants to use a tool, it stops with `finishReason: 'tool-calls'` and you must handle the loop yourself.
 
-With `stopWhen: stepCountIs(N)`, the SDK automatically:
+With `stopWhen: isStepCount(N)`, the SDK automatically:
 
 1. Calls the model
 2. If the model makes tool calls, executes the tools
 3. Sends the results back to the model
 4. Repeats until the model produces a text response or the step count is reached
 
-Build a calculator tool and try calling `generateText` twice with the same prompt ("What is 15 \* 23?"): once **without** `stopWhen`, and once **with** `stopWhen: stepCountIs(3)`. Compare the `finishReason` of each result. Without `stopWhen`, what is the `finishReason`? With `stopWhen`, what changes?
+Build a calculator tool and try calling `generateText` twice with the same prompt ("What is 15 \* 23?"): once **without** `stopWhen`, and once **with** `stopWhen: isStepCount(3)`. Compare the `finishReason` of each result. Without `stopWhen`, what is the `finishReason`? With `stopWhen`, what changes?
 
 ### Choosing Step Count
 
-Guidelines for `stepCountIs()`:
+Guidelines for `isStepCount()`:
 
 | Value               | Use Case                                                  | Example                                 |
 | ------------------- | --------------------------------------------------------- | --------------------------------------- |
-| `stepCountIs(1)`    | No tool use (tools shown but model cannot act on results) | Preview which tool the model would pick |
-| `stepCountIs(2)`    | Single tool call + response (most common)                 | Dictionary lookup, weather check        |
-| `stepCountIs(3-5)`  | Multi-step reasoning                                      | Search, read, then analyze              |
-| `stepCountIs(5-10)` | Complex workflows                                         | Iterative refinement                    |
-| `stepCountIs(10+)`  | Agent-like behavior (careful: cost and latency add up)    | Open-ended research                     |
+| `isStepCount(1)`    | No tool use (tools shown but model cannot act on results) | Preview which tool the model would pick |
+| `isStepCount(2)`    | Single tool call + response (most common)                 | Dictionary lookup, weather check        |
+| `isStepCount(3-5)`  | Multi-step reasoning                                      | Search, read, then analyze              |
+| `isStepCount(5-10)` | Complex workflows                                         | Iterative refinement                    |
+| `isStepCount(10+)`  | Agent-like behavior (careful: cost and latency add up)    | Open-ended research                     |
 
 Each step is a full model call, so cost and latency scale linearly with steps. Each step includes the full conversation history.
 
-> **Gotcha:** A high `stepCountIs(N)` is a budget *ceiling*, not a target — and a cost trap. Because each step replays the whole conversation, `stepCountIs(20)` on a chatty agent can mean 20 calls each larger than the last. Set it as low as the task allows, and log the actual step count in production so one runaway request doesn't quietly 20× your bill.
+> **Gotcha:** A high `isStepCount(N)` is a budget *ceiling*, not a target — and a cost trap. Because each step replays the entire conversation history (including every previous tool call and result), token usage grows quadratically with steps: a 10-step loop where each tool returns 500 tokens sends ~5000 tokens of tool results alone in the last step, on top of the original prompt and all intermediate model outputs. Set the ceiling as low as the task allows, and log the actual step count in production so one runaway request doesn't quietly 20× your bill.
 
 ### Monitoring Step Execution
 
-Build a calculator tool with `stopWhen: stepCountIs(5)` and prompt it with a two-part math question (e.g., "What is the square root of 144, and then multiply that by 3?"). The model may call the tool multiple times.
+You already built the step-inspection loop in Section 3 — iterating `result.steps` and reading each step's `finishReason`, `toolCalls`, `toolResults`, and `text`. Reuse that loop here; the one new element is **per-step token usage**: every step also carries a `step.usage` object with `inputTokens` and `outputTokens`.
 
-After execution, iterate over `result.steps` and for each step log:
+Point your Section 3 inspection loop at a calculator tool with `stopWhen: isStepCount(5)` and a two-part math question (e.g., "What is the square root of 144, and then multiply that by 3?"), and add `step.usage` to what you record for each step.
 
-- The step number and `finishReason`
-- Any `toolCalls` with their tool name and args
-- Any `toolResults` with their result
-- Any `text` generated
-- Token usage from `step.usage` (`inputTokens` and `outputTokens`)
+Watch `inputTokens` climb from step 1 to the final step — each step replays the whole conversation so far. That growth curve is the cost mechanism the cost-trap Gotcha above warns about.
 
-How does the token count change between step 1 and the final step? This demonstrates why each step includes cumulative context.
-
-> **Advanced Note:** Be careful with high step count values. Each step sends the entire conversation history (including all previous tool calls and results) to the model, so token usage grows quadratically. A 10-step tool loop where each tool returns 500 tokens means the last step sends ~5000 tokens of tool results alone, on top of the original prompt and all intermediate model outputs.
+> **Gotcha (v7):** `step.usage` is per-step, but the top-level `result.usage` now **sums usage across every step** in AI SDK v7 (it reported only the final step before). Use `result.finalStep.usage` when you want just the last step. So adding up each `step.usage` and reading `result.usage` should now give the same total.
 
 ---
 
@@ -320,8 +305,6 @@ return { success: false, error: 'what went wrong' }
 ```
 
 Which pattern should you use by default, and why? Think about what happens to the conversation when a tool throws versus when it returns an error object.
-
-> **Beginner Note:** Always prefer returning errors as data (Pattern 1) over throwing exceptions (Pattern 2). When you return an error as data, the model reads it and can try a different approach, rephrase, or explain the failure to the user. When you throw an exception, the entire tool loop stops and the user gets a generic error message.
 
 ### Validation Before Execution
 
@@ -411,7 +394,7 @@ import { resolve, normalize } from 'node:path'
 // Path traversal protection
 const safeFileRead = tool({
   description: 'Read a file from the project directory',
-  parameters: z.object({
+  inputSchema: z.object({
     path: z.string().describe('Relative path within the project directory'),
   }),
   execute: async ({ path: inputPath }) => {
@@ -435,7 +418,7 @@ const allowedCommands = ['git status', 'git log --oneline -10', 'npm test', 'npm
 
 const safeShellTool = tool({
   description: 'Run a whitelisted shell command',
-  parameters: z.object({
+  inputSchema: z.object({
     command: z.enum(allowedCommands).describe('The command to execute (must be from the allowed list)'),
   }),
   execute: async ({ command }) => {
@@ -500,7 +483,7 @@ Build `auditedTool` as a wrapper that intercepts the tool's `execute` function. 
 
 What information should you avoid logging (think about PII and credentials in tool arguments)? How would you make the logging configurable?
 
-> **Beginner Note:** Security in tool use is about defense in depth. The model might generate unexpected or malicious arguments — not because it is adversarial, but because it is probabilistic and can make mistakes. Validate everything, limit everything, and log everything.
+> **Beginner Note:** The model might generate unexpected or malicious arguments — not because it is adversarial, but because it is probabilistic and can make mistakes. Defend accordingly.
 
 > **Advanced Note:** For high-security applications, consider running tool execution in a separate process or container with restricted permissions. Tools that interact with databases should use read-only connections unless writes are explicitly required. Tools that access the filesystem should use chroot or similar isolation.
 
@@ -518,7 +501,7 @@ What information should you avoid logging (think about PII and credentials in to
 >
 > This means your agents can gain new capabilities without code changes — just connect to a new MCP server.
 
-> **Local Alternative (Ollama):** Tool calling works with `ollama('qwen3.5')` — Qwen 3.5 has native function calling support. If tool calling fails with your local model, try the cloud variant (`ollama('qwen3.5:cloud')`) for better reliability. The multi-step tool loop and `stopWhen: stepCountIs()` work identically.
+> **Local Alternative (Ollama):** Tool calling works with `ollama('qwen3.5', { think: false })` — Qwen 3.5 has native function calling support. If tool calling fails with your local model, try the cloud variant (`ollama('qwen3.5:cloud', { think: false })`) for better reliability. The multi-step tool loop and `stopWhen: isStepCount()` work identically.
 
 ---
 
@@ -601,7 +584,7 @@ function truncateResult(result: string, maxTokens: number): string {
 }
 ```
 
-Build this function. Estimate the token count (roughly `result.length / 4`), and if within budget, return the result unchanged. Otherwise, compute a character budget from `maxTokens * 4`, split it between a head portion (~70%) and a tail portion (~20%), and join them with a message indicating how many tokens were omitted. Return the concatenated head + omission notice + tail.
+Build this function. Estimate the token count (roughly `result.length / 4`), and if within budget, return the result unchanged. Otherwise, compute a character budget from `maxTokens * 4`, split it between a head portion (~70%) and a tail portion (~20%) — the remaining ~10% of the budget is slack that absorbs the omission notice — and join them with a message indicating how many tokens were omitted. Return the concatenated head + omission notice + tail.
 
 Why preserve both the head and tail instead of just truncating at the end? What kind of content typically appears at the end of a file or search result that would be worth preserving?
 
@@ -617,7 +600,7 @@ Production systems categorize tool operations into three permission levels:
 - **Deny** — dangerous operations that are always blocked (deleting files outside the project, running destructive shell commands)
 - **Ask** — operations requiring user confirmation before execution (writing files, running arbitrary commands)
 
-Permission rules are declarative and checked before tool execution (in the preToolUse hook). This is the simplest version of the pattern — Module 21 (Safety) covers guardrails in depth.
+Permission rules are declarative and checked before tool execution (in the preToolUse hook). This is the simplest version of the pattern — Module 24 (Safety) covers guardrails in depth.
 
 #### Glob-Based Permission Rules
 
@@ -649,7 +632,7 @@ import { z } from 'zod'
 
 export const myCustomTool = tool({
   description: 'Looks up a user by email address',
-  parameters: z.object({ email: z.email() }),
+  inputSchema: z.object({ email: z.email() }),
   execute: async ({ email }) => {
     // implementation
   },
@@ -682,7 +665,7 @@ In this module, you learned:
 2. **Tool definitions with Zod:** How to define tools with names, descriptions, and typed parameter schemas that guide the model toward correct usage.
 3. **The tool call lifecycle:** The model proposes a tool call, your code executes it, and the result is sent back — the model never runs code directly.
 4. **Single and multi-step tool calls:** How to handle one-shot tool use and iterative loops where the model chains multiple tool calls to accomplish complex tasks.
-5. **stopWhen and automatic loops:** The Vercel AI SDK's `stopWhen` parameter with `stepCountIs()` automates the tool execution loop, letting the model call tools repeatedly until it has a final answer.
+5. **stopWhen and automatic loops:** The Vercel AI SDK's `stopWhen` parameter with `isStepCount()` automates the tool execution loop, letting the model call tools repeatedly until it has a final answer.
 6. **Error handling:** How to catch tool execution errors, report them back to the model in a structured way, and validate inputs before execution.
 7. **Tool design patterns:** Principles for granularity, naming, composability, and deciding between fine-grained and coarse-grained tool interfaces.
 8. **Security considerations:** Input validation, sandboxing, allowlists, and running tool execution with restricted permissions to prevent misuse.
@@ -716,7 +699,7 @@ The model generates a structured request (tool name + arguments) but never execu
 
 ### Question 2 (Medium)
 
-What does `stopWhen: stepCountIs(5)` mean in a `generateText` call with tools?
+What does `stopWhen: isStepCount(5)` mean in a `generateText` call with tools?
 
 A) The model can call a maximum of 5 tools total
 B) The SDK will make up to 5 calls to the model, automatically handling tool calls and results
@@ -725,7 +708,7 @@ D) The model will generate at most 5 sentences
 
 **Answer: B**
 
-`stopWhen: stepCountIs(5)` controls the maximum number of model call iterations. The SDK will call the model, execute any requested tools, send results back, and repeat — up to 5 times. This allows multi-step tool chains where each step can involve one or more tool calls.
+`stopWhen: isStepCount(5)` controls the maximum number of model call iterations. The SDK will call the model, execute any requested tools, send results back, and repeat — up to 5 times. This allows multi-step tool chains where each step can involve one or more tool calls.
 
 ---
 
@@ -774,32 +757,6 @@ The model generates tool arguments probabilistically — it can produce unexpect
 
 ---
 
-### Question 6 (Medium)
-
-A tool result returns 5,000 lines of file content into the conversation. What production pattern prevents this from consuming the entire context window?
-
-- A) Increasing the model's context window size
-- B) Truncating the result with a head/tail split that preserves structure while indicating what was omitted
-- C) Compressing the result with gzip before adding it to messages
-- D) Splitting the result across multiple tool call responses
-
-**Answer: B** — Production systems enforce result size limits using intelligent truncation. A head/tail split (e.g., 70% head, 30% tail) preserves the most important content at the beginning and end while inserting an indicator of how many tokens were omitted. This keeps tool results within their context budget allocation without losing structural context.
-
----
-
-### Question 7 (Hard)
-
-A preToolUse hook checks permissions before tool execution. In a system with allow/deny/ask tiers and glob-based rules `["git status *" → allow, "git push --force *" → deny, "git *" → ask]`, what happens when the model calls a tool with the argument `git push --force origin main`?
-
-- A) The command is allowed because `git *` matches and ask means auto-approve
-- B) The command is denied because the `git push --force *` deny rule matches and blocks execution before it reaches the ask rule
-- C) The command requires user confirmation because `git *` is the most general match
-- D) The command fails because no rule matches exactly
-
-**Answer: B** — Glob-based permission rules are matched against the full command string. The `git push --force *` pattern matches `git push --force origin main` and its permission is `deny`, which blocks execution in the preToolUse hook without ever calling the execute function. The more specific deny rule takes precedence over the general `git *` ask rule.
-
----
-
 ## Exercises
 
 ### Exercise 1: Multi-Tool Assistant
@@ -812,30 +769,31 @@ Build an interactive assistant with three tools: calculator, web search (simulat
    - `calculator`: evaluates mathematical expressions (use `Function()` with input validation as shown in the module, or the `mathjs` package)
    - `searchWeb`: simulates web search (returns predefined results for known queries)
    - `readFile`: reads files from a specified directory (with path validation)
-2. Use `stopWhen: stepCountIs(10)` for multi-step reasoning
+2. Use `stopWhen: isStepCount(10)` for multi-step reasoning
 3. Log each tool call with timing information
 4. Handle errors gracefully (return structured error objects)
 5. Implement path validation for `readFile` (restrict to a project directory)
-6. Build a conversation loop that maintains context between turns
+6. Build a conversation loop that maintains context between turns — keep the history as a `ModelMessage[]` and route the system prompt through the `instructions` field, not a `role: 'system'` message
 
 **Starter code:**
 
 ```typescript
-import { generateText, tool, stepCountIs } from 'ai'
+import { generateText, tool, isStepCount, type ModelMessage } from 'ai'
 import { mistral } from '@ai-sdk/mistral'
 import { z } from 'zod'
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
+// Conversation history uses the SDK's ModelMessage type. Note: no 'system'
+// role in this array — in AI SDK v7 the system prompt goes in the
+// `instructions` field of generateText (a role:'system' message inside
+// `messages` throws unless you set allowSystemInMessages: true).
+const messages: ModelMessage[] = []
 
 const PROJECT_DIR = './workspace'
 
 const tools = {
   calculator: tool({
     description: 'TODO: Write a good description',
-    parameters: z.object({
+    inputSchema: z.object({
       // TODO: Define parameters
     }),
     execute: async args => {
@@ -846,7 +804,7 @@ const tools = {
 
   searchWeb: tool({
     description: 'TODO: Write a good description',
-    parameters: z.object({
+    inputSchema: z.object({
       // TODO: Define parameters
     }),
     execute: async args => {
@@ -857,7 +815,7 @@ const tools = {
 
   readFile: tool({
     description: 'TODO: Write a good description',
-    parameters: z.object({
+    inputSchema: z.object({
       // TODO: Define parameters
     }),
     execute: async args => {
@@ -869,7 +827,10 @@ const tools = {
   }),
 }
 
-// TODO: Implement conversation loop
+// TODO: Implement the conversation loop:
+//   - each turn: push the user message onto `messages`, call generateText with
+//     { model, instructions, messages, tools, stopWhen: isStepCount(10) },
+//     then push the response messages back onto `messages` to keep context
 // TODO: Log tool calls and timing
 // TODO: Handle multi-step reasoning
 ```
@@ -970,7 +931,7 @@ Build a result truncation system that keeps tool results within a token budget w
 **Requirements:**
 
 1. Implement `truncateToolResult(result: string, maxTokens: number): string` that truncates results exceeding the token budget
-2. Use a 70/30 head/tail split — preserve the first 70% and last 30% of the allowed content, with a truncation notice in between
+2. Use a 70/30 head/tail split — preserve the first 70% and last 30% of the allowed content, with a truncation notice in between (a slightly different accounting than Going Further's 70/20-plus-notice-slack: here the notice rides on top of the content budget)
 3. The truncation notice should state how many tokens were omitted
 4. Use a simple token estimation: 1 token per 4 characters
 5. If the result is within budget, return it unchanged

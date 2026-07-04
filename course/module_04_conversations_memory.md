@@ -68,9 +68,13 @@ const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }
 
 The model sees the entire conversation and understands that "instead" refers to guanciale from the previous turn.
 
+> **Gotcha (v7):** This module keeps the system prompt _inside_ the managed `messages` array, because memory strategies (windowing, summarization) operate on the whole array as one unit. AI SDK v7 rejects `role: 'system'` messages inside `messages` by default, so every `generateText` call in this module must pass `allowSystemInMessages: true`. (For a one-off system prompt that isn't part of a managed array, prefer the `instructions` field instead — that's what Modules 1 and 9 use.)
+
 ### Making a Multi-turn Call
 
 The `generateText` function accepts a `messages` array. To build a multi-turn conversation, you need a helper that takes the message array and returns the model's response:
+
+**File:** `src/memory/chat.ts` — the `chat` helper below is this section's build; the REPL loop later in the section is a scratch script, not an export.
 
 ```typescript
 import { generateText } from 'ai'
@@ -84,13 +88,13 @@ interface Message {
 async function chat(messages: Message[]): Promise<string>
 ```
 
-This function should call `generateText` with the messages array and return the `text` from the result.
+This function should call `generateText` with the messages array (passing `allowSystemInMessages: true`, since the array starts with a system message) and return the `text` from the result.
 
 To run a multi-turn conversation, start with a `Message[]` containing a system prompt and the first user message. Call `chat`, then push the assistant's response back into the array with `role: 'assistant'`. When the user sends another message, push it with `role: 'user'` and call `chat` again. Each call sends the entire accumulated array, so the model sees the full history.
 
 What happens if you forget to push the assistant's response back into the array before adding the next user message?
 
-> **Beginner Note:** The `role: 'assistant'` messages are responses from the model that you append back into the array. This is how the model "remembers" what it said. You are responsible for maintaining this array — the API does not do it for you.
+> **Beginner Note:** The `role: 'assistant'` messages are responses from the model that you append back into the array. This is how the model "remembers" what it said.
 
 ### Role Alternation Rules
 
@@ -175,6 +179,7 @@ Here are approximate context window sizes for popular models (as of early 2026):
 | Claude Opus 4    | 200K tokens    | ~150K words   |
 | GPT-4o           | 128K tokens    | ~96K words    |
 | GPT-4o mini      | 128K tokens    | ~96K words    |
+| Mistral Small 3.2 | 128K tokens   | ~96K words    |
 | Qwen 3.5         | 128K tokens    | ~96K words    |
 | Gemini 1.5 Pro   | 2M tokens      | ~1.5M words   |
 
@@ -191,6 +196,8 @@ A typical user message might be 50-200 tokens. An assistant response might be 10
 These numbers seem generous until you factor in long messages, code blocks, tool call results, or pasted documents. In practice, even large context windows fill up faster than you expect.
 
 To reason about this concretely, define a `TokenEstimate` interface with fields for `systemPrompt`, `averageUserMessage`, `averageAssistantMessage`, and `maxResponseTokens` (all numbers representing token counts).
+
+**File:** `src/memory/context.ts`
 
 ```typescript
 interface TokenEstimate {
@@ -245,6 +252,8 @@ Different use cases need different strategies. And you might want to switch stra
 ### Separating State from Strategy
 
 The key design insight: **conversation state and memory strategy are separate concerns.** The state holds all the data (history, summaries, facts). The strategy decides which parts of that data the model should see.
+
+**File:** `src/memory/manager.ts` — the two interfaces below and the `ConversationManager` class all live here.
 
 ```typescript
 import type { ModelMessage } from 'ai'
@@ -318,6 +327,8 @@ The system prompt (S) is always included. The window slides forward as new messa
 
 The windowing logic — take the last N messages, ensure we start on a user message — is a reusable building block. Extract it as a helper, then wrap it in a strategy.
 
+**File:** `src/memory/strategies/window.ts`
+
 First, build the helper function:
 
 ```typescript
@@ -384,6 +395,8 @@ Unlike the sliding window, the full history stays in `state.history` — the sum
 
 ### Implementation
 
+**File:** `src/memory/strategies/summary.ts`
+
 Like the windowing logic, the summarization checks are reusable helpers. Build two pure functions:
 
 ```typescript
@@ -417,7 +430,7 @@ if (strategy.needsSummarization(state)) {
   const text = strategy.getSummarizationText(state)
   const { text: summary } = await generateText({
     model,
-    system: 'Summarize this conversation. Preserve key facts, decisions, and context.',
+    instructions: 'Summarize this conversation. Preserve key facts, decisions, and context.',
     prompt: text,
   })
   state.summarization = { summary, until: state.history.length - keepRecent }
@@ -479,6 +492,8 @@ The most robust production systems combine multiple strategies. A common pattern
 The fact sheet is the key addition. Facts are key-value pairs (like `name: Jordan`, `company: DataFlow`) that are always injected into context. Unlike summaries, facts don't get compressed or distorted — they survive indefinitely.
 
 ### Implementation
+
+**File:** `src/memory/strategies/hybrid.ts`
 
 The hybrid strategy composes the helpers from Sections 4 and 5. No duplicated logic — `getWindowedMessages` handles the window, `needsSummarization` and `getSummarizationText` handle the summary checks. The only new code is the fact sheet injection.
 
@@ -559,6 +574,8 @@ In-memory conversations are lost when the process restarts. For production appli
 - Resume sessions after server restarts
 
 ### Saving and Loading ConversationState
+
+**File:** `src/memory/persistence.ts`
 
 Because `ConversationState` is a plain data object, persistence is straightforward — serialize it to JSON. Define the on-disk format and the save/load functions:
 
@@ -647,6 +664,8 @@ Token counting serves two purposes:
 
 ### Estimating Tokens
 
+**File:** `src/memory/tokens.ts` — every build in this section (the estimators, message counting, budget, and the token-aware conversation) lives here.
+
 Exact token counting requires the model's actual tokenizer. For estimation, a simple heuristic works well. Build two estimation functions:
 
 ```typescript
@@ -731,7 +750,7 @@ class TokenAwareConversation {
 }
 ```
 
-The constructor stores config values, defaulting the model to `mistral('mistral-small-latest')`, `maxInputTokens` to 180,000, and `maxResponseTokens` to 4,096.
+The constructor stores config values, defaulting the model to `mistral('mistral-small-latest')`, `maxInputTokens` to 180,000, and `maxResponseTokens` to 4,096. The 180K default assumes a 200K-class context window (Claude-class models) — Mistral Small's window is 128K, so pass a lower `maxInputTokens` (e.g. 100,000) if you keep the default model.
 
 **`send`** pushes the user message, calls `buildContext` to get the context-windowed messages, calls `generateText` with that context, pushes the assistant response, and returns the text. If `usage` is available in the response, log the input/output token counts.
 
@@ -759,9 +778,10 @@ if (usage) {
   console.log(`Output tokens: ${usage.outputTokens}`)
   console.log(`Total tokens: ${usage.totalTokens}`)
 
-  // Calculate cost (example pricing — check current rates)
-  const inputCostPer1M = 3.0 // $3 per 1M input tokens for Claude Sonnet
-  const outputCostPer1M = 15.0 // $15 per 1M output tokens
+  // Calculate cost with your provider's prices — the example rates below
+  // are Claude Sonnet's ($3/$15 per 1M), not Mistral's; check current rates
+  const inputCostPer1M = 3.0 // e.g. $3 per 1M input tokens (Claude Sonnet)
+  const outputCostPer1M = 15.0 // e.g. $15 per 1M output tokens (Claude Sonnet)
   const inputCost = (usage.inputTokens / 1_000_000) * inputCostPer1M
   const outputCost = (usage.outputTokens / 1_000_000) * outputCostPer1M
   const totalCost = inputCost + outputCost
@@ -774,7 +794,7 @@ if (usage) {
 
 > **Advanced Note:** For precise pre-flight token counting, you can use the `js-tiktoken` library (works for most tokenizers) or provider-specific token counting APIs. However, the character-based estimation (length/4) is accurate enough for most memory management decisions.
 
-> **Local Alternative (Ollama):** All conversation patterns in this module work with `ollama('qwen3.5')`. Multi-turn conversations, sliding windows, and summarization strategies are model-agnostic — they manage the message array before sending it to any provider. Memory management is especially important with local models, which typically have smaller context windows (8K-32K tokens vs 200K for Claude).
+> **Local Alternative (Ollama):** All conversation patterns in this module work with `ollama('qwen3.5', { think: false })`. Multi-turn conversations, sliding windows, and summarization strategies are model-agnostic — they manage the message array before sending it to any provider. Memory management is especially important with local models, which typically have smaller context windows (8K-32K tokens vs 200K for Claude).
 
 ---
 
@@ -804,7 +824,7 @@ The LLM returns structured data (using `Output.object()` from Module 3) with the
 
 Summaries compress everything — important and unimportant alike. Extraction is surgical: it identifies the high-value information and discards the rest. A summary might say "The user discussed their TypeScript project." Extraction captures: `language: TypeScript`, `framework: Next.js`, `deployment: Vercel`.
 
-Extracted facts also do not drift. A summary of a summary can distort details. A fact like `name: Jordan` stays exact indefinitely.
+Extracted facts also sidestep the summary-drift problem from Section 5's Advanced Note — a fact like `name: Jordan` stays exact indefinitely.
 
 > **Production Patterns: Persistent Memory Directories** — Some production coding agents persist extracted memories to a dedicated directory (e.g., `~/.app/memories/`) that survives across sessions, restarts, and context compaction. Each memory is a file with metadata (timestamp, source, category). At session start, relevant memories are loaded and injected into the system prompt. This is fundamentally different from session persistence — it stores **curated knowledge**, not raw conversation history.
 
@@ -816,34 +836,11 @@ Sections 1–9 cover everything you need to run a multi-turn conversation. These
 
 ### Token Budget Allocation
 
-#### The Context Window as a Budget
-
-Production systems treat the context window as a budget to be allocated, not just a limit to avoid hitting. A typical allocation:
-
-| Component            | Budget % | Purpose                     |
-| -------------------- | -------- | --------------------------- |
-| System prompt        | 5-15%    | Instructions, role, rules   |
-| Memories/facts       | 5-10%    | Persistent knowledge        |
-| Conversation summary | 10-20%   | Compressed older context    |
-| Recent messages      | 40-60%   | Active conversation window  |
-| Response tokens      | 10-20%   | Space for the model's reply |
-
-The key insight is that these allocations are configurable and should be tuned per use case. A coding assistant needs more space for tool results. A creative writing assistant needs more space for recent messages.
+Production systems treat the context window as a budget to be allocated, not just a limit to avoid hitting — roughly 5-15% for the system prompt, 5-10% for memories/facts, 10-20% for the rolling summary, 40-60% for recent messages, and 10-20% reserved for the response, tuned per use case. This is built for real in Module 5: its Exercise 4 is a budget allocator with named segments.
 
 #### Budget Monitoring
 
-Track token usage per component and trigger compaction when any component exceeds its allocation:
-
-```typescript
-// Monitor budget usage — compact when conversation exceeds its allocation
-const conversationTokens = countMessageTokens(messages)
-const budgetLimit = contextWindow * 0.6
-if (conversationTokens > budgetLimit) {
-  // Trigger compaction
-}
-```
-
-Warning thresholds at 80% and auto-compact at 90% give your application a graceful degradation path rather than a hard failure when the context fills up.
+Track token usage per component and trigger compaction when a component exceeds its allocation — warning around 80% and auto-compacting around 90% gives a graceful degradation path instead of a hard failure. Module 5 owns the runtime auto-compact story: its Section 9 covers the monitor → warn → compact loop, and its Exercise 3 builds the tracking middleware.
 
 ---
 
@@ -851,7 +848,7 @@ Warning thresholds at 80% and auto-compact at 90% give your application a gracef
 
 #### Surgical Pruning Without Full Summarization
 
-Full compaction (summarizing older messages) is a heavyweight operation — it requires an LLM call and replaces detailed history with a compressed summary. Microcompaction is a lighter-weight alternative that surgically removes low-value content without any LLM calls.
+Full compaction (summarizing older messages) is a heavyweight operation — it requires an LLM call and replaces detailed history with a compressed summary. Microcompaction is a lighter-weight alternative that surgically removes low-value content.
 
 Microcompaction targets:
 
@@ -861,11 +858,6 @@ Microcompaction targets:
 4. **Non-essential metadata** — timestamps, progress updates, and status messages
 
 #### The Microcompaction Pattern
-
-```typescript
-// Microcompaction: remove duplicate tool results, truncate verbose outputs
-// No LLM call required — pure data transformation on the message array
-```
 
 The key difference from summarization: microcompaction is deterministic and free (no LLM call). It is applied _before_ checking whether full compaction is needed, often reducing token count enough to avoid the expensive summarization step entirely.
 
@@ -972,32 +964,6 @@ The fact sheet stores critical persistent information (like the user's name, pro
 
 ---
 
-### Question 6 (Medium)
-
-What advantage does LLM-assisted memory extraction have over rolling summarization for preserving user preferences across long conversations?
-
-- A) Extraction is cheaper because it uses fewer tokens
-- B) Extraction captures structured facts (e.g., `language: TypeScript`) that stay exact across compaction cycles, while summaries can distort details over repeated compression
-- C) Extraction does not require any LLM calls
-- D) Summarization cannot handle conversations longer than 10 turns
-
-**Answer: B** — Summaries compress everything and a summary of a summary can distort details over time ("summary drift"). Extraction is surgical — it identifies high-value facts and stores them in structured form. A fact like `name: Jordan` or `framework: Next.js` stays exact indefinitely, while a summary might gradually lose or alter such details.
-
----
-
-### Question 7 (Hard)
-
-A production system uses microcompaction before checking whether full summarization is needed. Which of the following is NOT a valid microcompaction target?
-
-- A) Duplicate tool results where the same file was read multiple times
-- B) Verbose tool outputs truncated to their first N lines
-- C) The system prompt, condensed to save tokens
-- D) Assistant preamble messages like "I'll search for that" when followed by actual results
-
-**Answer: C** — Microcompaction targets low-value content in the message history: duplicate tool results, verbose outputs, and redundant assistant messages. The system prompt is never a microcompaction target — it contains the behavioral instructions the model needs and must remain intact. Microcompaction is deterministic and free (no LLM call), applied before the more expensive full summarization step.
-
----
-
 ## Exercises
 
 ### Exercise Prep: Shared Conversation Runner
@@ -1014,7 +980,7 @@ Before the exercises, build a reusable conversation runner that both exercises w
 
 The key insight: `runMaintenance` encapsulates the side-effectful part (LLM calls for summarization and fact extraction) so that strategies stay pure. Both exercises call `runMaintenance(state, strategy, model)` each turn and don't need to know the details.
 
-**Try it:** Import and use `createStrategy` and `runMaintenance` from a test script. Create a manager, add a few messages, call `runMaintenance` — verify it summarizes when the threshold is hit.
+**Check:** Import `createStrategy` and `runMaintenance` from a scratch script — create a manager, add a few messages, call `runMaintenance`, and verify it summarizes once the threshold is hit.
 
 ---
 
@@ -1036,11 +1002,11 @@ Get a basic chatbot working with one strategy at a time.
 
 1. Use `parseArgs` from `node:util` to accept a `--strategy` flag (`window`, `summary`, or `hybrid`) and a `--window-size` flag (default: 20)
 2. Use `createStrategy()` from the exercise prep to create a `ConversationManager` with the matching strategy
-3. Set up a read loop (Bun treats `console` as an async iterable — `for await (const line of console)`)
+3. Set up a read loop (Bun treats `console` as an async iterable — `for await (const line of console)`). This replaces Section 1's manual `Bun.stdin` reader with a simpler idiom
 4. Each turn: add the user message to the manager → call `buildContext()` → pass the result to `generateText` → print the response → add the assistant message to the manager
 5. Support `/quit` to exit
 
-**Try it:** Run with `--strategy window`, have a 3-turn conversation. Verify the model remembers what you said in turn 1.
+**Check:** Run with `--strategy window` and have a 3-turn conversation — the model should remember what you said in turn 1.
 
 ---
 
@@ -1055,7 +1021,7 @@ Add observability so you can see what the memory strategy is actually doing.
 3. `/stats` — print the current memory state: strategy name, message count, and (for summarizing/hybrid) whether a summary exists
 4. After each LLM response, display the token count of the context you sent — use `countMessageTokens` from `src/memory/tokens.ts`
 
-**Try it:** Chat for 5+ turns, then run `/stats` and `/history`. Check that the token count grows with each turn.
+**Check:** Chat for 5+ turns, then run `/stats` and `/history` — the token count should grow with each turn.
 
 ---
 
@@ -1083,7 +1049,7 @@ Make conversations survive restarts and let users switch strategies mid-conversa
 2. On startup, check if a save file exists and load it with `loadConversation()`, then restore via `manager.setState(saved.state)`
 3. `/strategy <name>` — switch to a different strategy mid-conversation using `manager.setStrategy()` and `createStrategy()`. Because state is separate from strategy, this is trivial — the history, summaries, and facts are all preserved automatically.
 
-**Try it:** Start with `--strategy window`, chat for a few turns, `/quit`, restart — verify the conversation continues. Then try `/strategy hybrid` mid-conversation and confirm the history carries over.
+**Check:** Start with `--strategy window`, chat for a few turns, `/quit`, restart — the conversation should continue where it left off. Then switch with `/strategy hybrid` mid-conversation and confirm the history carries over.
 
 ---
 
@@ -1132,7 +1098,7 @@ The test provides 24 hardcoded user messages with facts planted in the first 3 m
 
 > **Gotcha:** When writing the test file for this exercise, generate a realistic 20-30 message conversation yourself and hardcode it. Plant the `TestFacts` values (name, location, company, language) in the first 3 messages. Do not call the LLM to generate test messages at test time — that adds latency and nondeterminism.
 
-**Try it:** Run `bun test tests/memory/benchmark.test.ts` to validate your implementation.
+**Check:** Run `bun test tests/memory/benchmark.test.ts` to validate your implementation.
 
 ---
 
@@ -1200,7 +1166,7 @@ describe('Exercise 3: Session Memory', () => {
 
 ### Exercise 4: Auto-Compact Trigger
 
-**Objective:** Build a token budget monitor that triggers compaction at configurable thresholds, connecting token counting (Section 8) with the summarization strategy (Section 5).
+**Objective:** Build a token budget monitor that triggers compaction at configurable thresholds, connecting token counting (Section 8) with the summarization strategy (Section 5). This is a **one-shot compaction of a message array you already hold** — Module 5's Exercise 3 builds the complementary production piece: middleware that tracks _cumulative_ usage across API calls and fires compaction callbacks automatically.
 
 **File:** `src/exercises/m04/ex04-auto-compact.ts`
 
@@ -1215,7 +1181,7 @@ describe('Exercise 3: Session Memory', () => {
      compactThreshold: number // percentage (e.g., 0.9 for 90%)
    }
    ```
-2. Export a function `checkBudget(messages: Message[], config: CompactionConfig): { status: 'ok' | 'warn' | 'compact'; percentUsed: number; tokensUsed: number }` that estimates the token count of the message array and returns the budget status
+2. Export a function `checkBudget(messages: Message[], config: CompactionConfig): { status: 'ok' | 'warn' | 'compact'; percentUsed: number; tokensUsed: number }`. Do not re-derive the token arithmetic — build it on top of Section 8's `getRemainingBudget` (from `src/memory/tokens.ts`): call it with `{ contextWindow, maxResponseTokens, reservedForSystem: 0 }`, report its `used` as `tokensUsed`, convert its 0–100 `percentUsed` to a 0–1 fraction, and map that fraction against `compactThreshold`, then `warnThreshold`, to get the status
 3. Export an async function `autoCompact(messages: Message[], config: CompactionConfig, model: LanguageModel): Promise<{ messages: Message[]; compacted: boolean; summary?: string }>` that:
    - Calls `checkBudget` to determine if compaction is needed
    - If status is `'compact'`, summarizes the older messages (keeping the most recent 6) using `generateText` with a summarization prompt, and returns the compacted message array with the summary prepended as a system message
@@ -1241,14 +1207,11 @@ describe('Exercise 4: Auto-Compact Trigger', () => {
   })
 
   it('should return warn status when between thresholds', () => {
-    // Generate messages large enough to hit 80-90% of a small context window
-    const longMessage = 'x'.repeat(3200) // ~800 tokens
-    const messages = Array.from({ length: 10 }, () => ({
-      role: 'user' as const,
-      content: longMessage,
-    }))
+    // 34,000 chars ≈ 8,500 tokens; with message overhead that is ~8,507 of the
+    // 10,000 available (11,000 − 1,000) → ~85%, between warn and compact
+    const messages = [{ role: 'user' as const, content: 'x'.repeat(34_000) }]
     const result = checkBudget(messages, {
-      contextWindow: 12_000,
+      contextWindow: 11_000,
       maxResponseTokens: 1000,
       warnThreshold: 0.8,
       compactThreshold: 0.9,

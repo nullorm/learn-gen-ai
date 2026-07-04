@@ -1,4 +1,4 @@
-# Module 17: Code Generation
+# Module 20: Code Generation
 
 ## Learning Objectives
 
@@ -11,7 +11,7 @@
 - Use LLMs for code review with actionable feedback
 - Apply security best practices when executing LLM-generated code
 
-> *Module 17 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
+> *Module 20 is part of **Part IV: Agents & Orchestration**, building toward the **Agent Deployer** badge.*
 
 ---
 
@@ -27,10 +27,10 @@ If you treat code generation as a single `generateText` call, you will be disapp
 
 ## Connection to Other Modules
 
-- **Module 14 (Agent Fundamentals)** provides the agent loop pattern used for iterative code refinement.
-- **Module 16 (Workflows & Chains)** provides chain patterns for generate-test-fix pipelines.
+- **Module 16 (Agent Fundamentals)** provides the agent loop pattern used for iterative code refinement.
+- **Module 14 (Workflows & Chains)** provides chain patterns for generate-test-fix pipelines.
 - **Module 3 (Structured Output)** is used to extract code blocks and metadata from LLM responses.
-- **Module 18 (Human-in-the-Loop)** adds human review before executing generated code.
+- **Module 21 (Human-in-the-Loop)** adds human review before executing generated code.
 
 ---
 
@@ -78,6 +78,8 @@ Your task: build a function `generateCodeWithPrompt` in `src/codegen/basics.ts` 
 
 ## Section 2: Prompting for Code
 
+**File:** `src/codegen/prompting.ts`
+
 ### Effective Code Prompts
 
 The quality of generated code depends heavily on the prompt. Include these elements:
@@ -118,13 +120,13 @@ Beyond per-request prompts, a system prompt sets global coding standards. A good
 4. **Documentation** — JSDoc comments, parameter/return docs, `@example` tags
 5. **Output format** — no markdown fences, no test code, no explanation unless asked
 
-Build a `codeGenSystemPrompt` string constant that covers these areas. Then use it as the `system` parameter in a `generateText` call. How does the system prompt interact with the per-request prompt? What happens when they conflict?
-
-> **Beginner Note:** Specific prompts produce specific code. If you tell the model "write a sorting function," you will get something generic. If you specify the language, algorithm, input type, edge cases, and constraints, you will get exactly what you need.
+Build a `codeGenSystemPrompt` string constant that covers these areas. Then use it as the `instructions` field in a `generateText` call. How does the system prompt interact with the per-request prompt? What happens when they conflict?
 
 ---
 
 ## Section 3: Structured Code Output
+
+**File:** `src/codegen/structured.ts`
 
 ### Extracting Code from LLM Responses
 
@@ -174,11 +176,11 @@ Build a `generateMultiFile(spec: string)` function that uses this schema. The sy
 
 What are the risks of multi-file generation compared to single-function generation? How would you validate that imports between generated files actually resolve correctly?
 
-> **Advanced Note:** Multi-file generation is less reliable than single-function generation because the model must maintain consistency across files (imports, types, naming). Always validate that generated imports resolve correctly and types match across files.
-
 ---
 
 ## Section 4: Isolated Subprocess Execution
+
+**File:** `src/codegen/sandbox.ts`
 
 > **Gotcha:** This subprocess approach provides timeout protection and output capture, but NOT security isolation. Generated code runs with the same OS permissions as your application. For true sandboxing in production, use container-based solutions (Docker, Firecracker) or WebAssembly runtimes.
 
@@ -207,22 +209,13 @@ Think about these design questions:
 - How do you distinguish a timeout from a normal error? What happens to the subprocess when your timer fires?
 - When should cleanup happen -- only on success, or always? What language construct guarantees cleanup regardless of outcome?
 
-### Sandbox Security Checklist
-
-When running generated code, always apply these protections:
-
-1. **ALWAYS** run in a subprocess — never in the main process
-2. **Strip sensitive env vars** — only pass PATH and NODE_ENV='sandbox'
-3. **Set resource limits** — timeout (10s), max output (1MB)
-4. **Use a temporary directory** that gets cleaned up
-5. **NEVER** let generated code access the network in production — use containers for network isolation
-6. **Validate output** before using it — check for suspicious patterns and size limits
-
 > **Beginner Note:** Think of sandboxing like putting an unknown substance in a sealed container before testing it. You do not know what the generated code will do, so you run it in an isolated environment where it cannot damage your system or access sensitive data.
 
 ---
 
 ## Section 5: Test-Driven Generation
+
+**File:** `src/codegen/tdd.ts`
 
 ### Generate Code to Pass Tests
 
@@ -255,11 +248,11 @@ How do you make exports from the implementation file available to test code that
 
 Think about: what information does the LLM need to fix failing code effectively? Why is including the previous code alongside the error output better than sending just the error? How does the prompt differ between "write this from scratch" and "fix this broken code"?
 
-> **Beginner Note:** Test-driven generation is the most reliable way to generate code with LLMs. The tests define exactly what the code should do, and the iterative loop ensures the code actually works. Without tests, you are trusting the model's output blindly.
-
 ---
 
 ## Section 6: Iterative Refinement
+
+**File:** `src/codegen/refinement.ts`
 
 ### The Generate-Run-Fix Loop
 
@@ -303,6 +296,8 @@ Consider these questions:
 
 ## Section 7: Code Review by LLM
 
+**File:** `src/codegen/review.ts`
+
 ### Automated Code Review
 
 LLMs can review code for bugs, style issues, and improvement opportunities. Define a review schema:
@@ -332,33 +327,20 @@ What makes LLM code review different from a linter or type checker? What kinds o
 
 ### Review-and-Fix Pipeline
 
-Now combine review with automated fixing. Build a `reviewAndFix` function:
+A single review is a snapshot; the production pattern is a loop that alternates between reviewing and fixing until quality is good enough or the rounds run out. Conceptually: review the code; if the score is below your threshold or critical issues remain, format the issues into a fix prompt, apply the fix, and review the result again. You need to define what "good enough" means -- think about both the numeric score and the presence of critical issues.
 
-```typescript
-async function reviewAndFix(
-  code: string,
-  maxRounds?: number
-): Promise<{
-  code: string
-  reviews: CodeReview[]
-  rounds: number
-}>
-```
-
-The pipeline alternates between reviewing and fixing until quality is good enough or you run out of rounds. You need to define what "good enough" means -- think about both the numeric score and the presence of critical issues.
-
-Consider these design questions:
+This section's build stays `reviewCode` — the loop itself is **Exercise 2** (`reviewAndImprove`). Before you get there, consider these design questions:
 
 - What quality threshold makes a reasonable stopping condition? Should it be score-based, issue-severity-based, or both?
 - How do you format review issues so the LLM can fix them effectively? What context does the fix prompt need?
 - What is the risk of over-fixing -- could the LLM introduce new issues while fixing old ones? How would you detect this?
 - Which issues should be auto-fixed vs. left as suggestions for the human?
 
-> **Beginner Note:** LLM code review catches different issues than a linter or type checker. Linters catch style violations. Type checkers catch type errors. LLMs catch logic errors, missing edge cases, and security issues that static analysis misses.
-
 ---
 
 ## Section 8: Security Considerations
+
+**File:** `src/codegen/security.ts`
 
 ### The Golden Rule
 
@@ -376,7 +358,7 @@ Implement defense in depth with multiple protection layers. Build each layer as 
 
 **Layer 4: Rate limiting** — `ExecutionRateLimiter` class that prevents abuse by limiting executions per time window. What data structure efficiently tracks "how many executions in the last N seconds"?
 
-**Composing the layers** — `secureCodeExecution(code: string)` runs all four layers in sequence. Which layers should run before execution and which after? If any layer rejects, the pipeline should short-circuit. What return type captures both the result and any layer that blocked?
+**Composing the layers** — `secureCodeExecution(code: string)` runs all four layers in sequence; they compose cleanly because each is an independently testable guard that runs before or after execution. Which layers should run before execution and which after? If any layer rejects, the pipeline should short-circuit. What return type captures both the result and any layer that blocked?
 
 ### Security Checklist for Code Generation Systems
 
@@ -391,13 +373,15 @@ Implement defense in depth with multiple protection layers. Build each layer as 
 | Users inject prompt attacks via input    | Separate user input from code generation prompt      |
 | Generated code leaks sensitive data      | Scan output for sensitive patterns                   |
 
-> **Advanced Note:** For production code generation systems, use container-based sandboxing (Docker, Firecracker, or gVisor) instead of subprocess isolation. Subprocess isolation prevents the worst issues but does not provide true security boundaries. Container sandboxing gives you CPU/memory limits, network isolation, and filesystem restrictions.
+> **Advanced Note:** What container-based sandboxing (Docker, Firecracker, gVisor) adds over a subprocess: kernel-enforced CPU and memory limits, network isolation, and filesystem restrictions.
 
 ---
 
 > **Production Patterns** — The following sections explore how the concepts above are applied in production systems. These are shorter and more conceptual than the hands-on sections above.
 
 ## Section 9: Diff-Based Code Editing
+
+**File:** `src/codegen/diff.ts`
 
 ### Surgical Edits over Full Regeneration
 
@@ -421,11 +405,11 @@ The uniqueness constraint is critical — if `old_string` matches multiple locat
 
 When a single logical change touches multiple locations (e.g., adding an import at the top and using it in a function below), you can either issue multiple edit operations or use a unified diff patch that contains multiple hunks applied atomically.
 
-> **Advanced Note:** String replacement is safest for single-site edits. Multi-hunk unified diff patches are better when one logical change spans multiple locations in a file — either all hunks apply or none do.
-
 ---
 
 ## Section 10: Safe Code Writing
+
+**File:** `src/codegen/safe-write.ts`
 
 ### Production Safety for File Writes
 
@@ -447,11 +431,11 @@ These checks form a write guard that wraps every file write in the code generati
 
 ## Going Further: Hardening Generated-Code Execution
 
-Sections 1–10 cover generating, testing, reviewing, and safely editing code. These last two are the production hardening layer — reversible edits and real sandboxing — that you add when generated code runs unattended.
+Sections 1–10 cover generating, testing, reviewing, and safely editing code. This coda adds the production hardening layer — reversible edits with undo/redo — for when generated code runs unattended.
 
 ### Edit History and Reversibility
 
-*Related: Module 16 applies this same undo/redo pattern to workflow steps.*
+*Related: Module 14 applies this same undo/redo pattern to workflow steps.*
 
 #### Tracking Changes for Undo
 
@@ -476,23 +460,6 @@ A simple stack-based history (push on edit, pop on undo) covers most use cases. 
 
 ---
 
-### Enhanced Sandboxing
-
-#### Production Execution Constraints
-
-The sandboxed execution from Section 4 provides the foundation. Production systems add additional constraints:
-
-- **Timeout limits** — Kill the subprocess after a configurable duration (e.g., 10 seconds) to prevent infinite loops
-- **Output size limits** — Truncate stdout/stderr beyond a threshold (e.g., 1MB) to prevent memory exhaustion
-- **Directory restrictions** — Confine file access to a temporary working directory; reject reads/writes outside it
-- **Permission checks** — Validate the code does not request elevated privileges or access sensitive resources before execution
-
-These constraints compose with the existing sandbox. Each is a guard that runs before or after execution, and each can be independently tested.
-
-> **Advanced Note:** For full isolation, production systems use container-based sandboxing (Docker, Firecracker) that provides kernel-level enforcement of CPU, memory, network, and filesystem limits. Subprocess isolation is a starting point, not a finish line.
-
----
-
 ## Summary
 
 In this module, you learned:
@@ -508,9 +475,8 @@ In this module, you learned:
 9. **Diff-based code editing:** Producing targeted find-replace edits instead of regenerating entire files is safer, cheaper, and easier to review — with a uniqueness constraint to prevent ambiguous edits.
 10. **Safe code writing:** Write guards that enforce read-before-write, path validation, overwrite confirmation, and parent directory creation prevent accidental damage from generated code.
 11. **Edit history and reversibility:** Tracking every code change with old/new content enables undo, redo, and debugging while keeping file state decoupled from conversation state.
-12. **Enhanced sandboxing:** Production execution adds timeout limits, output size caps, directory restrictions, and permission checks on top of basic subprocess isolation.
 
-In Module 18, you will learn how to add human oversight to these automated systems — approval gates for high-stakes actions, feedback integration for continuous improvement, and audit trails for compliance.
+In Module 21, you will learn how to add human oversight to these automated systems — approval gates for high-stakes actions, feedback integration for continuous improvement, and audit trails for compliance.
 
 ---
 
@@ -531,19 +497,6 @@ What is the most reliable pattern for generating code with LLMs?
 
 ### Question 2 (Medium)
 
-Why should you NEVER execute LLM-generated code directly in your main process?
-
-- A) LLM-generated code is always slower than hand-written code
-- B) Generated code might access sensitive data, make network calls, modify files, or crash the process
-- C) LLM-generated code uses too much memory
-- D) Generated code cannot import npm packages
-
-**Answer: B** — LLM-generated code is untrusted. It might contain code that reads environment variables (API keys), makes unauthorized network requests, deletes files, or causes the main process to crash. Running it in a sandboxed subprocess with stripped environment variables and resource limits prevents these risks.
-
----
-
-### Question 3 (Medium)
-
 When generating code with an LLM, which prompt element has the most impact on code quality?
 
 - A) The model temperature setting
@@ -555,7 +508,7 @@ When generating code with an LLM, which prompt element has the most impact on co
 
 ---
 
-### Question 4 (Hard)
+### Question 3 (Medium)
 
 In an iterative refinement loop (generate, run, fix), what information should you pass to the LLM when asking it to fix a failed attempt?
 
@@ -568,7 +521,7 @@ In an iterative refinement loop (generate, run, fix), what information should yo
 
 ---
 
-### Question 5 (Hard)
+### Question 4 (Hard)
 
 A code generation system passes static analysis and runs in a sandbox, but the generated code outputs the value of `process.env.HOME`. What security layer failed?
 
@@ -581,7 +534,7 @@ A code generation system passes static analysis and runs in a sandbox, but the g
 
 ---
 
-### Question 6 (Medium)
+### Question 5 (Easy)
 
 Why do production code generation systems prefer diff-based edits (find-replace pairs) over regenerating entire files?
 
@@ -594,29 +547,16 @@ Why do production code generation systems prefer diff-based edits (find-replace 
 
 ---
 
-### Question 7 (Hard)
-
-An edit history system tracks code changes with old/new content and supports undo. When a user undoes a code change, what should happen to the conversation state?
-
-- A) The conversation should be rolled back to before the edit was proposed
-- B) The conversation should continue unchanged — the agent remembers what it wrote and why it was undone
-- C) The entire conversation history should be cleared to avoid confusion
-- D) The undo should be blocked because it would make the conversation inconsistent
-
-**Answer: B** — File state and conversation state should be decoupled. When the user undoes a code change, the file reverts but the conversation continues with full context. The agent remembers what it wrote and why it was undone, which allows it to try a different approach. Rolling back the conversation (A) would lose the context of why the change failed. Clearing history (C) or blocking undo (D) would harm the user experience.
-
----
-
 ## Exercises
 
 ### Exercise 1: Test-Driven Code Generation Agent
 
-**Objective:** Build a system that takes a function specification and test cases, then generates TypeScript code that passes all tests, iterating until the tests pass or a maximum number of attempts is reached.
+**Objective:** Extend the test-driven loop you built in Section 5 into a fuller code-generation agent. The generate → test → fix cycle is already done — import and reuse it. The new work is (1) a full attempt **history** and (2) a **static-analysis gate** that blocks dangerous code before it ever executes.
 
 **Specification:**
 
-1. Create a file `src/exercises/m17/ex01-tdd-codegen.ts`
-2. Export an async function `generateToPassTests(spec: FunctionSpec): Promise<CodeGenResult>`
+1. Create a file `src/exercises/m20/ex01-tdd-codegen.ts`
+2. Export an async function `generateToPassTests(spec: FunctionSpec): Promise<CodeGenResult>` — an upgraded sibling of your Section 5 function (same name, richer input/result types), which is why it lives in its own file. Import `runTests` from `src/codegen/tdd.ts` and `staticAnalysis` from `src/codegen/security.ts` rather than reimplementing them.
 3. Define the types:
 
 ```typescript
@@ -642,13 +582,11 @@ interface CodeGenResult {
 ```
 
 4. The system must:
-   - Generate initial code from the spec description
-   - Run the tests against the generated code
-   - If tests fail, send the error output back to the LLM for fixing
-   - Track all attempts in the history
-   - Clean up temporary files after execution
+   - Generate initial code from the spec description, and on failure send the previous code plus error output back to the LLM — your Section 5 loop already does both
+   - Run tests via the `runTests` you built in Section 5 (it already cleans up its temp files)
+   - **New:** track every attempt in the `history` array
 
-5. Include static analysis to block dangerous code before execution
+5. **New:** gate each generation through Section 8's `staticAnalysis` before execution — record a blocked attempt as a failed one
 
 **Example usage:**
 
@@ -678,10 +616,10 @@ console.log(`Passed: ${result.testsPass}, Attempts: ${result.attempts}`)
 **Test specification:**
 
 ```typescript
-// tests/exercises/m17/ex01-tdd-codegen.test.ts
+// tests/exercises/m20/ex01-tdd-codegen.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 17: TDD Code Generation', () => {
+describe('Exercise 20: TDD Code Generation', () => {
   it('should generate code that passes simple tests', async () => {
     const result = await generateToPassTests({
       name: 'add',
@@ -737,7 +675,7 @@ describe("impossible", () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m17/ex02-review-pipeline.ts`
+1. Create a file `src/exercises/m20/ex02-review-pipeline.ts`
 2. Export an async function `reviewAndImprove(code: string, options?: ReviewOptions): Promise<ReviewResult>`
 3. Define the types:
 
@@ -780,10 +718,10 @@ interface ReviewResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m17/ex02-review-pipeline.test.ts
+// tests/exercises/m20/ex02-review-pipeline.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 17: Code Review Pipeline', () => {
+describe('Exercise 20: Code Review Pipeline', () => {
   it('should review code and produce a quality score', async () => {
     const result = await reviewAndImprove(`
 function add(a, b) { return a + b; }
@@ -821,7 +759,7 @@ export async function fetchData(url) {
 })
 ```
 
-> **Local Alternative (Ollama):** For code generation, `ollama('qwen3.5')` handles code tasks well. For specialized code work, use `ollama('qwen3-coder-next:cloud')`. The iterative refinement and test-driven generation patterns work with any model.
+> **Local Alternative (Ollama):** For code generation, `ollama('qwen3.5', { think: false })` handles code tasks well. For specialized code work, use `ollama('qwen3-coder-next:cloud')`. The iterative refinement and test-driven generation patterns work with any model.
 
 ---
 
@@ -831,7 +769,7 @@ export async function fetchData(url) {
 
 **Specification:**
 
-1. Create a file `src/exercises/m17/ex03-diff-modifier.ts`
+1. Create a file `src/exercises/m20/ex03-diff-modifier.ts`
 2. Export an async function `diffModify(filePath: string, instruction: string): Promise<DiffModifyResult>`
 3. Define the types:
 
@@ -861,10 +799,10 @@ interface DiffModifyResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m17/ex03-diff-modifier.test.ts
+// tests/exercises/m20/ex03-diff-modifier.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 17: Diff-Based Code Modifier', () => {
+describe('Exercise 20: Diff-Based Code Modifier', () => {
   it('should apply a valid single edit', async () => {
     // Write a temp file, request a modification, verify the edit was applied
     const result = await diffModify(tempFile, 'Rename the function from foo to bar')
@@ -894,7 +832,7 @@ describe('Exercise 17: Diff-Based Code Modifier', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m17/ex04-safe-writer.ts`
+1. Create a file `src/exercises/m20/ex04-safe-writer.ts`
 2. Export an async function `safeWrite(projectRoot: string, filePath: string, content: string, options?: SafeWriteOptions): Promise<SafeWriteResult>`
 3. Define the types:
 
@@ -922,10 +860,10 @@ interface SafeWriteResult {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m17/ex04-safe-writer.test.ts
+// tests/exercises/m20/ex04-safe-writer.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 17: Safe Code Writer', () => {
+describe('Exercise 20: Safe Code Writer', () => {
   it('should write a new file successfully', async () => {
     const result = await safeWrite(tmpDir, 'src/utils.ts', 'export const x = 1')
     expect(result.written).toBe(true)
@@ -959,7 +897,7 @@ describe('Exercise 17: Safe Code Writer', () => {
 
 **Specification:**
 
-1. Create a file `src/exercises/m17/ex05-edit-history.ts`
+1. Create a file `src/exercises/m20/ex05-edit-history.ts`
 2. Export the `EditHistory` class
 3. Define the types:
 
@@ -993,10 +931,10 @@ class EditHistory {
 **Test specification:**
 
 ```typescript
-// tests/exercises/m17/ex05-edit-history.test.ts
+// tests/exercises/m20/ex05-edit-history.test.ts
 import { describe, it, expect } from 'bun:test'
 
-describe('Exercise 17: Edit History', () => {
+describe('Exercise 20: Edit History', () => {
   it('should record and retrieve edit history', () => {
     const history = new EditHistory()
     history.record({ filePath: 'a.ts', oldContent: 'old', newContent: 'new', description: 'edit 1' })
